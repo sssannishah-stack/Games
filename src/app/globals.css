@@ -1,26 +1,193 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+/* ─── Encore design tokens — extracted from the Claude Design handoff ─── */
+@theme {
+  /* surfaces */
+  --color-base: #060709;
+  --color-surface: #0b0c10;
+  --color-shell: #08090c;
+  --color-card: #101218;
+  --color-elev: #14161e;
+  --color-drawer: #0e0f15;
+  --color-canvas: #f4f2ed;
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+  /* text ramp */
+  --color-ink: #f4f5f8;
+  --color-ink-2: #edeef2;
+  --color-ink-3: #c9cdd6;
+  --color-mute: #9ba0ae;
+  --color-mute-2: #8a8f9c;
+  --color-dim: #636876;
+  --color-dim-2: #565b68;
+  --color-label: #4b505c;
+  --color-faint: #464b57;
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+  /* semantic */
+  --color-accent: #6c7bfa;
+  --color-success: #3dd68c;
+  --color-warn: #f5b93d;
+  --color-danger: #ff5c5c;
+  --color-danger-soft: #ff8383;
+  --color-live: #ff6b6b;
+  --color-info: #7eb5f0;
+  --color-amber: #e8a33d;
+  --color-teal: #2fbfa7;
+  --color-pink: #e36a8a;
+  --color-sky: #5ec9e8;
+
+  /* neutral hairline/overlay tint used for every border & subtle fill in
+     the design (bg-line/[.04], border-line/[.07], etc). White-on-dark by
+     default; the bright theme flips it to near-black so the same utility
+     classes read as dark-on-light without touching component code. */
+  --color-line: #ffffff;
+
+  /* team palette */
+  --color-team-mango: #f5a93d;
+  --color-team-chai: #c98a5e;
+  --color-team-ladoo: #e8c84a;
+  --color-team-kites: #5ec9e8;
+  --color-team-stars: #b98ae8;
+  --color-team-rockets: #e36a8a;
+
+  --font-sans: var(--font-geist-sans), Inter, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), monospace;
+
+  --radius-frame: 18px;
+
+  --animate-enc-pulse: encPulse 1.4s infinite;
+  --animate-enc-pulse-slow: encPulse 2s infinite;
+  --animate-enc-ring: encRing 1.6s infinite;
+  --animate-enc-float: encFloat 3s ease-in-out infinite;
+  --animate-enc-shimmer: encShimmer 1.4s infinite;
+  --animate-enc-slide-down: encSlideDown 0.5s cubic-bezier(0.2, 0.9, 0.3, 1);
+
+  @keyframes encPulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.35;
+    }
+  }
+  @keyframes encRing {
+    0% {
+      box-shadow: 0 0 0 0 rgba(255, 92, 92, 0.45);
+    }
+    100% {
+      box-shadow: 0 0 0 9px rgba(255, 92, 92, 0);
+    }
+  }
+  @keyframes encFloat {
+    0%,
+    100% {
+      transform: translateY(0);
+    }
+    50% {
+      transform: translateY(-4px);
+    }
+  }
+  @keyframes encShimmer {
+    0% {
+      background-position: -400px 0;
+    }
+    100% {
+      background-position: 400px 0;
+    }
+  }
+  @keyframes encSlideDown {
+    0% {
+      transform: translateY(-120%);
+      opacity: 0;
+    }
+    100% {
+      transform: translateY(0);
+      opacity: 1;
+    }
   }
 }
 
+/* ─── Bright theme — swaps the whole surface/text/line ramp for a light,
+   vibrant look. Toggled by setting data-theme="bright" on <html> (see
+   ThemeApplier). Every utility class already reads these same custom
+   properties, so this one block re-themes the entire app. ─── */
+:root[data-theme="bright"] {
+  --color-base: #f3f2fb;
+  --color-surface: #ffffff;
+  --color-shell: #f7f6fd;
+  --color-card: #ffffff;
+  --color-elev: #ffffff;
+  --color-drawer: #fbfaff;
+
+  --color-ink: #14151b;
+  --color-ink-2: #1c1e26;
+  --color-ink-3: #3f4252;
+  --color-mute: #63667a;
+  --color-mute-2: #797c8f;
+  --color-dim: #9497a8;
+  --color-dim-2: #a6a9b8;
+  --color-label: #b7bac6;
+  --color-faint: #c9cbd4;
+
+  --color-accent: #5b5df0;
+  --color-success: #189866;
+  --color-warn: #c9820f;
+  --color-danger: #e0393f;
+  --color-danger-soft: #c93f45;
+  --color-live: #e2453f;
+  --color-info: #2f7cd6;
+  --color-amber: #c9821c;
+  --color-teal: #128f7a;
+  --color-pink: #c94577;
+  --color-sky: #1f97c2;
+
+  --color-line: #14151b;
+}
+
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  margin: 0;
+  background: var(--color-base);
+  color: var(--color-ink-2);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  transition: background-color 0.25s ease, color 0.25s ease;
+}
+
+/* ambient page glow used behind every screen in the design */
+.enc-page-glow {
+  background:
+    radial-gradient(
+      1100px 500px at 18% -5%,
+      color-mix(in oklab, var(--color-accent) 7%, transparent),
+      transparent 60%
+    ),
+    radial-gradient(900px 500px at 85% 30%, color-mix(in oklab, var(--color-teal) 6%, transparent), transparent 60%),
+    var(--color-base);
+}
+
+/* dotted builder canvas */
+.enc-dot-grid {
+  background-image: radial-gradient(color-mix(in oklab, var(--color-line) 4.5%, transparent) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+/* dashed media placeholder stripes */
+.enc-stripes {
+  background: repeating-linear-gradient(
+    45deg,
+    color-mix(in oklab, var(--color-line) 5%, transparent) 0 10px,
+    color-mix(in oklab, var(--color-line) 2%, transparent) 10px 20px
+  );
+}
+
+/* skeleton shimmer surface */
+.enc-shimmer {
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--color-line) 5%, transparent),
+    color-mix(in oklab, var(--color-line) 10%, transparent),
+    color-mix(in oklab, var(--color-line) 5%, transparent)
+  );
+  background-size: 400px 100%;
+  animation: encShimmer 1.4s infinite;
 }

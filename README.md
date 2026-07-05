@@ -1,4 +1,15 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Encore Live Competition OS
+
+Encore is a host-controlled live competition operating system for real
+physical events such as Jain Pathshala competitions, Antakshari, school
+events, family competitions, and community programs.
+
+This is not an automatic quiz app. The host controls the show, participant
+phones mirror the current scene, and all scoring is manual through score
+transactions.
+
+Start with the canonical product flow before making UI, database, or action
+changes: [docs/PRODUCT_FLOW.md](docs/PRODUCT_FLOW.md).
 
 ## Getting Started
 
