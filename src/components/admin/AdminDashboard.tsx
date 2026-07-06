@@ -2,6 +2,8 @@ import Link from "next/link";
 import { Icon } from "@/components/ui/Icon";
 import { Card } from "@/components/ui/Card";
 import { SectionLabel } from "@/components/ui/SectionLabel";
+import { Reveal } from "@/components/motion/Reveal";
+import { NumberTicker } from "@/components/motion/NumberTicker";
 import { CompetitionCard } from "@/components/competition/CompetitionCard";
 import { CreateCompetitionButton } from "@/components/competition/CreateCompetitionButton";
 import { getCompetitionsByOwner } from "@/data/queries/competition.queries";
@@ -30,28 +32,35 @@ function StatTile({
   iconColor,
   label,
   value,
+  index,
 }: {
   icon: string;
   iconColor: string;
   label: string;
   value: number;
+  index: number;
 }) {
   return (
-    <Card className="rounded-2xl p-[18px] flex items-center gap-3.5">
-      <div
-        className="w-10 h-10 rounded-[11px] flex items-center justify-center border shrink-0"
-        style={{
-          background: `color-mix(in oklab, ${iconColor} 12%, transparent)`,
-          borderColor: `color-mix(in oklab, ${iconColor} 22%, transparent)`,
-        }}
-      >
-        <Icon name={icon} size={18} style={{ color: iconColor }} />
-      </div>
-      <div className="flex flex-col gap-px min-w-0">
-        <span className="text-2xl font-bold text-ink tracking-[-.02em] tabular-nums">{value}</span>
-        <span className="text-[11.5px] text-mute-2 truncate">{label}</span>
-      </div>
-    </Card>
+    <Reveal index={index} hover>
+      <Card className="rounded-2xl p-[18px] flex items-center gap-3.5 hover:border-line/[.14] hover:shadow-[0_10px_30px_rgba(0,0,0,.25)] transition-[border-color,box-shadow]">
+        <div
+          className="w-10 h-10 rounded-[11px] flex items-center justify-center border shrink-0"
+          style={{
+            background: `color-mix(in oklab, ${iconColor} 12%, transparent)`,
+            borderColor: `color-mix(in oklab, ${iconColor} 22%, transparent)`,
+          }}
+        >
+          <Icon name={icon} size={18} style={{ color: iconColor }} />
+        </div>
+        <div className="flex flex-col gap-px min-w-0">
+          <NumberTicker
+            value={value}
+            className="text-2xl font-bold text-ink tracking-[-.02em] tabular-nums"
+          />
+          <span className="text-[11.5px] text-mute-2 truncate">{label}</span>
+        </div>
+      </Card>
+    </Reveal>
   );
 }
 
@@ -81,10 +90,10 @@ export async function AdminDashboard({ user }: { user: CurrentUser }) {
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatTile icon="trophy" iconColor="#6C7BFA" label="Competitions" value={competitions.length} />
-        <StatTile icon="radio" iconColor="#FF6B6B" label="Live events" value={liveCount} />
-        <StatTile icon="circle-question-mark" iconColor="#7EB5F0" label="Questions" value={questionCount} />
-        <StatTile icon="list-ordered" iconColor="#2FBFA7" label="Rounds" value={roundCount} />
+        <StatTile icon="trophy" iconColor="#6C7BFA" label="Competitions" value={competitions.length} index={0} />
+        <StatTile icon="radio" iconColor="#FF6B6B" label="Live events" value={liveCount} index={1} />
+        <StatTile icon="circle-question-mark" iconColor="#7EB5F0" label="Questions" value={questionCount} index={2} />
+        <StatTile icon="list-ordered" iconColor="#2FBFA7" label="Rounds" value={roundCount} index={3} />
       </div>
 
       <Card className="rounded-2xl p-4 flex flex-col gap-3">
@@ -104,7 +113,7 @@ export async function AdminDashboard({ user }: { user: CurrentUser }) {
 
       {competitions.length === 0 ? (
         <Card className="rounded-2xl p-10 flex flex-col items-center justify-center gap-3 text-center">
-          <div className="w-14 h-14 rounded-[18px] bg-accent/10 border border-dashed border-accent/45 flex items-center justify-center">
+          <div className="w-14 h-14 rounded-[18px] bg-accent/10 border border-dashed border-accent/45 flex items-center justify-center animate-enc-float">
             <Icon name="trophy" size={24} className="text-accent" />
           </div>
           <span className="text-[15px] font-bold text-ink">Create your first competition</span>
@@ -131,10 +140,12 @@ export async function AdminDashboard({ user }: { user: CurrentUser }) {
             )}
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-            {recent.map((c) => (
-              <Card key={c.id} className="rounded-2xl p-5 hover:border-line/[.14] transition-colors">
-                <CompetitionCard competition={c} />
-              </Card>
+            {recent.map((c, i) => (
+              <Reveal key={c.id} index={i} hover>
+                <Card className="rounded-2xl p-5 hover:border-line/[.14] hover:shadow-[0_12px_34px_rgba(0,0,0,.28)] transition-[border-color,box-shadow]">
+                  <CompetitionCard competition={c} />
+                </Card>
+              </Reveal>
             ))}
           </div>
         </div>

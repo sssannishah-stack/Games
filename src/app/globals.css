@@ -95,6 +95,45 @@
       background-position: 400px 0;
     }
   }
+  @keyframes encShine {
+    0% {
+      transform: translateX(-120%);
+    }
+    100% {
+      transform: translateX(120%);
+    }
+  }
+  @keyframes encShake {
+    0%,
+    100% {
+      transform: translateX(0);
+    }
+    20% {
+      transform: translateX(-5px);
+    }
+    40% {
+      transform: translateX(5px);
+    }
+    60% {
+      transform: translateX(-3px);
+    }
+    80% {
+      transform: translateX(3px);
+    }
+  }
+  @keyframes encFloatUp {
+    0% {
+      transform: translateY(0);
+      opacity: 0;
+    }
+    15% {
+      opacity: 1;
+    }
+    100% {
+      transform: translateY(-64px);
+      opacity: 0;
+    }
+  }
   @keyframes encSlideDown {
     0% {
       transform: translateY(-120%);
@@ -190,4 +229,26 @@ body {
   );
   background-size: 400px 100%;
   animation: encShimmer 1.4s infinite;
+}
+
+/* ─── Reduced motion ─── When the OS asks for reduced motion, or the user
+   picks the "minimal" animation level (data-motion="minimal" on <html>),
+   collapse every animation/transition to near-instant. JS-driven motion
+   (Framer, tickers) checks the same signals via useMotionEnabled. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+:root[data-motion="minimal"] *,
+:root[data-motion="minimal"] *::before,
+:root[data-motion="minimal"] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
 }

@@ -14,6 +14,8 @@ import {
 } from "@/data/queries/powerCard.queries";
 import { getScoreHistoryByRoom } from "@/data/queries/score.queries";
 import { getParticipantsByRoom } from "@/data/queries/participant.queries";
+import { getAchievementsByRoom } from "@/data/queries/achievement.queries";
+import { getActiveAuction } from "@/data/queries/auction.queries";
 
 export default async function HostRoomPage({
   params,
@@ -25,7 +27,7 @@ export default async function HostRoomPage({
   const room = await getRoomById(roomId, user.id);
   if (!room) notFound();
 
-  const [scenes, rounds, questions, teams, logs, powerRequests, scoreHistory, cards, participants] =
+  const [scenes, rounds, questions, teams, logs, powerRequests, scoreHistory, cards, participants, achievements] =
     await Promise.all([
       getScenesByRoom(roomId),
       getSelectedRoundsForRoom(room.selectedRounds),
@@ -36,8 +38,12 @@ export default async function HostRoomPage({
       getScoreHistoryByRoom(roomId),
       getPowerCardsByOwner(user.id),
       getParticipantsByRoom(roomId),
+      getAchievementsByRoom(roomId),
     ]);
-  const ownedCards = await getTeamPowerCardsByRoom(teams.map((t) => t.id));
+  const [ownedCards, auction] = await Promise.all([
+    getTeamPowerCardsByRoom(teams.map((t) => t.id)),
+    getActiveAuction(roomId),
+  ]);
 
   return (
     <HostConsole
@@ -52,6 +58,8 @@ export default async function HostRoomPage({
       cards={cards}
       ownedCards={ownedCards}
       participants={participants}
+      achievements={achievements}
+      auction={auction}
     />
   );
 }

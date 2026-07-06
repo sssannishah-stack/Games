@@ -17,11 +17,14 @@ const TeamSchema = new Schema<ITeam>(
     // Score decides the winner; coins buy power cards. Never mixed.
     score: { type: Number, default: 0 },
     rank: { type: Number, default: 0 },
+    previousRank: { type: Number, default: 0 },
     coins: { type: Number, default: 0 },
     stats: {
       correctAnswers: { type: Number, default: 0 },
       wrongAnswers: { type: Number, default: 0 },
       bonusPoints: { type: Number, default: 0 },
+      streak: { type: Number, default: 0 },
+      bestStreak: { type: Number, default: 0 },
     },
   },
   { timestamps: true }

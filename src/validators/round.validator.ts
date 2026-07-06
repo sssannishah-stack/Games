@@ -5,6 +5,7 @@ import {
   RULE_OVERRIDE_MODES,
   QUESTION_ASSIGNMENT_MODES,
   POWER_CARD_OVERRIDE_MODES,
+  SPECIAL_ROUND_MODES,
 } from "@/types/db";
 
 export const createRoundSchema = z.object({
@@ -13,6 +14,7 @@ export const createRoundSchema = z.object({
   rules: z.string().max(2000).optional(),
   category: z.string().trim().min(1).max(60).default("Custom"),
   roundType: z.enum(ROUND_TYPES).default("GENERAL"),
+  specialMode: z.enum(SPECIAL_ROUND_MODES).default("NONE"),
   scoringMode: z.enum(RULE_OVERRIDE_MODES).default("INHERIT"),
   defaultTimer: z.number().int().min(1).max(600).default(20),
   positiveMarks: z.number().int().default(10),

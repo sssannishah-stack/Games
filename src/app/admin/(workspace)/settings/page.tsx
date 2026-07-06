@@ -5,7 +5,7 @@ import { Card } from "@/components/ui/Card";
 import { Icon } from "@/components/ui/Icon";
 import { SectionLabel } from "@/components/ui/SectionLabel";
 import { SystemStates } from "@/components/states/SystemStates";
-import { useSettingsStore, ACCENT_OPTIONS, THEME_MODES } from "@/stores/settingsStore";
+import { useSettingsStore, ACCENT_OPTIONS, THEME_MODES, MOTION_LEVELS } from "@/stores/settingsStore";
 import { cn } from "@/lib/utils";
 
 const MODE_META = {
@@ -13,8 +13,14 @@ const MODE_META = {
   bright: { label: "Bright", icon: "sun", blurb: "Light, vivid and eye-catching" },
 } as const;
 
+const MOTION_META = {
+  minimal: { label: "Minimal", blurb: "Barely any motion" },
+  normal: { label: "Normal", blurb: "Smooth, premium feel" },
+  high: { label: "High", blurb: "Full game-show energy" },
+} as const;
+
 export default function AdminSettingsPage() {
-  const { accent, radius, mode, setAccent, setRadius, setMode } = useSettingsStore();
+  const { accent, radius, mode, motionLevel, setAccent, setRadius, setMode, setMotionLevel } = useSettingsStore();
 
   return (
     <>
@@ -90,6 +96,35 @@ export default function AdminSettingsPage() {
               onChange={(event) => setRadius(Number(event.target.value))}
               className="w-full accent-[var(--color-accent)] cursor-pointer"
             />
+          </div>
+
+          <div className="flex flex-col gap-2.5">
+            <span className="text-xs font-semibold text-ink-3">Animations</span>
+            <div className="grid grid-cols-3 gap-2">
+              {MOTION_LEVELS.map((level) => {
+                const active = motionLevel === level;
+                return (
+                  <button
+                    key={level}
+                    onClick={() => setMotionLevel(level)}
+                    className={cn(
+                      "flex flex-col items-start gap-0.5 rounded-[11px] border px-3 py-2.5 text-left cursor-pointer transition",
+                      active
+                        ? "border-accent/60 bg-accent/[.12]"
+                        : "border-line/[.09] bg-line/[.03] hover:bg-line/[.06]"
+                    )}
+                  >
+                    <span className={cn("text-[12.5px] font-semibold", active ? "text-ink" : "text-ink-3")}>
+                      {MOTION_META[level].label}
+                    </span>
+                    <span className="text-[10.5px] text-mute-2 leading-snug">{MOTION_META[level].blurb}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <span className="text-[11px] text-mute-2">
+              &quot;Minimal&quot; also respects your device&apos;s reduce-motion setting.
+            </span>
           </div>
         </Card>
 

@@ -16,6 +16,8 @@ import {
 import { sendBroadcast } from "@/actions/broadcast.actions";
 import {
   closeStore,
+  endFlashSale,
+  freeRewardDrop,
   giveFreeCard,
   hostActivatePowerCard,
   hostConsumePowerCard,
@@ -23,10 +25,22 @@ import {
   hostRemoveTeamPowerCard,
   openStore,
   resolvePowerCardRequest,
+  startFlashSale,
   toggleRoomPowerCardOverride,
 } from "@/actions/powerCard.actions";
 import { giveCoins } from "@/actions/coin.actions";
 import { giveMarks, hostUndoScoreTransaction } from "@/actions/score.actions";
+import { awardAchievement, dismissAchievement, giveManualAchievement } from "@/actions/achievement.actions";
+import { luckySpin, type SpinResult } from "@/actions/surprise.actions";
+import {
+  startAuction,
+  advanceAuctionStage,
+  settleAuction,
+  cancelAuction,
+} from "@/actions/auction.actions";
+import { ACHIEVEMENTS, MANUAL_ACHIEVEMENTS } from "@/lib/achievements";
+import { SPIN_SEGMENTS } from "@/lib/luckySpin";
+import { ROUND_MODES } from "@/lib/roundModes";
 import { Icon } from "@/components/ui/Icon";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
@@ -44,7 +58,15 @@ import type {
 } from "@/data/queries/powerCard.queries";
 import type { ParticipantRecord } from "@/data/queries/participant.queries";
 import type { ScoreTransactionRecord } from "@/data/queries/score.queries";
-import type { ScoreReason } from "@/types/db";
+import type { AchievementRecord } from "@/data/queries/achievement.queries";
+import type { ActiveAuction } from "@/data/queries/auction.queries";
+import type { ScoreReason, PowerCardEffectType, AchievementType, AuctionType, SpecialRoundMode } from "@/types/db";
+
+interface ActiveEffect {
+  name: string;
+  icon: string;
+  effectType: PowerCardEffectType;
+}
 
 const SCORE_VALUES = [50, 20, 10, 5, 0, -5, -10];
 const SCORE_REASONS: ScoreReason[] = ["CORRECT", "WRONG", "BONUS", "PENALTY", "MANUAL"];
@@ -69,6 +91,30 @@ function formatClock(seconds: number) {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
+const LOG_VISUAL: Record<string, { icon: string; color: string }> = {
+  SCORE_CHANGED: { icon: "trending-up", color: "text-success" },
+  POWER_CARD_USED: { icon: "zap", color: "text-accent" },
+  POWER_CARD_REQUESTED: { icon: "hand", color: "text-info" },
+  CARD_PURCHASED: { icon: "shopping-cart", color: "text-warn" },
+  COIN_AWARDED: { icon: "coins", color: "text-warn" },
+  STORE_OPENED: { icon: "store", color: "text-warn" },
+  STORE_CLOSED: { icon: "store", color: "text-mute-2" },
+  ACHIEVEMENT_EARNED: { icon: "award", color: "text-warn" },
+  FLASH_SALE_STARTED: { icon: "zap", color: "text-warn" },
+  REWARD_DROP: { icon: "gift", color: "text-warn" },
+  LUCKY_SPIN: { icon: "disc-3", color: "text-accent" },
+  AUCTION_STARTED: { icon: "gavel", color: "text-warn" },
+  AUCTION_SOLD: { icon: "gavel", color: "text-success" },
+  AUCTION_CANCELLED: { icon: "gavel", color: "text-mute-2" },
+  BROADCAST_SENT: { icon: "megaphone", color: "text-accent" },
+  ANSWER_REVEALED: { icon: "lightbulb", color: "text-warn" },
+  SCENE_CHANGED: { icon: "clapperboard", color: "text-mute-2" },
+  TIMER_STARTED: { icon: "play", color: "text-mute-2" },
+  TIMER_STOPPED: { icon: "pause", color: "text-mute-2" },
+  EVENT_STARTED: { icon: "flag", color: "text-success" },
+  COMPETITION_STARTED: { icon: "flag", color: "text-success" },
+};
+
 interface HostConsoleProps {
   room: RoomDetail;
   scenes: SceneRecord[];
@@ -81,6 +127,8 @@ interface HostConsoleProps {
   cards: PowerCardRecord[];
   ownedCards: TeamPowerCardRecord[];
   participants: ParticipantRecord[];
+  achievements: AchievementRecord[];
+  auction: ActiveAuction | null;
 }
 
 export function HostConsole({
@@ -95,6 +143,8 @@ export function HostConsole({
   cards,
   ownedCards,
   participants,
+  achievements,
+  auction,
 }: HostConsoleProps) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -108,6 +158,15 @@ export function HostConsole({
   const [scoringOpen, setScoringOpen] = useState(false);
   const [scoringTeamId, setScoringTeamId] = useState(teams[0]?.id ?? "");
   const [scoringSeed, setScoringSeed] = useState(10);
+  const [manualAchTeamId, setManualAchTeamId] = useState(teams[0]?.id ?? "");
+  const [manualAchType, setManualAchType] = useState<AchievementType>(MANUAL_ACHIEVEMENTS[0]);
+  const [spinOpen, setSpinOpen] = useState(false);
+  const [surpriseTeamId, setSurpriseTeamId] = useState(teams[0]?.id ?? "");
+  const [bonusAmount, setBonusAmount] = useState(200);
+  const [auctionType, setAuctionType] = useState<AuctionType>("NORMAL");
+  const [auctionCardId, setAuctionCardId] = useState(cards[0]?.id ?? "");
+  const [auctionStartBid, setAuctionStartBid] = useState(500);
+  const [scoreFloat, setScoreFloat] = useState<{ id: number; points: number; team: string } | null>(null);
 
   const current = scenes.find((scene) => scene.id === room.currentSceneId) ?? scenes[0] ?? null;
   const question = current?.questionId ? questions.find((item) => item.id === current.questionId) : null;
@@ -128,6 +187,12 @@ export function HostConsole({
     const interval = window.setInterval(() => setNow(Date.now()), 250);
     return () => window.clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    if (!scoreFloat) return;
+    const t = window.setTimeout(() => setScoreFloat(null), 1300);
+    return () => window.clearTimeout(t);
+  }, [scoreFloat]);
 
   const secondsLeft = useMemo(() => {
     if (!room.liveState.timerEndsAt || room.liveState.timerPaused) return null;
@@ -214,10 +279,26 @@ export function HostConsole({
         return "Power Store opened";
       case "STORE_CLOSED":
         return "Power Store closed";
+      case "FLASH_SALE_STARTED":
+        return String(metadata.text ?? "Flash Sale started");
+      case "REWARD_DROP":
+        return metadata.teamId
+          ? `${teamName(metadata.teamId)}: ${String(metadata.text ?? "reward")}`
+          : String(metadata.text ?? "Free reward drop");
+      case "LUCKY_SPIN":
+        return `${teamName(metadata.teamId)}: Lucky Spin — ${String(metadata.label ?? "")}`;
+      case "AUCTION_STARTED":
+        return `Auction started: ${String(metadata.item ?? "a card")}`;
+      case "AUCTION_SOLD":
+        return `${teamName(metadata.teamId)} won ${String(metadata.item ?? "the auction")} for ${Number(metadata.amount ?? 0)}`;
+      case "AUCTION_CANCELLED":
+        return "Auction cancelled";
       case "BROADCAST_SENT":
         return `Broadcast: "${String(metadata.message ?? "")}"`;
       case "ANSWER_REVEALED":
         return "Answer revealed";
+      case "ACHIEVEMENT_EARNED":
+        return `${teamName(metadata.teamId)} earned ${String(metadata.label ?? "an achievement")}`;
       case "EVENT_STARTED":
       case "COMPETITION_STARTED":
         return "Event started";
@@ -647,6 +728,276 @@ export function HostConsole({
               })}
             </section>
 
+            {/* SURPRISE PANEL */}
+            <section className="rounded-2xl border border-accent/25 bg-accent/[.05] p-4 flex flex-col gap-2.5">
+              <span className="flex items-center gap-1.5 text-sm font-bold text-ink-2">
+                <Icon name="wand-sparkles" size={15} className="text-accent" />
+                Surprise Panel
+              </span>
+              <div className="grid grid-cols-2 gap-2">
+                <Button variant="primary" size="sm" onClick={() => setSpinOpen(true)} disabled={pending || !teams.length}>
+                  <Icon name="disc-3" size={14} />
+                  Lucky Spin
+                </Button>
+                <Button variant="subtle" size="sm" onClick={() => action(() => freeRewardDrop(room.id))} disabled={pending || !teams.length}>
+                  <Icon name="gift" size={14} />
+                  Random Gift
+                </Button>
+              </div>
+              <div className="flex flex-col gap-1.5 pt-1.5 border-t border-line/[.06]">
+                <span className="text-[11px] font-semibold tracking-[.08em] text-label">GIVE BONUS COINS</span>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <select
+                    value={surpriseTeamId}
+                    onChange={(e) => setSurpriseTeamId(e.target.value)}
+                    className="bg-line/[.04] border border-line/[.1] rounded-lg px-2 py-1.5 text-[12px] text-ink outline-none"
+                  >
+                    {teams.map((team) => (
+                      <option key={team.id} value={team.id} className="bg-surface">
+                        {team.name}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    type="number"
+                    value={bonusAmount}
+                    onChange={(e) => setBonusAmount(Number(e.target.value))}
+                    className="bg-line/[.04] border border-line/[.1] rounded-lg px-2 py-1.5 text-[12px] text-ink outline-none"
+                  />
+                </div>
+                <Button
+                  variant="subtle"
+                  size="sm"
+                  onClick={() =>
+                    surpriseTeamId &&
+                    bonusAmount !== 0 &&
+                    action(() => giveCoins(room.id, surpriseTeamId, bonusAmount, "Bonus"))
+                  }
+                  disabled={pending || !surpriseTeamId}
+                >
+                  <Icon name="coins" size={14} />
+                  Give +{bonusAmount} coins
+                </Button>
+              </div>
+            </section>
+
+            {/* AUCTION */}
+            <section className="rounded-2xl border border-warn/25 bg-warn/[.05] p-4 flex flex-col gap-2.5">
+              <span className="flex items-center gap-1.5 text-sm font-bold text-ink-2">
+                <Icon name="gavel" size={15} className="text-warn" />
+                Auction
+              </span>
+              {auction ? (
+                <>
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg">{auction.itemIcon}</span>
+                    <div className="flex flex-col min-w-0">
+                      <span className="text-[13px] font-bold text-ink truncate">{auction.itemName}</span>
+                      <span className="text-[11px] text-mute-2">
+                        {auction.type} · {auction.type === "NORMAL"
+                          ? auction.currentBid > 0
+                            ? `high ${auction.currentBid}`
+                            : `from ${auction.startingBid}`
+                          : `${auction.bids.length} bids`}
+                        {auction.stage !== "LIVE" && ` · ${auction.stage.replace("_", " ").toLowerCase()}`}
+                      </span>
+                    </div>
+                  </div>
+
+                  {auction.bids.length > 0 && (
+                    <div className="flex flex-col gap-1 max-h-24 overflow-y-auto">
+                      {[...auction.bids]
+                        .sort((a, b) => b.amount - a.amount)
+                        .map((b) => (
+                          <div key={b.teamId} className="flex items-center gap-2 text-[12px]">
+                            <span className="w-1.5 h-1.5 rounded-full" style={{ background: teamById.get(b.teamId)?.color ?? "#6C7BFA" }} />
+                            <span className="text-ink-3 truncate">{teamById.get(b.teamId)?.name ?? "Team"}</span>
+                            <span className="ml-auto font-mono font-semibold text-ink">{b.amount}</span>
+                          </div>
+                        ))}
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-3 gap-1.5">
+                    <Button variant="subtle" size="sm" onClick={() => action(() => advanceAuctionStage(auction.id))} disabled={pending}>
+                      {auction.stage === "LIVE" ? "Going once" : auction.stage === "GOING_ONCE" ? "Going twice" : "Final call"}
+                    </Button>
+                    <Button variant="success" size="sm" onClick={() => action(() => settleAuction(auction.id))} disabled={pending}>
+                      Sell
+                    </Button>
+                    <Button variant="danger" size="sm" onClick={() => action(() => cancelAuction(auction.id))} disabled={pending}>
+                      Cancel
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {(["NORMAL", "SECRET", "LUCKY"] as AuctionType[]).map((t) => (
+                      <button
+                        key={t}
+                        onClick={() => setAuctionType(t)}
+                        className={`rounded-lg border px-2 py-1.5 text-[11px] font-semibold cursor-pointer ${
+                          auctionType === t ? "border-warn/50 bg-warn/[.14] text-ink" : "border-line/[.09] bg-line/[.03] text-mute-2"
+                        }`}
+                      >
+                        {t}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <select
+                      value={auctionCardId}
+                      onChange={(e) => setAuctionCardId(e.target.value)}
+                      className="bg-line/[.04] border border-line/[.1] rounded-lg px-2 py-1.5 text-[12px] text-ink outline-none"
+                    >
+                      {cards.map((card) => (
+                        <option key={card.id} value={card.id} className="bg-surface">
+                          {card.name}
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      type="number"
+                      value={auctionStartBid}
+                      onChange={(e) => setAuctionStartBid(Number(e.target.value))}
+                      placeholder="Start bid"
+                      className="bg-line/[.04] border border-line/[.1] rounded-lg px-2 py-1.5 text-[12px] text-ink outline-none"
+                    />
+                  </div>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={() =>
+                      auctionCardId &&
+                      action(() =>
+                        startAuction({
+                          roomId: room.id,
+                          powerCardId: auctionCardId,
+                          type: auctionType,
+                          startingBid: auctionStartBid,
+                        }).then(() => undefined)
+                      )
+                    }
+                    disabled={pending || !auctionCardId || !teams.length}
+                  >
+                    <Icon name="gavel" size={13} />
+                    Start {auctionType} Auction
+                  </Button>
+                </>
+              )}
+            </section>
+
+            {/* ACHIEVEMENTS */}
+            <section className="rounded-2xl border border-line/[.08] bg-line/[.03] p-4 flex flex-col gap-2.5">
+              <span className="text-sm font-bold text-ink-2">Achievements</span>
+              {(() => {
+                const suggested = achievements.filter((a) => a.status === "SUGGESTED");
+                const awarded = achievements.filter((a) => a.status === "AWARDED").slice(0, 3);
+                return (
+                  <>
+                    {suggested.length === 0 && (
+                      <span className="text-[12px] text-mute-2">
+                        No suggestions right now — they appear as teams answer.
+                      </span>
+                    )}
+                    {suggested.map((ach) => {
+                      const def = ACHIEVEMENTS[ach.type];
+                      return (
+                        <div
+                          key={ach.id}
+                          className="rounded-xl border border-warn/25 bg-warn/[.06] p-3 flex flex-col gap-2"
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className="text-lg">{def.emoji}</span>
+                            <span className="flex flex-col min-w-0">
+                              <span className="text-[13px] font-semibold text-ink truncate">
+                                {teamById.get(ach.teamId)?.name ?? "Team"} — {def.label}
+                              </span>
+                              <span className="text-[11px] text-mute-2 truncate">
+                                {def.description} · +{ach.coinReward} coins
+                              </span>
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-1.5">
+                            <Button
+                              variant="success"
+                              size="sm"
+                              onClick={() => action(() => awardAchievement(ach.id))}
+                              disabled={pending}
+                            >
+                              Award +{ach.coinReward}
+                            </Button>
+                            <Button
+                              variant="subtle"
+                              size="sm"
+                              onClick={() => action(() => dismissAchievement(ach.id))}
+                              disabled={pending}
+                            >
+                              Dismiss
+                            </Button>
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    {awarded.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 pt-0.5">
+                        {awarded.map((ach) => (
+                          <span
+                            key={ach.id}
+                            className="flex items-center gap-1 rounded-full border border-success/25 bg-success/[.08] px-2 py-1 text-[11px] text-success"
+                          >
+                            {ACHIEVEMENTS[ach.type].emoji} {teamById.get(ach.teamId)?.name ?? "Team"}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Manual award — for the calls the system can't see. */}
+                    <div className="flex flex-col gap-1.5 pt-1.5 border-t border-line/[.06]">
+                      <span className="text-[11px] font-semibold tracking-[.08em] text-label">GIVE MANUALLY</span>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <select
+                          value={manualAchTeamId}
+                          onChange={(e) => setManualAchTeamId(e.target.value)}
+                          className="bg-line/[.04] border border-line/[.1] rounded-lg px-2 py-1.5 text-[12px] text-ink outline-none"
+                        >
+                          {teams.map((team) => (
+                            <option key={team.id} value={team.id} className="bg-surface">
+                              {team.name}
+                            </option>
+                          ))}
+                        </select>
+                        <select
+                          value={manualAchType}
+                          onChange={(e) => setManualAchType(e.target.value as AchievementType)}
+                          className="bg-line/[.04] border border-line/[.1] rounded-lg px-2 py-1.5 text-[12px] text-ink outline-none"
+                        >
+                          {MANUAL_ACHIEVEMENTS.map((type) => (
+                            <option key={type} value={type} className="bg-surface">
+                              {ACHIEVEMENTS[type].emoji} {ACHIEVEMENTS[type].label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <Button
+                        variant="subtle"
+                        size="sm"
+                        onClick={() =>
+                          manualAchTeamId &&
+                          action(() => giveManualAchievement(room.id, manualAchTeamId, manualAchType))
+                        }
+                        disabled={pending || !manualAchTeamId}
+                      >
+                        Give {ACHIEVEMENTS[manualAchType].label} (+{ACHIEVEMENTS[manualAchType].coinReward})
+                      </Button>
+                    </div>
+                  </>
+                );
+              })()}
+            </section>
+
             {/* POWER REQUESTS */}
             <section className="rounded-2xl border border-line/[.08] bg-line/[.03] p-4 flex flex-col gap-2">
               <span className="text-sm font-bold text-ink-2">Power Requests</span>
@@ -693,7 +1044,7 @@ export function HostConsole({
             </section>
 
             {/* POWER STORE CONTROL */}
-            <section className="rounded-2xl border border-line/[.08] bg-line/[.03] p-4 flex flex-col gap-2">
+            <section className="rounded-2xl border border-line/[.08] bg-line/[.03] p-4 flex flex-col gap-2.5">
               <span className="text-sm font-bold text-ink-2">Power Store Control</span>
               <span className="text-[12px] text-mute-2">Power Store is {room.storeStatus.toLowerCase()}.</span>
               <div className="grid grid-cols-2 gap-2">
@@ -702,6 +1053,31 @@ export function HostConsole({
                 </Button>
                 <Button variant="subtle" onClick={() => action(() => closeStore(room.id))} disabled={pending}>
                   Close
+                </Button>
+              </div>
+
+              <div className="flex flex-col gap-1.5 pt-1.5 border-t border-line/[.06]">
+                <span className="text-[11px] font-semibold tracking-[.08em] text-label">STORE EVENTS</span>
+                {room.liveState.flashSaleActive ? (
+                  <Button variant="danger" size="sm" onClick={() => action(() => endFlashSale(room.id))} disabled={pending}>
+                    <Icon name="zap-off" size={13} />
+                    End Flash Sale
+                  </Button>
+                ) : (
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button variant="subtle" size="sm" onClick={() => action(() => startFlashSale(room.id, 50, 2))} disabled={pending}>
+                      <Icon name="zap" size={13} />
+                      50% · 2 min
+                    </Button>
+                    <Button variant="subtle" size="sm" onClick={() => action(() => startFlashSale(room.id, 30, 5))} disabled={pending}>
+                      <Icon name="zap" size={13} />
+                      30% · 5 min
+                    </Button>
+                  </div>
+                )}
+                <Button variant="subtle" size="sm" onClick={() => action(() => freeRewardDrop(room.id))} disabled={pending}>
+                  <Icon name="gift" size={13} />
+                  Free Reward Drop
                 </Button>
               </div>
             </section>
@@ -777,11 +1153,18 @@ export function HostConsole({
               {logs.length === 0 ? (
                 <span className="text-[12px] text-mute-2">No actions yet.</span>
               ) : (
-                logs.slice(0, 12).map((log) => (
-                  <div key={log.id} className="text-[11.5px] text-mute-2 border-b border-line/[.06] pb-1">
-                    {formatLog(log)}
-                  </div>
-                ))
+                logs.slice(0, 12).map((log) => {
+                  const visual = LOG_VISUAL[log.type] ?? { icon: "circle", color: "text-mute-2" };
+                  return (
+                    <div
+                      key={log.id}
+                      className="flex items-center gap-2 text-[11.5px] text-mute-2 border-b border-line/[.06] pb-1"
+                    >
+                      <Icon name={visual.icon} size={12} className={`${visual.color} shrink-0`} />
+                      <span className="truncate">{formatLog(log)}</span>
+                    </div>
+                  );
+                })
               )}
             </section>
           </div>
@@ -852,9 +1235,22 @@ export function HostConsole({
         teamId={scoringTeamId}
         onTeamChange={setScoringTeamId}
         participants={participants}
+        activeEffects={(ownedByTeam.get(scoringTeamId) ?? [])
+          .filter((o) => o.status === "ACTIVE")
+          .map((o) => cardById.get(o.powerCardId))
+          .filter((c): c is PowerCardRecord => Boolean(c))
+          .map((c) => ({ name: c.name, icon: c.icon, effectType: c.effectType }))}
+        roundMode={round?.specialMode ?? "NONE"}
         initialValue={scoringSeed}
         pending={pending}
-        onSubmit={(input) =>
+        onSubmit={(input) => {
+          if (input.points !== 0) {
+            setScoreFloat({
+              id: Date.now(),
+              points: input.points,
+              team: teamById.get(input.teamId)?.name ?? "Team",
+            });
+          }
           action(() =>
             giveMarks({
               roomId: room.id,
@@ -864,10 +1260,164 @@ export function HostConsole({
               participantId: input.participantId || null,
               questionId: question?.id ?? null,
             })
-          )
-        }
+          );
+        }}
       />
+
+      <LuckySpinModal
+        open={spinOpen}
+        onClose={() => setSpinOpen(false)}
+        teams={teams}
+        teamId={surpriseTeamId}
+        onTeamChange={setSurpriseTeamId}
+        onSpin={(teamId) => luckySpin(room.id, teamId)}
+        onDone={() => router.refresh()}
+      />
+
+      {/* Floating score feedback — the applied delta drifts up and fades. */}
+      {scoreFloat && (
+        <div
+          key={scoreFloat.id}
+          className="pointer-events-none fixed left-1/2 top-1/2 z-[80] -translate-x-1/2 flex flex-col items-center animate-[encFloatUp_1.3s_ease-out_forwards]"
+        >
+          <span
+            className={`font-mono font-black text-4xl ${
+              scoreFloat.points >= 0 ? "text-success" : "text-danger-soft"
+            }`}
+          >
+            {scoreFloat.points >= 0 ? `+${scoreFloat.points}` : scoreFloat.points}
+          </span>
+          <span className="text-[12px] font-semibold text-ink-2">{scoreFloat.team}</span>
+        </div>
+      )}
     </div>
+  );
+}
+
+function LuckySpinModal({
+  open,
+  onClose,
+  teams,
+  teamId,
+  onTeamChange,
+  onSpin,
+  onDone,
+}: {
+  open: boolean;
+  onClose: () => void;
+  teams: TeamRecord[];
+  teamId: string;
+  onTeamChange: (id: string) => void;
+  onSpin: (teamId: string) => Promise<SpinResult>;
+  onDone: () => void;
+}) {
+  const [rotation, setRotation] = useState(0);
+  const [spinning, setSpinning] = useState(false);
+  const [result, setResult] = useState<SpinResult | null>(null);
+  const segAngle = 360 / SPIN_SEGMENTS.length;
+
+  // Build the wheel face once — a conic gradient of the segment colors.
+  const conic = SPIN_SEGMENTS.map(
+    (s, i) => `${s.color} ${i * segAngle}deg ${(i + 1) * segAngle}deg`
+  ).join(", ");
+
+  async function spin() {
+    if (spinning || !teamId) return;
+    setResult(null);
+    setSpinning(true);
+    try {
+      const outcome = await onSpin(teamId);
+      // Land the chosen segment's center under the top pointer, after 5 turns.
+      const landing = 360 - (outcome.index * segAngle + segAngle / 2);
+      setRotation((prev) => {
+        const base = Math.ceil(prev / 360) * 360;
+        return base + 360 * 5 + landing;
+      });
+      window.setTimeout(() => {
+        setResult(outcome);
+        setSpinning(false);
+        onDone();
+      }, 3700);
+    } catch {
+      setSpinning(false);
+    }
+  }
+
+  return (
+    <Modal open={open} onClose={() => !spinning && onClose()} className="max-w-[380px]">
+      <div className="flex items-center gap-3 px-6 py-5 border-b border-line/[.07]">
+        <Icon name="disc-3" size={18} className="text-accent" />
+        <span className="text-base font-bold text-ink">Lucky Spin</span>
+        <button onClick={onClose} disabled={spinning} className="ml-auto w-[30px] h-[30px] rounded-lg flex items-center justify-center text-dim hover:bg-line/[.06] cursor-pointer disabled:opacity-40">
+          <Icon name="x" size={15} />
+        </button>
+      </div>
+
+      <div className="px-6 py-5 flex flex-col items-center gap-4">
+        <select
+          value={teamId}
+          onChange={(e) => onTeamChange(e.target.value)}
+          disabled={spinning}
+          className="w-full bg-line/[.04] border border-line/[.1] rounded-[11px] px-3 py-2 text-sm text-ink outline-none"
+        >
+          {teams.map((team) => (
+            <option key={team.id} value={team.id} className="bg-surface">
+              {team.name}
+            </option>
+          ))}
+        </select>
+
+        <div className="relative w-[240px] h-[240px]">
+          {/* pointer */}
+          <div className="absolute left-1/2 -top-1 -translate-x-1/2 z-10 w-0 h-0 border-l-[10px] border-r-[10px] border-t-[16px] border-l-transparent border-r-transparent border-t-accent" />
+          <div
+            className="w-full h-full rounded-full border-4 border-line/[.14]"
+            style={{
+              background: `conic-gradient(${conic})`,
+              transform: `rotate(${rotation}deg)`,
+              transition: spinning ? "transform 3.6s cubic-bezier(0.15,0.8,0.25,1)" : "none",
+            }}
+          >
+            {SPIN_SEGMENTS.map((s, i) => (
+              <div
+                key={i}
+                className="absolute left-1/2 top-1/2 text-lg"
+                style={{
+                  transform: `rotate(${i * segAngle + segAngle / 2}deg) translateY(-92px) translateX(-50%)`,
+                  transformOrigin: "center top",
+                }}
+              >
+                {s.emoji}
+              </div>
+            ))}
+          </div>
+          <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-card border-2 border-line/[.16] flex items-center justify-center">
+            <Icon name="sparkles" size={16} className="text-accent" />
+          </div>
+        </div>
+
+        {result ? (
+          <div className="flex flex-col items-center gap-1 text-center">
+            <span className="text-3xl">{result.emoji}</span>
+            <span className="text-lg font-bold text-ink">{result.label}</span>
+            <span className="text-[12px] text-mute-2">{teams.find((t) => t.id === teamId)?.name}</span>
+          </div>
+        ) : (
+          <span className="text-[12px] text-mute-2 h-[68px] flex items-center">
+            {spinning ? "Spinning..." : "Pick a team and spin the wheel."}
+          </span>
+        )}
+      </div>
+
+      <div className="flex items-center justify-end gap-2.5 px-6 py-4 border-t border-line/[.07] bg-line/[.015]">
+        <Button variant="plain" onClick={onClose} disabled={spinning}>
+          Close
+        </Button>
+        <Button variant="primary" onClick={spin} disabled={spinning || !teamId}>
+          {spinning ? "Spinning..." : result ? "Spin Again" : "Spin"}
+        </Button>
+      </div>
+    </Modal>
   );
 }
 
@@ -911,6 +1461,18 @@ function SetupRequiredCard({
   );
 }
 
+const EFFECT_LABEL: Record<PowerCardEffectType, string> = {
+  HINT: "Hint unlocked",
+  EXTRA_TIME: "Extra time",
+  BLOCK_NEGATIVE: "Shield — blocks one negative",
+  DOUBLE_SCORE: "Double Points — next correct counts 2×",
+  SECOND_CHANCE: "Second Chance — may answer again",
+  MYSTERY: "Mystery effect",
+  GAMBLE: "All-or-Nothing — double reward or double penalty",
+  FREEZE: "Freeze — opponent power paused",
+  STEAL: "Steal — coins from another team",
+};
+
 function ScoringModal({
   open,
   onClose,
@@ -918,6 +1480,8 @@ function ScoringModal({
   teamId,
   onTeamChange,
   participants,
+  activeEffects,
+  roundMode,
   initialValue,
   pending,
   onSubmit,
@@ -928,6 +1492,8 @@ function ScoringModal({
   teamId: string;
   onTeamChange: (id: string) => void;
   participants: ParticipantRecord[];
+  activeEffects: ActiveEffect[];
+  roundMode: SpecialRoundMode;
   initialValue: number;
   pending: boolean;
   onSubmit: (input: { teamId: string; points: number; reason: ScoreReason; participantId: string }) => void;
@@ -937,6 +1503,11 @@ function ScoringModal({
   const [participantId, setParticipantId] = useState("");
 
   const teamParticipants = participants.filter((p) => p.teamId === teamId);
+  const hasDouble = activeEffects.some((e) => e.effectType === "DOUBLE_SCORE");
+  const hasShield = activeEffects.some((e) => e.effectType === "BLOCK_NEGATIVE");
+  const hasGamble = activeEffects.some((e) => e.effectType === "GAMBLE");
+  const combo = hasDouble && hasShield;
+  const modeDef = roundMode !== "NONE" ? ROUND_MODES[roundMode] : null;
 
   function submit() {
     onSubmit({ teamId, points, reason, participantId });
@@ -987,6 +1558,58 @@ function ScoringModal({
           </label>
         )}
 
+        {modeDef && (
+          <div
+            className="flex flex-col gap-2 rounded-xl border px-3 py-2.5"
+            style={{
+              borderColor: `color-mix(in oklab, ${modeDef.color} 40%, transparent)`,
+              background: `color-mix(in oklab, ${modeDef.color} 10%, transparent)`,
+            }}
+          >
+            <span className="flex items-center gap-1.5 text-[12px] font-semibold" style={{ color: modeDef.color }}>
+              {modeDef.emoji} {modeDef.label} — {modeDef.description}
+            </span>
+            {roundMode === "RISK" && modeDef.riskTiers && (
+              <div className="grid grid-cols-3 gap-1.5">
+                {modeDef.riskTiers.map((tier) => (
+                  <button
+                    key={tier.label}
+                    onClick={() => {
+                      setPoints(tier.points);
+                      setReason("CORRECT");
+                    }}
+                    className="rounded-lg border border-line/[.12] bg-line/[.04] px-2 py-1.5 text-[11.5px] font-semibold text-ink-3 hover:text-ink cursor-pointer"
+                  >
+                    {tier.label} +{tier.points}
+                  </button>
+                ))}
+              </div>
+            )}
+            {roundMode === "SPEED" && (
+              <button
+                onClick={() => setPoints(Math.round(Math.abs(points || 10) * 1.5))}
+                className="self-start rounded-lg border border-line/[.12] bg-line/[.04] px-2.5 py-1.5 text-[11.5px] font-semibold text-ink-3 hover:text-ink cursor-pointer"
+              >
+                ×1.5 speed bonus → +{Math.round(Math.abs(points || 10) * 1.5)}
+              </button>
+            )}
+            {roundMode === "BONUS" && (
+              <button
+                onClick={() => setReason("BONUS")}
+                className="self-start rounded-lg border border-line/[.12] bg-line/[.04] px-2.5 py-1.5 text-[11.5px] font-semibold text-ink-3 hover:text-ink cursor-pointer"
+              >
+                Set reason: BONUS (rewards only)
+              </button>
+            )}
+          </div>
+        )}
+
+        {combo && (
+          <div className="rounded-xl border border-accent/40 bg-[linear-gradient(90deg,rgba(108,123,250,.16),rgba(61,214,140,.16))] px-3 py-2 text-[12px] font-semibold text-ink">
+            🔥 COMBO · Safe Double Attack — this team is doubled and protected.
+          </div>
+        )}
+
         <div className="grid grid-cols-4 gap-1.5">
           {SCORE_VALUES.map((value) => (
             <button
@@ -1007,6 +1630,41 @@ function ScoringModal({
             placeholder="Custom"
           />
         </div>
+
+        {activeEffects.length > 0 && (
+          <div className="flex flex-col gap-2 rounded-xl border border-accent/30 bg-accent/[.08] px-3 py-2.5">
+            <span className="flex items-center gap-1.5 text-[11px] font-semibold tracking-[.1em] text-accent">
+              <Icon name="zap" size={12} />
+              ACTIVE POWERS — YOU DECIDE HOW THEY APPLY
+            </span>
+            <div className="flex flex-col gap-1">
+              {activeEffects.map((effect, i) => (
+                <span key={`${effect.effectType}-${i}`} className="flex items-center gap-1.5 text-[12px] text-ink-3">
+                  <span>{effect.icon}</span>
+                  {EFFECT_LABEL[effect.effectType]}
+                </span>
+              ))}
+            </div>
+            {(hasDouble || hasGamble) && points > 0 && (
+              <button
+                onClick={() => setPoints(points * 2)}
+                className="flex items-center justify-center gap-1.5 rounded-lg border border-success/40 bg-success/[.12] px-2.5 py-1.5 text-[12px] font-semibold text-success cursor-pointer hover:bg-success/20"
+              >
+                <Icon name="trending-up" size={11} />
+                Apply 2× → +{points * 2}
+              </button>
+            )}
+            {(hasShield || hasGamble) && points < 0 && (
+              <button
+                onClick={() => setPoints(hasShield ? 0 : points * 2)}
+                className="flex items-center justify-center gap-1.5 rounded-lg border border-info/40 bg-info/[.12] px-2.5 py-1.5 text-[12px] font-semibold text-info cursor-pointer hover:bg-info/20"
+              >
+                <Icon name="shield" size={11} />
+                {hasShield ? "Shield → 0" : `Double penalty → ${points * 2}`}
+              </button>
+            )}
+          </div>
+        )}
 
         <label className="flex flex-col gap-[7px]">
           <span className="text-xs font-semibold text-ink-3">Reason</span>

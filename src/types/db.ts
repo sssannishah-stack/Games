@@ -67,6 +67,12 @@ export type QuestionDifficulty = (typeof QUESTION_DIFFICULTIES)[number];
 export const ROUND_TYPES = ["GENERAL", "QUESTION_ANSWER", "IMAGE_BASED", "DRAWING", "CUSTOM"] as const;
 export type RoundType = (typeof ROUND_TYPES)[number];
 
+// Special live modes layered on top of a round (Section 13). They change how
+// the round is framed and how the host is prompted to score — scoring stays
+// manual, so these guide the host rather than auto-computing anything.
+export const SPECIAL_ROUND_MODES = ["NONE", "SPEED", "RISK", "SURVIVAL", "BONUS"] as const;
+export type SpecialRoundMode = (typeof SPECIAL_ROUND_MODES)[number];
+
 export const ROUND_CATEGORIES = ["Knowledge", "Music", "Drawing", "Custom"] as const;
 export type RoundCategory = (typeof ROUND_CATEGORIES)[number] | string;
 
@@ -102,8 +108,40 @@ export const EVENT_LOG_TYPES = [
   "CARD_PURCHASED",
   "STORE_OPENED",
   "STORE_CLOSED",
+  "ACHIEVEMENT_EARNED",
+  "FLASH_SALE_STARTED",
+  "REWARD_DROP",
+  "LUCKY_SPIN",
+  "AUCTION_STARTED",
+  "AUCTION_SOLD",
+  "AUCTION_CANCELLED",
 ] as const;
 export type EventLogType = (typeof EVENT_LOG_TYPES)[number];
+
+export const AUCTION_TYPES = ["NORMAL", "SECRET", "LUCKY"] as const;
+export type AuctionType = (typeof AUCTION_TYPES)[number];
+
+export const AUCTION_STATUSES = ["OPEN", "SOLD", "CANCELLED"] as const;
+export type AuctionStatus = (typeof AUCTION_STATUSES)[number];
+
+// The "going once / going twice / sold" drama, host-advanced.
+export const AUCTION_STAGES = ["LIVE", "GOING_ONCE", "GOING_TWICE"] as const;
+export type AuctionStage = (typeof AUCTION_STAGES)[number];
+
+export const ACHIEVEMENT_TYPES = [
+  "FIRST_BLOOD",
+  "HOT_STREAK",
+  "ON_FIRE",
+  "COMEBACK_KING",
+  "PERFECT_ROUND",
+  "FAST_ANSWER",
+] as const;
+export type AchievementType = (typeof ACHIEVEMENT_TYPES)[number];
+
+// SUGGESTED — auto-detected, waiting on the host. AWARDED — host granted the
+// reward. DISMISSED — host declined it. (Host decides; automation only suggests.)
+export const ACHIEVEMENT_STATUSES = ["SUGGESTED", "AWARDED", "DISMISSED"] as const;
+export type AchievementStatus = (typeof ACHIEVEMENT_STATUSES)[number];
 
 export const SCENE_STATUSES = ["UPCOMING", "LIVE", "COMPLETED"] as const;
 export type SceneStatus = (typeof SCENE_STATUSES)[number];
@@ -246,6 +284,10 @@ export interface RoomLiveState {
   showAnswer: boolean;
   /** Live toggle for whether teams can buy from the store right now. */
   storeStatus: StoreStatus;
+  /** Host-triggered timed discount on every card while active. */
+  flashSaleActive: boolean;
+  flashSalePercent: number;
+  flashSaleEndsAt: Date | null;
 }
 
 export interface RoomSettings {
@@ -262,6 +304,10 @@ export interface TeamStats {
   correctAnswers: number;
   wrongAnswers: number;
   bonusPoints: number;
+  /** Current consecutive-correct streak — reset to 0 on a wrong answer. */
+  streak: number;
+  /** Highest streak this team has reached during the event. */
+  bestStreak: number;
 }
 
 /** A host-authored roster entry — a name only, no login. */
@@ -341,7 +387,54 @@ export interface ITeam {
   rank: number;
   /** Buys power cards from the store. Never mixed with score. */
   coins: number;
+  /** The team's rank before the most recent recalculation — powers comeback detection. */
+  previousRank: number;
   stats: TeamStats;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/** A per-team achievement, host-approved before its reward is granted. */
+export interface ITeamAchievement {
+  _id: Types.ObjectId;
+  roomId: Types.ObjectId;
+  teamId: Types.ObjectId;
+  type: AchievementType;
+  status: AchievementStatus;
+  /** Coin reward attached when this was suggested; granted on award. */
+  coinReward: number;
+  awardedBy?: Types.ObjectId | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/** A live auction of one power card, host-started and host-settled. */
+export interface IAuction {
+  _id: Types.ObjectId;
+  roomId: Types.ObjectId;
+  powerCardId: Types.ObjectId;
+  type: AuctionType;
+  status: AuctionStatus;
+  stage: AuctionStage;
+  startingBid: number;
+  minIncrement: number;
+  /** Highest public bid so far (NORMAL). 0 until the first bid. */
+  currentBid: number;
+  currentBidTeamId?: Types.ObjectId | null;
+  winnerTeamId?: Types.ObjectId | null;
+  winningBid: number;
+  createdBy?: Types.ObjectId | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/** A single team's bid in an auction (one row per team for SECRET/LUCKY). */
+export interface IAuctionBid {
+  _id: Types.ObjectId;
+  auctionId: Types.ObjectId;
+  roomId: Types.ObjectId;
+  teamId: Types.ObjectId;
+  amount: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -363,6 +456,8 @@ export interface IRound {
   rules?: string;
   category: RoundCategory;
   roundType: RoundType;
+  /** Optional live special mode (Speed/Risk/Survival/Bonus). */
+  specialMode: SpecialRoundMode;
   /** Ordered library Questions attached to this round. */
   questions: Types.ObjectId[];
   scoringMode: RuleOverrideMode;

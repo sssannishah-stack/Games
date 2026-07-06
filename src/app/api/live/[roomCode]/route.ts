@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { connectToDatabase } from "@/lib/database/mongodb";
 import {
+  Auction,
+  AuctionBid,
   Competition,
   EventLog,
   PowerCard,
@@ -14,6 +16,7 @@ import {
   TeamPowerCard,
 } from "@/models";
 import { serialize } from "@/lib/serialize";
+import { effectivePrice, flashSaleLive } from "@/lib/storePricing";
 import type {
   ICompetition,
   IEventLog,
@@ -54,7 +57,7 @@ export async function GET(
     return NextResponse.json({ error: "Room not found." }, { status: 404 });
   }
 
-  const [competition, teams, scenes, latestBroadcast, recentScores] = await Promise.all([
+  const [competition, teams, scenes, latestBroadcast, recentScores, recentEvents] = await Promise.all([
     Competition.findById(room.competitionId).lean<ICompetition>(),
     Team.find({ roomId: room._id }).sort({ score: -1, createdAt: 1 }).lean<ITeam[]>(),
     Scene.find({ roomId: room._id }).sort({ order: 1 }).lean<IScene[]>(),
@@ -62,6 +65,7 @@ export async function GET(
       .sort({ createdAt: -1 })
       .lean<IEventLog>(),
     ScoreTransaction.find({ roomId: room._id }).sort({ createdAt: -1 }).limit(12).lean<IScoreTransaction[]>(),
+    EventLog.find({ roomId: room._id }).sort({ createdAt: -1 }).limit(20).lean<IEventLog[]>(),
   ]);
 
   const currentScene =
@@ -101,6 +105,143 @@ export async function GET(
   const requestByCard = new Map(requests.map((item) => [id(item.powerCardId), item]));
   const inventoryByCard = new Map(inventory.map((item) => [id(item.powerCardId), item]));
   const sortedTeams = [...teams].sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+
+  // Build a participant-facing activity feed from the audit log. Names are
+  // resolved server-side — the phone has no team/catalog maps of its own.
+  // `notable` entries also drive the transient "moment" overlays on-device.
+  const teamMetaById = new Map(teams.map((t) => [id(t._id), { name: t.name, color: t.color }]));
+  const cardNameById = new Map(catalog.map((c) => [id(c._id), c.name]));
+
+  function feedEntry(log: IEventLog) {
+    const meta = log.metadata ?? {};
+    const teamMeta = teamMetaById.get(id(meta.teamId));
+    const teamName = teamMeta?.name ?? "A team";
+    const teamColor = teamMeta?.color ?? null;
+    const cardName = cardNameById.get(id(meta.powerCardId)) ?? "a power card";
+    switch (log.type) {
+      case "SCORE_CHANGED": {
+        if (meta.isUndo || meta.testMode) return null;
+        const points = Number(meta.points ?? 0);
+        const up = points >= 0;
+        return {
+          text: `${teamName} ${up ? "+" : ""}${points}`,
+          icon: up ? "📈" : "📉",
+          tone: up ? "up" : "down",
+          teamColor,
+          notable: Math.abs(points) >= 20,
+        };
+      }
+      case "POWER_CARD_USED":
+        if (meta.source === "HOST_REMOVED") return null;
+        return { text: `${teamName} activated ${cardName}`, icon: "⚡", tone: "power", teamColor, notable: true };
+      case "POWER_CARD_REQUESTED":
+        return { text: `${teamName} requested ${cardName}`, icon: "✋", tone: "info", teamColor, notable: false };
+      case "CARD_PURCHASED":
+        return { text: `${teamName} bought ${cardName}`, icon: "🛒", tone: "store", teamColor, notable: false };
+      case "COIN_AWARDED":
+        return { text: `${teamName} earned coins`, icon: "🪙", tone: "store", teamColor, notable: false };
+      case "STORE_OPENED":
+        return { text: "Power Store is open", icon: "🏪", tone: "store", teamColor: null, notable: true };
+      case "STORE_CLOSED":
+        return { text: "Power Store closed", icon: "🏪", tone: "info", teamColor: null, notable: false };
+      case "ANSWER_REVEALED":
+        return { text: "Answer revealed", icon: "💡", tone: "info", teamColor: null, notable: false };
+      case "ACHIEVEMENT_EARNED":
+        return {
+          text: `${teamName} earned ${String(meta.label ?? "an achievement")}`,
+          icon: String(meta.emoji ?? "🏆"),
+          tone: "achievement",
+          teamColor,
+          notable: true,
+        };
+      case "FLASH_SALE_STARTED":
+        return {
+          text: String(meta.text ?? "Flash Sale started"),
+          icon: "⚡",
+          tone: "store",
+          teamColor: null,
+          notable: true,
+        };
+      case "REWARD_DROP":
+        return {
+          text: meta.teamId ? `${teamName}: ${String(meta.text ?? "reward")}` : String(meta.text ?? "Reward drop!"),
+          icon: "🎁",
+          tone: "achievement",
+          teamColor: meta.teamId ? teamColor : null,
+          notable: true,
+        };
+      case "LUCKY_SPIN": {
+        const bad = meta.kind === "PENALTY" || meta.kind === "NOTHING";
+        return {
+          text: `${teamName}: Lucky Spin — ${String(meta.label ?? "")}`,
+          icon: String(meta.emoji ?? "🍀"),
+          tone: bad ? "down" : "achievement",
+          teamColor,
+          notable: true,
+        };
+      }
+      case "AUCTION_STARTED":
+        return {
+          text: `Auction started: ${String(meta.item ?? "a power card")}`,
+          icon: "🔨",
+          tone: "store",
+          teamColor: null,
+          notable: true,
+        };
+      case "AUCTION_SOLD":
+        return {
+          text: `${teamName} won ${String(meta.item ?? "the auction")} for ${Number(meta.amount ?? 0)} coins`,
+          icon: "🔨",
+          tone: "achievement",
+          teamColor,
+          notable: true,
+        };
+      case "AUCTION_CANCELLED":
+        return { text: "Auction cancelled", icon: "🔨", tone: "info", teamColor: null, notable: false };
+      default:
+        return null;
+    }
+  }
+
+  const feed = recentEvents
+    .map((log) => {
+      const entry = feedEntry(log);
+      return entry ? { id: id(log._id), type: log.type, createdAt: log.createdAt, ...entry } : null;
+    })
+    .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+    .slice(0, 12);
+
+  // Live auction (if one is running). SECRET/LUCKY hide rival bids — the phone
+  // only ever learns its own team's bid and how many teams are in.
+  const openAuction = await Auction.findOne({ roomId: room._id, status: "OPEN" }).lean();
+  let auctionView: Record<string, unknown> | null = null;
+  if (openAuction) {
+    const [auctionCard, allBids] = await Promise.all([
+      PowerCard.findById(openAuction.powerCardId).select("name icon").lean<{ name: string; icon: string }>(),
+      AuctionBid.find({ auctionId: openAuction._id }).select("teamId amount").lean(),
+    ]);
+    const myBid = selectedTeam
+      ? allBids.find((b) => id(b.teamId) === id(selectedTeam._id))?.amount ?? null
+      : null;
+    const leader = openAuction.currentBidTeamId
+      ? teams.find((t) => id(t._id) === id(openAuction.currentBidTeamId))
+      : null;
+    const isPublic = openAuction.type === "NORMAL";
+    auctionView = {
+      id: id(openAuction._id),
+      type: openAuction.type,
+      stage: openAuction.stage,
+      itemName: auctionCard?.name ?? "Power card",
+      itemIcon: auctionCard?.icon ?? "🎴",
+      startingBid: openAuction.startingBid,
+      minIncrement: openAuction.minIncrement,
+      currentBid: isPublic ? openAuction.currentBid : 0,
+      leaderName: isPublic ? leader?.name ?? null : null,
+      leaderIsMe: isPublic && selectedTeam ? id(openAuction.currentBidTeamId) === id(selectedTeam._id) : false,
+      bidderCount: allBids.length,
+      myBid,
+    };
+  }
 
   return NextResponse.json(
     serialize({
@@ -146,6 +287,7 @@ export async function GET(
             title: round.title,
             rules: round.rules,
             description: round.description,
+            specialMode: round.specialMode ?? "NONE",
             defaultTimer: round.defaultTimer,
             positiveMarks: round.positiveMarks,
             negativeMarks: round.negativeMarks,
@@ -176,6 +318,8 @@ export async function GET(
             coins: selectedTeam.coins,
             members: selectedTeam.members ?? [],
             rank: sortedTeams.findIndex((team) => id(team._id) === id(selectedTeam._id)) + 1,
+            streak: selectedTeam.stats?.streak ?? 0,
+            bestStreak: selectedTeam.stats?.bestStreak ?? 0,
           }
         : null,
       leaderboard: sortedTeams.map((team, index) => ({
@@ -189,15 +333,26 @@ export async function GET(
       powers: {
         storeOpen: room.liveState.storeStatus === "OPEN",
         economyEnabled: competition?.settings?.economy?.enabled ?? false,
+        flashSale: flashSaleLive(room.liveState)
+          ? { active: true, percent: room.liveState.flashSalePercent, endsAt: room.liveState.flashSaleEndsAt }
+          : { active: false, percent: 0, endsAt: null },
         cards: visibleCards.map((card) => {
           const owned = inventoryByCard.get(id(card._id));
           const request = requestByCard.get(id(card._id));
+          const price = effectivePrice(card.price, room.liveState);
           return {
             id: id(card._id),
             name: card.name,
             description: card.description,
             icon: card.icon,
-            price: card.price,
+            effectType: card.effectType,
+            category: card.category,
+            rarity: card.rarity,
+            price,
+            basePrice: card.price,
+            onSale: price < card.price,
+            isMystery: card.effectType === "MYSTERY",
+            limited: card.stock !== null,
             stock: card.stock,
             requiresApproval: card.requiresApproval,
             remainingUses: owned?.remainingUses ?? 0,
@@ -207,6 +362,8 @@ export async function GET(
           };
         }),
       },
+      feed,
+      auction: auctionView,
       broadcast: latestBroadcast
         ? {
             id: id(latestBroadcast._id),

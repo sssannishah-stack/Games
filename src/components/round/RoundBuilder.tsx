@@ -14,7 +14,15 @@ import { duplicateRound, updateRound, removeQuestionFromRound, reorderRoundQuest
 import type { RoundRecord } from "@/data/queries/round.queries";
 import type { QuestionRecord } from "@/data/queries/question.queries";
 import type { PowerCardRecord } from "@/data/queries/powerCard.queries";
-import { ROUND_CATEGORIES, type QuestionAssignmentMode, type RoundType, type RuleOverrideMode } from "@/types/db";
+import {
+  ROUND_CATEGORIES,
+  SPECIAL_ROUND_MODES,
+  type QuestionAssignmentMode,
+  type RoundType,
+  type RuleOverrideMode,
+  type SpecialRoundMode,
+} from "@/types/db";
+import { ROUND_MODES } from "@/lib/roundModes";
 
 const SECTIONS = ["Settings", "Power Cards", "Questions"] as const;
 type Section = (typeof SECTIONS)[number];
@@ -89,6 +97,7 @@ function RoundSettingsForm({ round, roomUsageCount }: { round: RoundRecord; room
   const [rules, setRules] = useState(round.rules ?? "");
   const [category, setCategory] = useState(round.category ?? "Custom");
   const [roundType, setRoundType] = useState<RoundType>(round.roundType);
+  const [specialMode, setSpecialMode] = useState<SpecialRoundMode>(round.specialMode);
   const [defaultTimer, setDefaultTimer] = useState(round.defaultTimer);
   const [scoringMode, setScoringMode] = useState<RuleOverrideMode>(round.scoringMode);
   const [positiveMarks, setPositiveMarks] = useState(round.positiveMarks);
@@ -108,6 +117,7 @@ function RoundSettingsForm({ round, roomUsageCount }: { round: RoundRecord; room
       rules: rules.trim() || undefined,
       category,
       roundType,
+      specialMode,
       scoringMode,
       defaultTimer,
       positiveMarks,
@@ -180,6 +190,32 @@ function RoundSettingsForm({ round, roomUsageCount }: { round: RoundRecord; room
           ))}
         </select>
       </label>
+
+      <div className="flex flex-col gap-[7px]">
+        <span className="text-xs font-semibold text-ink-3">Special mode</span>
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+          {SPECIAL_ROUND_MODES.map((mode) => {
+            const def = ROUND_MODES[mode];
+            const active = specialMode === mode;
+            return (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => setSpecialMode(mode)}
+                className={`flex items-center gap-1.5 rounded-[10px] border px-2.5 py-2 text-[12px] font-medium cursor-pointer transition-colors ${
+                  active ? "border-accent/60 bg-accent/[.14] text-ink" : "border-line/[.09] bg-line/[.03] text-mute-2 hover:text-ink-2"
+                }`}
+              >
+                {def.emoji && <span>{def.emoji}</span>}
+                {def.label}
+              </button>
+            );
+          })}
+        </div>
+        {specialMode !== "NONE" && (
+          <span className="text-[11.5px] text-mute-2">{ROUND_MODES[specialMode].description}</span>
+        )}
+      </div>
 
       <NumberField label="Timer (seconds)" value={defaultTimer} onChange={setDefaultTimer} />
 

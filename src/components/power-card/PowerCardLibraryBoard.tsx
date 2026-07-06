@@ -9,6 +9,8 @@ import { Modal } from "@/components/ui/Modal";
 import { ModalHeader, ErrorText } from "@/components/ui/FormFields";
 import { CategoryIcon, RarityBadge } from "@/components/power-card/PowerCardBadge";
 import { CreatePowerCardModal } from "@/components/power-card/CreatePowerCardModal";
+import { Reveal } from "@/components/motion/Reveal";
+import { TiltCard } from "@/components/motion/TiltCard";
 import { deletePowerCard, updatePowerCard } from "@/actions/powerCard.actions";
 import {
   POWER_CARD_CATEGORIES,
@@ -22,6 +24,13 @@ import type { PowerCardRecord } from "@/data/queries/powerCard.queries";
 
 const inputClass =
   "bg-line/[.04] border border-line/[.1] rounded-[10px] px-3 py-2 text-[13px] text-ink outline-none focus:border-accent/60";
+
+const RARITY_GLOW: Record<PowerCardRarity, string> = {
+  COMMON: "#8EA0B8",
+  RARE: "#5EC9E8",
+  EPIC: "#B98AE8",
+  LEGENDARY: "#E8C84A",
+};
 
 interface PowerCardLibraryBoardProps {
   cards: PowerCardRecord[];
@@ -104,30 +113,35 @@ export function PowerCardLibraryBoard({ cards }: PowerCardLibraryBoardProps) {
         </Card>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
-          {filtered.map((card) => (
-            <Card key={card.id} className="rounded-2xl p-4 flex flex-col gap-3">
-              <div className="flex items-start gap-2">
-                <CategoryIcon category={card.category} />
-                <div className="flex flex-col min-w-0">
-                  <span className="text-[15px] font-bold text-ink-2 truncate">{card.name}</span>
-                  <span className="text-[11.5px] text-mute-2">
-                    {card.effectType.replace(/_/g, " ")} - {card.price} coins - {card.usesPerTeam} use{card.usesPerTeam === 1 ? "" : "s"}
-                  </span>
+          {filtered.map((card, i) => (
+            <Reveal key={card.id} index={i}>
+              <TiltCard
+                glow={RARITY_GLOW[card.rarity]}
+                className="rounded-2xl h-full border border-line/[.07] bg-card p-4 flex flex-col gap-3"
+              >
+                <div className="flex items-start gap-2">
+                  <CategoryIcon category={card.category} />
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-[15px] font-bold text-ink-2 truncate">{card.name}</span>
+                    <span className="text-[11.5px] text-mute-2">
+                      {card.effectType.replace(/_/g, " ")} - {card.price} coins - {card.usesPerTeam} use{card.usesPerTeam === 1 ? "" : "s"}
+                    </span>
+                  </div>
+                  <RarityBadge rarity={card.rarity} />
                 </div>
-                <RarityBadge rarity={card.rarity} />
-              </div>
-              <span className="text-[12px] text-mute-2 leading-relaxed line-clamp-2">
-                {card.description || "No description."}
-              </span>
-              <div className="flex flex-wrap gap-2 mt-auto">
-                <Button variant="subtle" size="sm" onClick={() => setEditingCard(card)}>
-                  Edit
-                </Button>
-                <Button variant="danger" size="sm" onClick={() => remove(card)} disabled={pending}>
-                  Delete
-                </Button>
-              </div>
-            </Card>
+                <span className="text-[12px] text-mute-2 leading-relaxed line-clamp-2">
+                  {card.description || "No description."}
+                </span>
+                <div className="flex flex-wrap gap-2 mt-auto">
+                  <Button variant="subtle" size="sm" onClick={() => setEditingCard(card)}>
+                    Edit
+                  </Button>
+                  <Button variant="danger" size="sm" onClick={() => remove(card)} disabled={pending}>
+                    Delete
+                  </Button>
+                </div>
+              </TiltCard>
+            </Reveal>
           ))}
         </div>
       )}

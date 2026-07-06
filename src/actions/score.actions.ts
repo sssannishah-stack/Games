@@ -5,6 +5,7 @@ import { Types } from "mongoose";
 import { connectToDatabase } from "@/lib/database/mongodb";
 import { ScoreTransaction, Team, EventLog, Room } from "@/models";
 import { createCoinTransaction } from "@/actions/coin.actions";
+import { detectAchievements } from "@/lib/detectAchievements";
 import { requireUser } from "@/lib/auth/getCurrentUser";
 import { assertRoomOwnership } from "@/lib/authz";
 import { type ScoreReason, type IScoreTransaction } from "@/types/db";
@@ -28,6 +29,35 @@ export interface CreateScoreTransactionInput {
   coinsAwarded?: number;
 }
 
+/**
+ * Recompute a team's consecutive-correct streak straight from the ledger, so
+ * it stays correct through undos (an undone answer is flagged and excluded).
+ * The streak is the number of trailing CORRECTs since the team's last WRONG.
+ */
+async function recalculateTeamStreak(roomId: string, teamId: string) {
+  const answers = await ScoreTransaction.find({
+    roomId,
+    teamId,
+    reason: { $in: ["CORRECT", "WRONG"] },
+    isUndo: { $ne: true },
+    isReverted: { $ne: true },
+  })
+    .sort({ createdAt: 1 })
+    .select("reason")
+    .lean<{ reason: ScoreReason }[]>();
+
+  let streak = 0;
+  for (const answer of answers) {
+    streak = answer.reason === "CORRECT" ? streak + 1 : 0;
+  }
+
+  const team = await Team.findById(teamId).select("stats.bestStreak").lean<{ stats?: { bestStreak?: number } }>();
+  const bestStreak = Math.max(team?.stats?.bestStreak ?? 0, streak);
+  await Team.findByIdAndUpdate(teamId, {
+    $set: { "stats.streak": streak, "stats.bestStreak": bestStreak },
+  });
+}
+
 async function recalculateRoomScores(roomId: string) {
   const roomObjectId = new Types.ObjectId(roomId);
   const totals = await ScoreTransaction.aggregate<{ _id: unknown; score: number }>([
@@ -41,7 +71,8 @@ async function recalculateRoomScores(roomId: string) {
     { $group: { _id: "$teamId", score: { $sum: "$points" } } },
   ]);
   const scoreMap = new Map(totals.map((total) => [String(total._id), total.score]));
-  const teams = await Team.find({ roomId }).select("_id name").lean();
+  const teams = await Team.find({ roomId }).select("_id name rank").lean();
+  const oldRankById = new Map(teams.map((team) => [team._id.toString(), team.rank ?? 0]));
   const ranked = teams
     .map((team) => ({
       id: team._id.toString(),
@@ -53,7 +84,9 @@ async function recalculateRoomScores(roomId: string) {
     ranked.map((team, index) => ({
       updateOne: {
         filter: { _id: team.id },
-        update: { $set: { score: team.score, rank: index + 1 } },
+        // Snapshot the prior rank before overwriting so comeback detection can
+        // see "was last, now first".
+        update: { $set: { score: team.score, rank: index + 1, previousRank: oldRankById.get(team.id) ?? 0 } },
       },
     }))
   );
@@ -91,6 +124,11 @@ export async function createScoreTransaction(
 
   if (Object.keys(statsInc).length > 0) {
     await Team.findByIdAndUpdate(input.teamId, { $inc: statsInc });
+  }
+  // Any CORRECT/WRONG change (including an undo, which carries the original
+  // reason) can shift the streak — recompute it from the ledger.
+  if (input.reason === "CORRECT" || input.reason === "WRONG") {
+    await recalculateTeamStreak(input.roomId, input.teamId);
   }
   await recalculateRoomScores(input.roomId);
 
@@ -151,6 +189,10 @@ export async function giveMarks(input: {
     ...input,
     createdBy: user.id,
   });
+
+  // Ranks + streaks are now up to date — surface any newly-earned achievements
+  // to the host as suggestions (they decide whether to grant the reward).
+  await detectAchievements(input.roomId);
 
   revalidatePath(`/host/${input.roomId}`);
   revalidatePath(`/admin/rooms/${input.roomId}`);

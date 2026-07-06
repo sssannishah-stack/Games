@@ -2,9 +2,11 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { motion } from "framer-motion";
 import { Icon } from "@/components/ui/Icon";
 import { Kbd } from "@/components/ui/Kbd";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
+import { useMotionEnabled } from "@/components/motion/useMotionEnabled";
 import { cn } from "@/lib/utils";
 import { logoutAction } from "@/actions/auth.actions";
 import type { CurrentUser } from "@/lib/auth/getCurrentUser";
@@ -49,23 +51,34 @@ function buildNav(competitionsCount: number): { section: string; items: NavItem[
 }
 
 function NavLink({ item, active }: { item: NavItem; active: boolean }) {
+  const { enabled } = useMotionEnabled();
   return (
     <Link
       href={item.href}
       className={cn(
-        "flex items-center gap-2.5 px-2.5 py-[7px] rounded-[9px] text-[13px] transition-colors",
-        active
-          ? "bg-accent/[.14] text-ink-2 font-medium"
-          : "text-mute hover:bg-line/[.05] hover:text-ink-2"
+        "group relative flex items-center rounded-[9px] px-2.5 py-[7px] text-[13px]",
+        active ? "text-ink-2 font-medium" : "text-mute hover:bg-line/[.05] hover:text-ink-2"
       )}
     >
-      <Icon name={item.icon} size={15} className={active ? "text-accent" : undefined} />
-      {item.label}
-      {item.count && (
-        <span className="ml-auto font-mono font-medium text-[10.5px] text-dim-2">
-          {item.count}
-        </span>
+      {/* Gliding active pill — a shared layoutId slides it between items. */}
+      {active && (
+        <motion.span
+          layoutId="sidebarActive"
+          className="absolute inset-0 rounded-[9px] bg-accent/[.14]"
+          transition={enabled ? { type: "spring", stiffness: 520, damping: 40 } : { duration: 0 }}
+        />
       )}
+      <span className="relative z-[1] flex w-full items-center gap-2.5 transition-transform duration-150 group-hover:translate-x-0.5">
+        <Icon
+          name={item.icon}
+          size={15}
+          className={cn("transition-transform duration-150 group-hover:scale-110", active && "text-accent")}
+        />
+        {item.label}
+        {item.count && (
+          <span className="ml-auto font-mono font-medium text-[10.5px] text-dim-2">{item.count}</span>
+        )}
+      </span>
     </Link>
   );
 }

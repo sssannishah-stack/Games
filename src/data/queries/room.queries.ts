@@ -43,6 +43,8 @@ export interface RoomDetail extends RoomSummary {
     timerEndsAt: string | null;
     timerPaused: boolean;
     showAnswer: boolean;
+    flashSaleActive: boolean;
+    flashSaleEndsAt: string | null;
   };
 }
 
@@ -170,6 +172,8 @@ export async function getRoomById(
       timerEndsAt: room.liveState?.timerEndsAt ? room.liveState.timerEndsAt.toISOString() : null,
       timerPaused: room.liveState?.timerPaused ?? false,
       showAnswer: room.liveState?.showAnswer ?? false,
+      flashSaleActive: room.liveState?.flashSaleActive ?? false,
+      flashSaleEndsAt: room.liveState?.flashSaleEndsAt ? room.liveState.flashSaleEndsAt.toISOString() : null,
     },
     economyEnabled: competition.settings?.economy?.enabled ?? false,
     teamCount: teams.length,

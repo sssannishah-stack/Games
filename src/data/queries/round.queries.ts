@@ -7,6 +7,7 @@ import type {
   QuestionAssignmentMode,
   RoundType,
   RuleOverrideMode,
+  SpecialRoundMode,
 } from "@/types/db";
 
 export async function countRoundsByOwner(ownerId: string): Promise<number> {
@@ -22,6 +23,7 @@ export interface RoundRecord {
   rules?: string;
   category: string;
   roundType: RoundType;
+  specialMode: SpecialRoundMode;
   scoringMode: RuleOverrideMode;
   defaultTimer: number;
   positiveMarks: number;
@@ -43,6 +45,7 @@ function toRoundRecord(r: {
   rules?: string;
   category?: string;
   roundType: RoundType;
+  specialMode?: SpecialRoundMode;
   scoringMode: RuleOverrideMode;
   defaultTimer: number;
   positiveMarks: number;
@@ -62,6 +65,7 @@ function toRoundRecord(r: {
     rules: r.rules,
     category: r.category ?? "Custom",
     roundType: r.roundType,
+    specialMode: r.specialMode ?? "NONE",
     scoringMode: r.scoringMode,
     defaultTimer: r.defaultTimer,
     positiveMarks: r.positiveMarks,

@@ -4,6 +4,7 @@ import {
   QUESTION_ASSIGNMENT_MODES,
   ROUND_TYPES,
   RULE_OVERRIDE_MODES,
+  SPECIAL_ROUND_MODES,
   type IRound,
 } from "@/types/db";
 
@@ -15,6 +16,7 @@ const RoundSchema = new Schema<IRound>(
     rules: { type: String },
     category: { type: String, default: "Custom", index: true },
     roundType: { type: String, enum: [...ROUND_TYPES], default: "GENERAL", required: true },
+    specialMode: { type: String, enum: [...SPECIAL_ROUND_MODES], default: "NONE", required: true },
     questions: { type: [Schema.Types.ObjectId], ref: "Question", default: [] },
     scoringMode: { type: String, enum: [...RULE_OVERRIDE_MODES], default: "INHERIT", required: true },
     defaultTimer: { type: Number, default: 20 },

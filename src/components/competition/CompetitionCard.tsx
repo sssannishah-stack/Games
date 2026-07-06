@@ -51,6 +51,12 @@ export function CompetitionCard({ competition }: { competition: CompetitionRecor
         </span>
       </div>
       <Badge size="sm" variant={STATUS_BADGE[competition.status]} className="ml-auto font-medium">
+        {competition.status === "LIVE" && (
+          <span className="w-1.5 h-1.5 rounded-full bg-live animate-enc-pulse" />
+        )}
+        {competition.status === "READY" && (
+          <span className="w-1.5 h-1.5 rounded-full bg-accent animate-enc-pulse-slow" />
+        )}
         {STATUS_LABEL[competition.status]}
       </Badge>
     </Link>

@@ -7,6 +7,7 @@ import { requireUser } from "@/lib/auth/getCurrentUser";
 import { assertRoomOwnership, assertPowerCardOwnership } from "@/lib/authz";
 import { createCoinTransaction } from "@/actions/coin.actions";
 import { DEFAULT_POWER_CARDS } from "@/lib/defaultPowerCards";
+import { effectivePrice } from "@/lib/storePricing";
 import {
   createPowerCardSchema,
   updatePowerCardSchema,
@@ -204,9 +205,11 @@ export async function purchasePowerCard(
   if (!card) throw new Error("Power card not found.");
   if (!card.enabled) throw new Error("This card is not available.");
 
+  // Charge the live price — a flash sale discounts what the team actually pays.
+  const price = effectivePrice(card.price, room.liveState);
   const team = await Team.findById(teamId).lean();
   if (!team) throw new Error("Team not found.");
-  if (team.coins < card.price) throw new Error("Not enough coins for this card.");
+  if (team.coins < price) throw new Error("Not enough coins for this card.");
 
   // Atomic stock guard: only decrements if stock is still > 0 (or unlimited).
   const stockFilter =
@@ -218,24 +221,85 @@ export async function purchasePowerCard(
   await createCoinTransaction({
     roomId,
     teamId,
-    amount: -card.price,
+    amount: -price,
     type: "CARD_PURCHASE",
     reason: `Bought ${card.name}`,
   });
 
-  await TeamPowerCard.findOneAndUpdate(
-    { teamId, powerCardId },
-    { $inc: { remainingUses: card.usesPerTeam }, $set: { status: "AVAILABLE" } },
-    { upsert: true }
-  );
-
   await EventLog.create({
     roomId,
     type: "CARD_PURCHASED",
-    metadata: { teamId, powerCardId, price: card.price },
+    metadata: { teamId, powerCardId, price },
   });
 
+  // A Mystery Box is a gamble: instead of landing in the inventory, it rolls a
+  // random reward on the spot (bonus coins or a surprise card).
+  if (card.effectType === "MYSTERY") {
+    await resolveMysteryReward(roomId, teamId, card.ownerId.toString(), price);
+  } else {
+    await TeamPowerCard.findOneAndUpdate(
+      { teamId, powerCardId },
+      { $inc: { remainingUses: card.usesPerTeam }, $set: { status: "AVAILABLE" } },
+      { upsert: true }
+    );
+  }
+
   revalidatePath(`/rooms/${roomId}`);
+}
+
+/** Roll a Mystery Box: ~55% bonus coins, ~45% a random surprise power card. */
+async function resolveMysteryReward(
+  roomId: string,
+  teamId: string,
+  ownerId: string,
+  spent: number
+): Promise<void> {
+  const coinOutcomes = [Math.round(spent * 0.5), spent, Math.round(spent * 1.5), spent * 2];
+  const rollCoins = Math.random() < 0.55;
+
+  if (rollCoins) {
+    const amount = coinOutcomes[Math.floor(Math.random() * coinOutcomes.length)] || 100;
+    await createCoinTransaction({
+      roomId,
+      teamId,
+      amount,
+      type: "HOST_ADJUSTMENT",
+      reason: "Mystery Box reward",
+    });
+    await EventLog.create({
+      roomId,
+      type: "REWARD_DROP",
+      metadata: { teamId, text: `Mystery Box → +${amount} coins`, source: "MYSTERY" },
+    });
+    return;
+  }
+
+  const pool = await PowerCard.find({
+    ownerId,
+    enabled: true,
+    effectType: { $ne: "MYSTERY" },
+  })
+    .select("_id name usesPerTeam")
+    .lean();
+
+  if (pool.length === 0) {
+    // No card to grant — fall back to a coin reward so the box always pays out.
+    await createCoinTransaction({ roomId, teamId, amount: spent, type: "HOST_ADJUSTMENT", reason: "Mystery Box reward" });
+    await EventLog.create({ roomId, type: "REWARD_DROP", metadata: { teamId, text: `Mystery Box → +${spent} coins`, source: "MYSTERY" } });
+    return;
+  }
+
+  const prize = pool[Math.floor(Math.random() * pool.length)];
+  await TeamPowerCard.findOneAndUpdate(
+    { teamId, powerCardId: prize._id },
+    { $inc: { remainingUses: prize.usesPerTeam || 1 }, $set: { status: "AVAILABLE" } },
+    { upsert: true }
+  );
+  await EventLog.create({
+    roomId,
+    type: "REWARD_DROP",
+    metadata: { teamId, text: `Mystery Box → ${prize.name}`, source: "MYSTERY" },
+  });
 }
 
 export interface RequestPowerCardInput {
@@ -491,6 +555,86 @@ export async function closeStore(roomId: string): Promise<void> {
   await EventLog.create({ roomId, type: "STORE_CLOSED", metadata: {} });
 
   revalidatePath(`/rooms/${roomId}`);
+}
+
+/**
+ * Host kicks off a timed flash sale — every card is discounted by `percent`
+ * for `minutes`. Also opens the store so teams can actually act on it.
+ */
+export async function startFlashSale(roomId: string, percent: number, minutes: number): Promise<void> {
+  const user = await requireUser();
+  await assertRoomOwnership(roomId, user.id);
+  await connectToDatabase();
+
+  const pct = Math.min(90, Math.max(5, Math.round(percent)));
+  const mins = Math.min(30, Math.max(1, Math.round(minutes)));
+  const endsAt = new Date(Date.now() + mins * 60_000);
+
+  await Room.findByIdAndUpdate(roomId, {
+    $set: {
+      "liveState.storeStatus": "OPEN",
+      "liveState.flashSaleActive": true,
+      "liveState.flashSalePercent": pct,
+      "liveState.flashSaleEndsAt": endsAt,
+    },
+  });
+  await EventLog.create({
+    roomId,
+    type: "FLASH_SALE_STARTED",
+    metadata: { percent: pct, minutes: mins, text: `Flash Sale — ${pct}% off for ${mins} min` },
+  });
+
+  revalidatePath(`/rooms/${roomId}`);
+  revalidatePath(`/host/${roomId}`);
+}
+
+/** Host ends the flash sale early. */
+export async function endFlashSale(roomId: string): Promise<void> {
+  const user = await requireUser();
+  await assertRoomOwnership(roomId, user.id);
+  await connectToDatabase();
+
+  await Room.findByIdAndUpdate(roomId, {
+    $set: { "liveState.flashSaleActive": false, "liveState.flashSalePercent": 0, "liveState.flashSaleEndsAt": null },
+  });
+
+  revalidatePath(`/rooms/${roomId}`);
+  revalidatePath(`/host/${roomId}`);
+}
+
+/**
+ * Host surprise: every team gets a random coin gift. A single REWARD_DROP event
+ * announces it (drives the phone "moment"), plus a coin ledger row per team.
+ */
+export async function freeRewardDrop(roomId: string): Promise<void> {
+  const user = await requireUser();
+  await assertRoomOwnership(roomId, user.id);
+  await connectToDatabase();
+
+  const teams = await Team.find({ roomId }).select("_id").lean();
+  if (teams.length === 0) return;
+
+  const gifts = [200, 300, 500, 750, 1000];
+  for (const team of teams) {
+    const amount = gifts[Math.floor(Math.random() * gifts.length)];
+    await createCoinTransaction({
+      roomId,
+      teamId: team._id.toString(),
+      amount,
+      type: "HOST_ADJUSTMENT",
+      reason: "Free reward drop 🎁",
+      createdBy: user.id,
+    });
+  }
+
+  await EventLog.create({
+    roomId,
+    type: "REWARD_DROP",
+    metadata: { text: "Free Reward Drop — every team got a gift!", source: "HOST_DROP" },
+  });
+
+  revalidatePath(`/rooms/${roomId}`);
+  revalidatePath(`/host/${roomId}`);
 }
 
 /**

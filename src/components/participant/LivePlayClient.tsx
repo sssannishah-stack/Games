@@ -1,13 +1,17 @@
 "use client";
 
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { purchasePowerCard, requestPowerCard } from "@/actions/powerCard.actions";
+import { placeBid } from "@/actions/auction.actions";
 import { JoinForm, type JoinedParticipant } from "@/components/room/JoinForm";
 import { JoinPageShell } from "@/components/room/JoinPageShell";
 import { Icon } from "@/components/ui/Icon";
 import { Button } from "@/components/ui/Button";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
+import { Confetti } from "@/components/motion/Confetti";
+import { NumberTicker } from "@/components/motion/NumberTicker";
+import { useMotionEnabled } from "@/components/motion/useMotionEnabled";
 import type { PublicRoomInfo } from "@/data/queries/room.queries";
 import type { TeamRecord } from "@/data/queries/team.queries";
 import type { SceneType } from "@/types/db";
@@ -20,6 +24,8 @@ type LiveTeam = {
   coins: number;
   rank: number;
   members: { name: string }[];
+  streak?: number;
+  bestStreak?: number;
 };
 
 type LivePower = {
@@ -27,13 +33,46 @@ type LivePower = {
   name: string;
   description: string;
   icon: string;
+  effectType?: string;
+  category?: string;
+  rarity?: string;
   price: number;
+  basePrice?: number;
+  onSale?: boolean;
+  isMystery?: boolean;
+  limited?: boolean;
   stock: number | null;
   requiresApproval: boolean;
   remainingUses: number;
   requestable?: boolean;
   status: "AVAILABLE" | "REQUESTED" | "APPROVED" | "ACTIVE" | "CONSUMED" | "REJECTED";
   requestId: string | null;
+};
+
+type LiveAuction = {
+  id: string;
+  type: "NORMAL" | "SECRET" | "LUCKY";
+  stage: "LIVE" | "GOING_ONCE" | "GOING_TWICE";
+  itemName: string;
+  itemIcon: string;
+  startingBid: number;
+  minIncrement: number;
+  currentBid: number;
+  leaderName: string | null;
+  leaderIsMe: boolean;
+  bidderCount: number;
+  myBid: number | null;
+};
+
+type LiveFeedItem = {
+  id: string;
+  type: string;
+  text: string;
+  icon: string;
+  tone: "up" | "down" | "power" | "store" | "info" | "achievement";
+  teamColor: string | null;
+  notable: boolean;
+  createdAt: string;
 };
 
 type LivePayload = {
@@ -71,6 +110,7 @@ type LivePayload = {
     title: string;
     rules?: string;
     description?: string;
+    specialMode?: "NONE" | "SPEED" | "RISK" | "SURVIVAL" | "BONUS";
     defaultTimer: number;
     positiveMarks: number;
     negativeMarks: number;
@@ -92,8 +132,11 @@ type LivePayload = {
   powers: {
     storeOpen: boolean;
     economyEnabled: boolean;
+    flashSale: { active: boolean; percent: number; endsAt: string | null };
     cards: LivePower[];
   };
+  feed: LiveFeedItem[];
+  auction: LiveAuction | null;
   broadcast: { id: string; message: string; createdAt: string } | null;
   recentScores: Array<{
     id: string;
@@ -149,6 +192,13 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
   const [offline, setOffline] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [toast, setToast] = useState<string | null>(null);
+  const [moment, setMoment] = useState<LiveFeedItem | null>(null);
+  const lastNotableId = useRef<string | null>(null);
+  const seededNotable = useRef(false);
+  const [celebrate, setCelebrate] = useState(false);
+  const [scoreShake, setScoreShake] = useState(false);
+  const prevScoreRef = useRef<number | null>(null);
+  const { enabled: motionEnabled } = useMotionEnabled();
   const [pending, startTransition] = useTransition();
   const seconds = useMemo(() => {
     if (!live?.timer.endsAt || live.timer.paused) return null;
@@ -236,11 +286,75 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
     });
   }
 
+  function bid(amount: number) {
+    if (!live?.team || !live.auction) return;
+    startTransition(async () => {
+      try {
+        await placeBid(live.room.id, live.team!.id, live.auction!.id, amount);
+        setToast(`Bid placed: ${amount} coins.`);
+      } catch (err) {
+        setToast(err instanceof Error ? err.message : "Could not place bid.");
+      }
+    });
+  }
+
   useEffect(() => {
     if (!toast) return;
     const timeout = window.setTimeout(() => setToast(null), 2400);
     return () => window.clearTimeout(timeout);
   }, [toast]);
+
+  // Flash a transient "moment" overlay when a new notable event lands. The
+  // first poll only seeds the baseline so we never replay history on join.
+  useEffect(() => {
+    const newest = live?.feed.find((item) => item.notable);
+    if (!newest) return;
+    if (!seededNotable.current) {
+      seededNotable.current = true;
+      lastNotableId.current = newest.id;
+      return;
+    }
+    if (newest.id !== lastNotableId.current) {
+      lastNotableId.current = newest.id;
+      setMoment(newest);
+    }
+  }, [live?.feed]);
+
+  useEffect(() => {
+    if (!moment) return;
+    const timeout = window.setTimeout(() => setMoment(null), 2600);
+    return () => window.clearTimeout(timeout);
+  }, [moment]);
+
+  // Celebrate when our own team's score rises (confetti + a happy buzz), or a
+  // gentle shake + longer buzz when it drops. The first reading only seeds the
+  // baseline so we don't fire on join.
+  useEffect(() => {
+    const score = live?.team?.score;
+    if (score == null) return;
+    const prev = prevScoreRef.current;
+    prevScoreRef.current = score;
+    if (prev == null || score === prev) return;
+    if (score > prev) {
+      setCelebrate(true);
+      if (motionEnabled && typeof navigator !== "undefined") navigator.vibrate?.(35);
+    } else {
+      setScoreShake(true);
+      if (motionEnabled && typeof navigator !== "undefined") navigator.vibrate?.(70);
+    }
+  }, [live?.team?.score, motionEnabled]);
+
+  useEffect(() => {
+    if (!celebrate) return;
+    const t = window.setTimeout(() => setCelebrate(false), 3400);
+    return () => window.clearTimeout(t);
+  }, [celebrate]);
+
+  useEffect(() => {
+    if (!scoreShake) return;
+    const t = window.setTimeout(() => setScoreShake(false), 600);
+    return () => window.clearTimeout(t);
+  }, [scoreShake]);
 
   if (!participant) {
     return (
@@ -310,15 +424,21 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
           </div>
         ) : (
           <>
-            <StatusStrip live={live} seconds={seconds} />
+            <StatusStrip live={live} seconds={seconds} shake={scoreShake} />
             <main className="flex-1 min-h-0 py-4">
               <SceneScreen live={live} seconds={seconds} onRequest={request} pending={pending} participantName={participant.name} />
             </main>
+            {live.auction && <AuctionPanel auction={live.auction} coins={live.team?.coins ?? 0} pending={pending} onBid={bid} />}
+            <LiveFeed feed={live.feed} />
             <PowerTray live={live} pending={pending} onBuy={buy} onRequest={request} />
           </>
         )}
       </div>
 
+      {celebrate && <Confetti count={80} />}
+      <AnimatePresence>
+        {moment && <MomentOverlay key={moment.id} moment={moment} />}
+      </AnimatePresence>
       <AnimatePresence>
         {live?.broadcast?.message && <BroadcastOverlay key={live.broadcast.id} message={live.broadcast.message} />}
       </AnimatePresence>
@@ -338,21 +458,134 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
   );
 }
 
-function StatusStrip({ live, seconds }: { live: LivePayload; seconds: number | null }) {
+const EFFECT_ICON: Record<string, string> = {
+  HINT: "💡",
+  EXTRA_TIME: "⏱",
+  BLOCK_NEGATIVE: "🛡",
+  DOUBLE_SCORE: "⚡",
+  SECOND_CHANCE: "↩",
+  MYSTERY: "🎁",
+  GAMBLE: "🎲",
+  FREEZE: "❄",
+  STEAL: "🫳",
+};
+
+type RoundMode = "SPEED" | "RISK" | "SURVIVAL" | "BONUS";
+const ROUND_MODE_META: Record<RoundMode, { label: string; emoji: string; description: string; color: string }> = {
+  SPEED: { label: "Speed Round", emoji: "⚡", description: "Short timer, higher rewards — answer fast.", color: "#5EC9E8" },
+  RISK: { label: "Risk Round", emoji: "🎯", description: "Pick your difficulty for bigger points.", color: "#E8A33D" },
+  SURVIVAL: { label: "Survival Round", emoji: "💀", description: "Wrong answers cost a life — play safe.", color: "#FF6B6B" },
+  BONUS: { label: "Bonus Round", emoji: "🎁", description: "Rewards only — no penalties.", color: "#3DD68C" },
+};
+
+function RoundModeBadge({ mode }: { mode?: string }) {
+  if (!mode || mode === "NONE") return null;
+  const meta = ROUND_MODE_META[mode as RoundMode];
+  if (!meta) return null;
   return (
-    <div className="mt-4 grid grid-cols-3 gap-2">
-      <Metric label="Rank" value={live.team ? `#${live.team.rank}` : "-"} />
-      <Metric label="Score" value={live.team ? String(live.team.score) : "-"} />
-      <Metric label="Timer" value={seconds === null ? "--" : `${seconds}s`} />
+    <span
+      className="flex items-center gap-1 text-[10px] font-bold tracking-[.08em] rounded-full px-2 py-0.5 border"
+      style={{
+        color: meta.color,
+        borderColor: `color-mix(in oklab, ${meta.color} 38%, transparent)`,
+        background: `color-mix(in oklab, ${meta.color} 14%, transparent)`,
+      }}
+    >
+      {meta.emoji} {meta.label.replace(" Round", "").toUpperCase()}
+    </span>
+  );
+}
+
+function StatusStrip({
+  live,
+  seconds,
+  shake,
+}: {
+  live: LivePayload;
+  seconds: number | null;
+  shake?: boolean;
+}) {
+  const streak = live.team?.streak ?? 0;
+  const activeEffects = live.powers.cards.filter((c) => c.status === "ACTIVE");
+  const inventory = live.powers.cards.filter((c) => c.remainingUses > 0);
+  const activeTypes = new Set(activeEffects.map((e) => e.effectType));
+  const combo = activeTypes.has("DOUBLE_SCORE") && activeTypes.has("BLOCK_NEGATIVE");
+
+  return (
+    <div className="mt-4 flex flex-col gap-2">
+      <div className="grid grid-cols-4 gap-2">
+        <Metric label="Rank" value={live.team ? `#${live.team.rank}` : "-"} />
+        <Metric label="Score" numeric={live.team?.score} shake={shake} />
+        <Metric label="Coins" numeric={live.team?.coins} accent="#E8C84A" />
+        <Metric label="Timer" value={seconds === null ? "--" : `${seconds}s`} />
+      </div>
+
+      {(streak >= 2 || activeEffects.length > 0 || inventory.length > 0) && (
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {combo && (
+            <span className="flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-bold bg-[linear-gradient(90deg,rgba(108,123,250,.25),rgba(61,214,140,.25))] border border-accent/40 text-ink">
+              🔥 COMBO · Safe Double Attack
+            </span>
+          )}
+          {streak >= 2 && (
+            <span
+              className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-bold ${
+                streak >= 3
+                  ? "bg-warn/15 border border-warn/35 text-warn"
+                  : "bg-line/[.05] border border-line/[.1] text-ink-3"
+              }`}
+            >
+              🔥 {streak} streak
+            </span>
+          )}
+          {activeEffects.map((effect) => (
+            <span
+              key={`active-${effect.id}`}
+              className="flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold bg-accent/15 border border-accent/35 text-accent"
+            >
+              {EFFECT_ICON[effect.effectType ?? ""] ?? effect.icon} {effect.name} active
+            </span>
+          ))}
+          {inventory
+            .filter((c) => c.status !== "ACTIVE")
+            .map((card) => (
+              <span
+                key={`inv-${card.id}`}
+                className="flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium bg-line/[.05] border border-line/[.1] text-mute-2"
+              >
+                {EFFECT_ICON[card.effectType ?? ""] ?? card.icon} {card.name}
+                {card.remainingUses > 1 && <span className="font-mono text-dim-2">×{card.remainingUses}</span>}
+              </span>
+            ))}
+        </div>
+      )}
     </div>
   );
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
+function Metric({
+  label,
+  value,
+  numeric,
+  accent,
+  shake,
+}: {
+  label: string;
+  value?: string;
+  numeric?: number;
+  accent?: string;
+  shake?: boolean;
+}) {
   return (
-    <div className="rounded-2xl border border-line/[.08] bg-line/[.04] px-3 py-3">
+    <div
+      className={`rounded-2xl border border-line/[.08] bg-line/[.04] px-3 py-3 ${
+        shake ? "animate-[encShake_0.5s_ease]" : ""
+      }`}
+    >
       <span className="block text-[10px] text-mute-2 font-semibold tracking-[.12em]">{label}</span>
-      <span className="block text-lg font-bold text-ink mt-1">{value}</span>
+      <span className="block text-lg font-bold mt-1" style={{ color: accent ?? "var(--color-ink)" }}>
+        {numeric != null ? <NumberTicker value={numeric} duration={0.7} /> : value}
+      </span>
     </div>
   );
 }
@@ -396,6 +629,7 @@ function SceneScreen({
         {(type === "QUESTION" || type === "DRAWING" || type === "ANSWER_REVEAL") && live.round && (
           <span className="text-[11px] text-mute-2 truncate">{live.round.title}</span>
         )}
+        <RoundModeBadge mode={live.round?.specialMode} />
         <span className="ml-auto text-[11px] text-mute-2">{live.room.roomCode}</span>
       </div>
 
@@ -457,6 +691,8 @@ function WelcomeScene({ live }: { live: LivePayload }) {
 }
 
 function RoundIntroScene({ live }: { live: LivePayload }) {
+  const mode = live.round?.specialMode ?? "NONE";
+  const modeMeta = mode !== "NONE" ? ROUND_MODE_META[mode] : null;
   return (
     <div className="flex-1 flex flex-col justify-center gap-5">
       <div>
@@ -466,6 +702,23 @@ function RoundIntroScene({ live }: { live: LivePayload }) {
           {live.round?.description || live.round?.rules || "Get ready. The next challenge is about to begin."}
         </p>
       </div>
+      {modeMeta && (
+        <div
+          className="rounded-2xl border px-4 py-3 flex items-center gap-3"
+          style={{
+            borderColor: `color-mix(in oklab, ${modeMeta.color} 40%, transparent)`,
+            background: `color-mix(in oklab, ${modeMeta.color} 12%, transparent)`,
+          }}
+        >
+          <span className="text-2xl">{modeMeta.emoji}</span>
+          <div className="flex flex-col">
+            <span className="text-[13px] font-bold" style={{ color: modeMeta.color }}>
+              {modeMeta.label}
+            </span>
+            <span className="text-[11.5px] text-mute-2">{modeMeta.description}</span>
+          </div>
+        </div>
+      )}
       <div className="grid grid-cols-3 gap-2">
         <Metric label="Timer" value={`${live.round?.defaultTimer ?? "--"}s`} />
         <Metric label="Correct" value={`+${live.round?.positiveMarks ?? "-"}`} />
@@ -603,42 +856,123 @@ function AnswerRevealScene({ live }: { live: LivePayload }) {
 }
 
 function LeaderboardScene({ live }: { live: LivePayload }) {
+  // Snapshot ranks each render so we can flag a team that just climbed. The
+  // effect writes *after* render, so `prevRanks` holds the previous poll.
+  const prevRanks = useRef<Record<string, number>>({});
+  useEffect(() => {
+    const next: Record<string, number> = {};
+    live.leaderboard.forEach((t) => (next[t.id] = t.rank));
+    prevRanks.current = next;
+  });
+
   return (
     <div className="flex-1 flex flex-col gap-3 pt-5">
       <h1 className="text-3xl font-black tracking-[-.03em]">Leaderboard</h1>
       <div className="flex flex-col gap-2">
-        {live.leaderboard.map((team) => (
-          <motion.div
-            layout
-            key={team.id}
-            className="rounded-2xl border border-line/[.08] bg-line/[.04] px-4 py-3 flex items-center gap-3"
-          >
-            <span className="w-8 h-8 rounded-xl bg-line/[.06] flex items-center justify-center font-mono font-bold">
-              {team.rank}
-            </span>
-            <span className="w-2.5 h-2.5 rounded-full" style={{ background: team.color ?? "#6C7BFA" }} />
-            <span className="font-bold text-ink">{team.name}</span>
-            <span className="ml-auto font-mono font-black text-lg">{team.score}</span>
-          </motion.div>
-        ))}
+        {live.leaderboard.map((team) => {
+          const prev = prevRanks.current[team.id];
+          const climbed = prev != null && team.rank < prev;
+          const isMe = team.id === live.team?.id;
+          return (
+            <motion.div
+              layout
+              key={team.id}
+              transition={{ type: "spring", stiffness: 500, damping: 40 }}
+              className={`rounded-2xl border px-4 py-3 flex items-center gap-3 ${
+                isMe ? "border-accent/40 bg-accent/[.08]" : "border-line/[.08] bg-line/[.04]"
+              } ${team.rank === 1 ? "shadow-[0_0_0_1px_color-mix(in_oklab,var(--color-warn)_40%,transparent)]" : ""}`}
+            >
+              <span className="w-8 h-8 rounded-xl bg-line/[.06] flex items-center justify-center font-mono font-bold">
+                {team.rank}
+              </span>
+              <span className="w-2.5 h-2.5 rounded-full" style={{ background: team.color ?? "#6C7BFA" }} />
+              <span className="font-bold text-ink truncate">{team.name}</span>
+              {climbed && (
+                <motion.span
+                  initial={{ opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="text-[10px] font-bold text-success flex items-center gap-0.5"
+                >
+                  ↑ up
+                </motion.span>
+              )}
+              <NumberTicker value={team.score} duration={0.6} className="ml-auto font-mono font-black text-lg" />
+            </motion.div>
+          );
+        })}
       </div>
     </div>
   );
 }
 
+const WINNER_STEPS = ["Calculating scores…", "Analyzing results…", "3", "2", "1"];
+
 function WinnerScene({ live }: { live: LivePayload }) {
   const winner = live.leaderboard[0];
+  const { enabled } = useMotionEnabled();
+  const [stage, setStage] = useState(enabled ? 0 : WINNER_STEPS.length);
+
+  useEffect(() => {
+    if (!enabled) {
+      setStage(WINNER_STEPS.length);
+      return;
+    }
+    let i = 0;
+    const id = window.setInterval(() => {
+      i += 1;
+      setStage(i);
+      if (i >= WINNER_STEPS.length) window.clearInterval(id);
+    }, 820);
+    return () => window.clearInterval(id);
+  }, [enabled]);
+
+  const revealed = stage >= WINNER_STEPS.length;
+
+  if (!revealed) {
+    const isCountdown = stage >= 2;
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center text-center gap-4">
+        <span className="text-[11px] text-label font-semibold tracking-[.2em]">FINAL RESULTS</span>
+        <motion.span
+          key={stage}
+          initial={{ opacity: 0, scale: isCountdown ? 1.6 : 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className={isCountdown ? "text-7xl font-black text-accent" : "text-xl font-semibold text-ink-3"}
+        >
+          {WINNER_STEPS[stage]}
+        </motion.span>
+      </div>
+    );
+  }
+
   return (
     <div className="flex-1 flex flex-col items-center justify-center text-center gap-5">
-      <div className="text-6xl">***</div>
-      <div>
+      <Confetti count={120} />
+      <motion.div
+        initial={{ scale: 0.5, rotate: -12, opacity: 0 }}
+        animate={{ scale: 1, rotate: 0, opacity: 1 }}
+        transition={{ type: "spring", stiffness: 260, damping: 16 }}
+        className="text-6xl"
+      >
+        🏆
+      </motion.div>
+      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }}>
         <span className="text-[11px] text-label font-semibold tracking-[.14em]">WINNER</span>
         <h1 className="text-4xl font-black tracking-[-.04em] mt-2">{winner?.name ?? "Final results"}</h1>
-      </div>
-      <div className="rounded-[24px] border border-warn/25 bg-warn/[.1] px-8 py-5">
+      </motion.div>
+      <motion.div
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.3 }}
+        className="rounded-[24px] border border-warn/25 bg-warn/[.1] px-8 py-5"
+      >
         <span className="block text-[12px] text-mute-2">Final score</span>
-        <span className="block text-5xl font-black text-warn mt-1">{winner?.score ?? 0}</span>
-      </div>
+        <NumberTicker
+          value={winner?.score ?? 0}
+          duration={1.4}
+          className="block text-5xl font-black text-warn mt-1"
+        />
+      </motion.div>
     </div>
   );
 }
@@ -648,6 +982,221 @@ function FallbackScene({ live }: { live: LivePayload }) {
     <div className="flex-1 flex flex-col items-center justify-center text-center gap-3">
       <h1 className="text-3xl font-black tracking-[-.03em]">{live.currentScene.title}</h1>
       <p className="text-sm text-mute-2">Follow the host. Your phone will update automatically.</p>
+    </div>
+  );
+}
+
+const AUCTION_STAGE_LABEL: Record<LiveAuction["stage"], string> = {
+  LIVE: "LIVE",
+  GOING_ONCE: "GOING ONCE…",
+  GOING_TWICE: "GOING TWICE…",
+};
+
+function AuctionPanel({
+  auction,
+  coins,
+  pending,
+  onBid,
+}: {
+  auction: LiveAuction;
+  coins: number;
+  pending: boolean;
+  onBid: (amount: number) => void;
+}) {
+  const suggested =
+    auction.type === "NORMAL"
+      ? Math.max(auction.startingBid, auction.currentBid + auction.minIncrement)
+      : auction.myBid ?? auction.startingBid;
+  const [amount, setAmount] = useState(suggested);
+  const sealed = auction.type !== "NORMAL";
+  const canAfford = coins >= amount && amount >= auction.startingBid;
+
+  return (
+    <motion.div
+      initial={{ scale: 0.97, opacity: 0 }}
+      animate={{ scale: 1, opacity: 1 }}
+      className="shrink-0 mb-2 rounded-2xl border-2 border-warn/40 bg-[linear-gradient(160deg,color-mix(in_oklab,var(--color-warn)_14%,var(--color-card)),var(--color-card))] p-3"
+    >
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-lg">🔨</span>
+        <span className="text-[11px] font-bold tracking-[.12em] text-warn">
+          {auction.type} AUCTION
+        </span>
+        <span
+          className={`ml-auto text-[10px] font-bold tracking-[.1em] px-2 py-0.5 rounded-full ${
+            auction.stage === "LIVE" ? "bg-success/15 text-success" : "bg-danger/15 text-danger-soft animate-enc-pulse"
+          }`}
+        >
+          {AUCTION_STAGE_LABEL[auction.stage]}
+        </span>
+      </div>
+
+      <div className="flex items-center gap-2.5">
+        <span className="text-2xl">{auction.itemIcon}</span>
+        <div className="flex flex-col min-w-0">
+          <span className="text-[13px] font-bold text-ink truncate">{auction.itemName}</span>
+          {auction.type === "NORMAL" ? (
+            <span className="text-[11px] text-mute-2 truncate">
+              {auction.currentBid > 0
+                ? `High bid ${auction.currentBid}${auction.leaderName ? ` · ${auction.leaderIsMe ? "You" : auction.leaderName}` : ""}`
+                : `Starting ${auction.startingBid}`}
+            </span>
+          ) : (
+            <span className="text-[11px] text-mute-2 truncate">
+              {auction.bidderCount} bidding
+              {auction.myBid != null ? ` · your sealed bid ${auction.myBid}` : ` · from ${auction.startingBid}`}
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-2.5 flex items-center gap-1.5">
+        <button
+          onClick={() => setAmount((a) => Math.max(auction.startingBid, a - auction.minIncrement))}
+          className="w-8 h-9 rounded-lg bg-line/[.06] text-ink font-bold cursor-pointer"
+        >
+          −
+        </button>
+        <input
+          type="number"
+          value={amount}
+          onChange={(e) => setAmount(Number(e.target.value))}
+          className="flex-1 min-w-0 h-9 bg-line/[.05] border border-line/[.1] rounded-lg px-2 text-center text-[14px] font-bold text-ink outline-none"
+        />
+        <button
+          onClick={() => setAmount((a) => a + auction.minIncrement)}
+          className="w-8 h-9 rounded-lg bg-line/[.06] text-ink font-bold cursor-pointer"
+        >
+          +
+        </button>
+        <Button
+          variant="primary"
+          size="sm"
+          disabled={pending || !canAfford}
+          onClick={() => onBid(amount)}
+          className="h-9 px-3.5"
+        >
+          {sealed && auction.myBid != null ? "Update" : "Bid"}
+        </Button>
+      </div>
+      {!canAfford && (
+        <span className="mt-1.5 block text-[10.5px] text-danger-soft">
+          {amount < auction.startingBid ? `Minimum bid is ${auction.startingBid}` : "Not enough coins"}
+        </span>
+      )}
+    </motion.div>
+  );
+}
+
+function FlashSaleBanner({ percent, endsAt }: { percent: number; endsAt: string | null }) {
+  const [remaining, setRemaining] = useState(() =>
+    endsAt ? Math.max(0, Math.ceil((new Date(endsAt).getTime() - Date.now()) / 1000)) : 0
+  );
+  useEffect(() => {
+    if (!endsAt) return;
+    const interval = window.setInterval(() => {
+      setRemaining(Math.max(0, Math.ceil((new Date(endsAt).getTime() - Date.now()) / 1000)));
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [endsAt]);
+
+  const mm = String(Math.floor(remaining / 60)).padStart(2, "0");
+  const ss = String(remaining % 60).padStart(2, "0");
+
+  return (
+    <motion.div
+      initial={{ scale: 0.96, opacity: 0 }}
+      animate={{ scale: 1, opacity: 1 }}
+      className="mb-2 flex items-center gap-2 rounded-xl border border-warn/40 bg-warn/[.12] px-3 py-2"
+    >
+      <span className="text-base animate-enc-pulse">⚡</span>
+      <span className="text-[12px] font-bold text-warn">FLASH SALE — {percent}% OFF</span>
+      <span className="ml-auto font-mono text-[12px] font-bold text-ink tabular-nums">
+        {mm}:{ss}
+      </span>
+    </motion.div>
+  );
+}
+
+function StoreCard({
+  card,
+  live,
+  pending,
+  economyEnabled,
+  onBuy,
+  onRequest,
+}: {
+  card: LivePower;
+  live: LivePayload;
+  pending: boolean;
+  economyEnabled: boolean;
+  onBuy: (card: LivePower) => void;
+  onRequest: (card: LivePower) => void;
+}) {
+  const canRequest =
+    (card.remainingUses > 0 || card.requestable) && live.room.permissions?.requestLifelines !== false;
+  const canBuy = economyEnabled && live.powers.storeOpen && live.room.permissions?.buyPowers !== false;
+  const soldOut = card.limited && (card.stock ?? 0) <= 0;
+
+  return (
+    <div
+      className={`relative min-w-[150px] rounded-2xl border p-3 ${
+        card.isMystery
+          ? "border-accent/40 bg-[linear-gradient(160deg,color-mix(in_oklab,var(--color-accent)_14%,var(--color-card)),var(--color-card))]"
+          : "border-line/[.08] bg-card"
+      }`}
+    >
+      <div className="flex items-center gap-1 mb-1.5 min-h-[16px]">
+        {card.isMystery && (
+          <span className="rounded-full bg-accent/20 text-accent text-[8.5px] font-bold tracking-[.1em] px-1.5 py-0.5">
+            MYSTERY
+          </span>
+        )}
+        {card.limited && !card.isMystery && (
+          <span className="rounded-full bg-pink/20 text-pink text-[8.5px] font-bold tracking-[.08em] px-1.5 py-0.5">
+            {soldOut ? "SOLD OUT" : `${card.stock} LEFT`}
+          </span>
+        )}
+        {card.onSale && (
+          <span className="ml-auto rounded-full bg-warn/20 text-warn text-[8.5px] font-bold tracking-[.08em] px-1.5 py-0.5">
+            SALE
+          </span>
+        )}
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="text-xl">{card.icon}</span>
+        <span className="text-[12px] font-bold text-ink truncate">{card.name}</span>
+      </div>
+      <p className="text-[10.5px] text-mute-2 mt-1 line-clamp-2 min-h-[30px]">{card.description}</p>
+      <div className={`mt-3 grid gap-1.5 ${economyEnabled ? "grid-cols-2" : "grid-cols-1"}`}>
+        <Button
+          variant="subtle"
+          size="sm"
+          disabled={pending || !canRequest || card.status === "REQUESTED"}
+          onClick={() => onRequest(card)}
+          className="justify-center text-[11px] px-2"
+        >
+          {card.status === "REQUESTED" ? "Sent" : card.isMystery ? "—" : "Use"}
+        </Button>
+        {economyEnabled && (
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={pending || !canBuy || soldOut}
+            onClick={() => onBuy(card)}
+            className="justify-center text-[11px] px-2"
+          >
+            {card.onSale && card.basePrice != null ? (
+              <span className="flex items-center gap-1">
+                <span className="line-through opacity-60 text-[9px]">{card.basePrice}</span>
+                {card.price}
+              </span>
+            ) : (
+              card.price
+            )}
+          </Button>
+        )}
+      </div>
     </div>
   );
 }
@@ -663,61 +1212,129 @@ function PowerTray({
   onBuy: (card: LivePower) => void;
   onRequest: (card: LivePower) => void;
 }) {
-  const cards = useMemo(() => live.powers.cards.slice(0, 5), [live.powers.cards]);
+  // Shop ordering: mystery boxes and limited stock first (the exciting stuff),
+  // then everything else. Flash-sale pricing is shown per-card.
+  const cards = useMemo(() => {
+    const rank = (c: LivePower) => (c.isMystery ? 0 : c.limited ? 1 : 2);
+    return [...live.powers.cards].sort((a, b) => rank(a) - rank(b));
+  }, [live.powers.cards]);
   if (!cards.length) return null;
 
   const economyEnabled = live.powers.economyEnabled;
   const storeClosed = economyEnabled && !live.powers.storeOpen;
+  const flashSale = live.powers.flashSale;
 
   return (
     <footer className="shrink-0 rounded-[24px] border border-line/[.08] bg-line/[.035] p-3">
-      <div className="flex items-center gap-2 mb-3">
+      <div className="flex items-center gap-2 mb-2">
         <span className="text-[10px] font-semibold tracking-[.12em] text-label">POWER STORE</span>
-        {economyEnabled && <span className="ml-auto text-[11px] text-mute-2">{live.team?.coins ?? 0} coins</span>}
+        {economyEnabled && <span className="ml-auto text-[11px] text-warn font-semibold">{live.team?.coins ?? 0} 🪙</span>}
       </div>
-      {storeClosed && (
+      {flashSale.active && <FlashSaleBanner percent={flashSale.percent} endsAt={flashSale.endsAt} />}
+      {storeClosed && !flashSale.active && (
         <div className="mb-2 rounded-xl border border-line/[.08] bg-line/[.03] px-3 py-2 text-center text-[12px] text-mute-2">
           Store currently closed
         </div>
       )}
       <div className="flex gap-2 overflow-x-auto pb-1">
-        {cards.map((card) => {
-          const canRequest = (card.remainingUses > 0 || card.requestable) && live.room.permissions?.requestLifelines !== false;
-          const canBuy = economyEnabled && live.powers.storeOpen && live.room.permissions?.buyPowers !== false;
-          return (
-            <div key={card.id} className="min-w-[138px] rounded-2xl border border-line/[.08] bg-card p-3">
-              <div className="flex items-center gap-2">
-                <span className="text-xl">{card.icon}</span>
-                <span className="text-[12px] font-bold text-ink truncate">{card.name}</span>
-              </div>
-              <p className="text-[10.5px] text-mute-2 mt-1 line-clamp-2 min-h-[30px]">{card.description}</p>
-              <div className={`mt-3 grid gap-1.5 ${economyEnabled ? "grid-cols-2" : "grid-cols-1"}`}>
-                <Button
-                  variant="subtle"
-                  size="sm"
-                  disabled={pending || !canRequest || card.status === "REQUESTED"}
-                  onClick={() => onRequest(card)}
-                  className="justify-center text-[11px] px-2"
-                >
-                  {card.status === "REQUESTED" ? "Sent" : "Use"}
-                </Button>
-                {economyEnabled && (
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    disabled={pending || !canBuy}
-                    onClick={() => onBuy(card)}
-                    className="justify-center text-[11px] px-2"
-                  >
-                    {card.price}
-                  </Button>
-                )}
-              </div>
-            </div>
-          );
-        })}
+        {cards.map((card) => (
+          <StoreCard
+            key={card.id}
+            card={card}
+            live={live}
+            pending={pending}
+            economyEnabled={economyEnabled}
+            onBuy={onBuy}
+            onRequest={onRequest}
+          />
+        ))}
       </div>
     </footer>
+  );
+}
+
+const FEED_TONE: Record<LiveFeedItem["tone"], string> = {
+  up: "text-success",
+  down: "text-danger-soft",
+  power: "text-accent",
+  store: "text-warn",
+  info: "text-mute-2",
+  achievement: "text-warn",
+};
+
+function LiveFeed({ feed }: { feed: LiveFeedItem[] }) {
+  const items = feed.slice(0, 4);
+  if (items.length === 0) return null;
+  return (
+    <div className="shrink-0 mb-2 rounded-2xl border border-line/[.08] bg-line/[.03] px-3 py-2">
+      <div className="flex items-center gap-1.5 mb-1.5">
+        <span className="w-1.5 h-1.5 rounded-full bg-live animate-enc-pulse" />
+        <span className="text-[10px] font-semibold tracking-[.12em] text-label">LIVE FEED</span>
+      </div>
+      <div className="flex flex-col gap-1">
+        <AnimatePresence initial={false}>
+          {items.map((item) => (
+            <motion.div
+              key={item.id}
+              layout
+              initial={{ opacity: 0, x: -8 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0 }}
+              className="flex items-center gap-2 text-[12px]"
+            >
+              <span className="text-[13px]">{item.icon}</span>
+              {item.teamColor && (
+                <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: item.teamColor }} />
+              )}
+              <span className={`truncate font-medium ${FEED_TONE[item.tone]}`}>{item.text}</span>
+            </motion.div>
+          ))}
+        </AnimatePresence>
+      </div>
+    </div>
+  );
+}
+
+const MOMENT_STYLE: Record<LiveFeedItem["tone"], { ring: string; label: string }> = {
+  up: { ring: "#3DD68C", label: "BIG SCORE" },
+  down: { ring: "#FF8383", label: "OUCH" },
+  power: { ring: "#6C7BFA", label: "POWER PLAY" },
+  store: { ring: "#F5B93D", label: "STORE" },
+  info: { ring: "#8EA0B8", label: "UPDATE" },
+  achievement: { ring: "#E8C84A", label: "ACHIEVEMENT" },
+};
+
+function MomentOverlay({ moment }: { moment: LiveFeedItem }) {
+  const style = MOMENT_STYLE[moment.tone];
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[60] flex items-center justify-center px-8 pointer-events-none"
+    >
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-[2px]" />
+      <motion.div
+        initial={{ scale: 0.6, y: 20 }}
+        animate={{ scale: 1, y: 0 }}
+        exit={{ scale: 0.8, opacity: 0 }}
+        transition={{ type: "spring", stiffness: 320, damping: 18 }}
+        className="relative flex flex-col items-center gap-3 rounded-[28px] border-2 bg-card/95 px-8 py-7 text-center shadow-[0_30px_90px_rgba(0,0,0,.6)]"
+        style={{ borderColor: style.ring, boxShadow: `0 0 60px color-mix(in oklab, ${style.ring} 40%, transparent)` }}
+      >
+        <motion.span
+          animate={{ scale: [1, 1.15, 1] }}
+          transition={{ duration: 0.6, repeat: 1 }}
+          className="text-5xl"
+        >
+          {moment.icon}
+        </motion.span>
+        <span className="text-[11px] font-bold tracking-[.2em]" style={{ color: style.ring }}>
+          {style.label}
+        </span>
+        <span className="text-xl font-bold text-ink">{moment.text}</span>
+      </motion.div>
+    </motion.div>
   );
 }
 

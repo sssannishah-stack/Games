@@ -7,10 +7,6 @@ import { Icon } from "@/components/ui/Icon";
 import { Button } from "@/components/ui/Button";
 import { RoomCodeInput } from "@/components/room/RoomCodeInput";
 
-function formatCode(code: string) {
-  return code.length > 4 ? `${code.slice(0, 4)}-${code.slice(4)}` : code;
-}
-
 export function JoinCodeRedirect() {
   const [code, setCode] = useState("");
   const [navigating, setNavigating] = useState(false);
@@ -18,9 +14,9 @@ export function JoinCodeRedirect() {
 
   function go(finalCode?: string) {
     const target = finalCode ?? code;
-    if (target.length < 6) return;
+    if (target.length < 4) return;
     setNavigating(true);
-    router.push(`/play/${formatCode(target)}`);
+    router.push(`/play/${target}`);
   }
 
   return (
@@ -49,7 +45,7 @@ export function JoinCodeRedirect() {
         variant="primary"
         size="lg"
         onClick={() => go()}
-        disabled={code.length < 6 || navigating}
+        disabled={code.length < 4 || navigating}
         className="w-full justify-center min-h-12 disabled:opacity-40 disabled:cursor-not-allowed"
       >
         Continue

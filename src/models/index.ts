@@ -17,3 +17,6 @@ export { default as PowerCardRequest } from "./PowerCardRequest";
 export { default as CoinTransaction } from "./CoinTransaction";
 export { default as ScoreTransaction } from "./ScoreTransaction";
 export { default as EventLog } from "./EventLog";
+export { default as TeamAchievement } from "./TeamAchievement";
+export { default as Auction } from "./Auction";
+export { default as AuctionBid } from "./AuctionBid";
