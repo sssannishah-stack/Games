@@ -27,7 +27,8 @@ import {
   type LiveStateInput,
   type JoinRoomInput,
 } from "@/validators/room.validator";
-import type { IRoom } from "@/types/db";
+import type { AnswerMode, IRoom, ParticipantRole } from "@/types/db";
+import { assertTeamController } from "@/lib/teamRoles";
 
 export interface CreateRoomArgs {
   competitionId: string;
@@ -92,6 +93,7 @@ export async function updateRoom(
   input: {
     name: string;
     joinMethod: "CODE" | "QR" | "BOTH";
+    answerMode?: AnswerMode;
     permissions: {
       viewLeaderboard: boolean;
       viewTeamScore: boolean;
@@ -109,6 +111,7 @@ export async function updateRoom(
     $set: {
       name: data.name,
       "settings.joinMethod": data.joinMethod,
+      ...(data.answerMode ? { "settings.answerMode": data.answerMode } : {}),
       "settings.permissions": data.permissions,
     },
   });
@@ -308,6 +311,7 @@ export async function joinRoom(input: JoinRoomInput): Promise<{
   name: string;
   teamId: string;
   roomId: string;
+  role: ParticipantRole;
 }> {
   const data = joinRoomSchema.parse(input);
   await connectToDatabase();
@@ -315,10 +319,38 @@ export async function joinRoom(input: JoinRoomInput): Promise<{
   const room = await Room.findOne({ roomCode: data.roomCode.toUpperCase() }).lean<IRoom>();
   if (!room) throw new Error("Room not found for that code.");
 
+  // Rejoin: the same name on the same team is the same phone coming back
+  // (page refresh, dropped connection). Reuse the participant so their team
+  // device role survives the reconnect instead of stacking duplicate rows.
+  const existing = await Participant.findOne({
+    roomId: room._id,
+    teamId: data.teamId,
+    name: { $regex: `^${data.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" },
+  });
+  if (existing) {
+    existing.lastSeenAt = new Date();
+    await existing.save();
+    return {
+      id: existing._id.toString(),
+      name: existing.name,
+      teamId: existing.teamId.toString(),
+      roomId: existing.roomId.toString(),
+      role: existing.role,
+    };
+  }
+
+  // First phone of a team becomes CAPTAIN, second VICE_CAPTAIN, rest MEMBER.
+  const teammates = await Participant.find({ teamId: data.teamId }).select("role").lean();
+  const hasCaptain = teammates.some((p) => p.role === "CAPTAIN");
+  const hasViceCaptain = teammates.some((p) => p.role === "VICE_CAPTAIN");
+  const role: ParticipantRole = !hasCaptain ? "CAPTAIN" : !hasViceCaptain ? "VICE_CAPTAIN" : "MEMBER";
+
   const participant = await Participant.create({
     name: data.name,
     teamId: data.teamId,
     roomId: room._id,
+    role,
+    lastSeenAt: new Date(),
     joinedAt: new Date(),
   });
 
@@ -327,5 +359,46 @@ export async function joinRoom(input: JoinRoomInput): Promise<{
     name: participant.name,
     teamId: participant.teamId.toString(),
     roomId: participant.roomId.toString(),
+    role: participant.role,
   };
+}
+
+/**
+ * Captain-submit answer mode: the team captain's phone submits a written
+ * answer for the current question. This is a written record for the host —
+ * the host still judges and awards marks manually (nothing is auto-graded).
+ * Rejected unless the room's answerMode is CAPTAIN_SUBMIT and the submitting
+ * device is the team's captain (or acting captain).
+ */
+export async function submitTeamAnswer(input: {
+  roomId: string;
+  teamId: string;
+  participantId: string;
+  text: string;
+}): Promise<void> {
+  await connectToDatabase();
+
+  const text = input.text.trim().slice(0, 300);
+  if (!text) throw new Error("Type an answer first.");
+
+  const room = await Room.findById(input.roomId).lean<IRoom>();
+  if (!room) throw new Error("Room not found.");
+  if (room.settings?.answerMode !== "CAPTAIN_SUBMIT") {
+    throw new Error("This room uses verbal answers — speak up!");
+  }
+  if (!room.currentQuestionId) throw new Error("No question is open right now.");
+
+  const submitter = await assertTeamController(input.teamId, input.participantId);
+
+  await EventLog.create({
+    roomId: input.roomId,
+    type: "ANSWER_SUBMITTED",
+    metadata: {
+      teamId: input.teamId,
+      participantId: input.participantId,
+      questionId: room.currentQuestionId.toString(),
+      text,
+      submittedBy: submitter.name,
+    },
+  });
 }

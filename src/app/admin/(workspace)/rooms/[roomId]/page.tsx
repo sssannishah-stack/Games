@@ -10,9 +10,7 @@ import { getQuestionsForRoomRounds } from "@/data/queries/question.queries";
 import { getScenesByRoom } from "@/data/queries/scene.queries";
 import {
   getPowerCardsByOwner,
-  getCoinTransactionsByRoom,
   getTeamPowerCardsByRoom,
-  getPowerCardRequestsByRoom,
 } from "@/data/queries/powerCard.queries";
 import { seedDefaultPowerCards } from "@/actions/powerCard.actions";
 
@@ -27,14 +25,12 @@ export default async function AdminRoomSetupPage({
   if (!room) notFound();
 
   await seedDefaultPowerCards();
-  const [teams, rounds, libraryRounds, scenes, cards, purchases, requests, baseUrl] = await Promise.all([
+  const [teams, rounds, libraryRounds, scenes, cards, baseUrl] = await Promise.all([
     getTeamsByRoom(roomId),
     getSelectedRoundsForRoom(room.selectedRounds),
     getRoundsByOwner(user.id),
     getScenesByRoom(roomId),
     getPowerCardsByOwner(user.id),
-    getCoinTransactionsByRoom(roomId),
-    getPowerCardRequestsByRoom(roomId),
     getBaseUrl(),
   ]);
   const [questions, ownedCards] = await Promise.all([
@@ -73,9 +69,7 @@ export default async function AdminRoomSetupPage({
       questions={questions}
       scenes={scenes}
       cards={cards}
-      purchases={purchases}
       ownedCards={ownedCards}
-      requests={requests}
       joinUrl={joinUrl}
       localOnly={localOnly}
       lanJoinUrl={lanJoinUrl}

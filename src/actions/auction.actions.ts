@@ -5,6 +5,7 @@ import { connectToDatabase } from "@/lib/database/mongodb";
 import { Auction, AuctionBid, Room, PowerCard, Team, TeamPowerCard, EventLog } from "@/models";
 import { requireUser } from "@/lib/auth/getCurrentUser";
 import { assertRoomOwnership } from "@/lib/authz";
+import { assertTeamController } from "@/lib/teamRoles";
 import { createCoinTransaction } from "@/actions/coin.actions";
 import type { AuctionType, AuctionStage, IAuction } from "@/types/db";
 
@@ -63,9 +64,13 @@ export async function placeBid(
   roomId: string,
   teamId: string,
   auctionId: string,
-  amount: number
+  amount: number,
+  participantId?: string
 ): Promise<void> {
   await connectToDatabase();
+
+  // Only the captain device (or acting captain) may commit team coins to a bid.
+  await assertTeamController(teamId, participantId);
 
   const auction = await Auction.findById(auctionId).lean<IAuction>();
   if (!auction || auction.roomId.toString() !== roomId) throw new Error("Auction not found.");

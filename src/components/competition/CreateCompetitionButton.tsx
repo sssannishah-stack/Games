@@ -268,7 +268,7 @@ export function CreateCompetitionButton({
             size="md"
             className="disabled:opacity-60"
             onClick={submit}
-            disabled={pending}
+            loading={pending}
           >
             {pending ? "Creating..." : "Create"}
             {!pending && <Icon name="check" size={14} />}

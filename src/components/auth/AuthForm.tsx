@@ -85,7 +85,7 @@ export function AuthForm({ action, mode, showSwitch = true, title, subtitle }: A
           type="submit"
           variant="primary"
           size="lg"
-          disabled={pending}
+          loading={pending}
           className="justify-center mt-1 disabled:opacity-60 disabled:cursor-not-allowed"
         >
           {pending ? "Please wait…" : mode === "login" ? "Sign in" : "Create account"}

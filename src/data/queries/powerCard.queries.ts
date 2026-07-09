@@ -33,7 +33,8 @@ export interface PowerCardRecord {
 export async function getPowerCardsByOwner(ownerId: string): Promise<PowerCardRecord[]> {
   await connectToDatabase();
   const cards = await PowerCard.find({ ownerId }).sort({ category: 1, price: 1 }).lean();
-  return cards.map((c) =>
+  const uniqueCards = [...new Map(cards.map((card) => [`${card.name}:${card.effectType}`, card])).values()];
+  return uniqueCards.map((c) =>
     serialize<PowerCardRecord>({
       id: c._id.toString(),
       ownerId: c.ownerId.toString(),

@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 import type { ButtonHTMLAttributes } from "react";
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 font-medium transition-[transform,filter,background-color,border-color,box-shadow,opacity] duration-150 cursor-pointer select-none whitespace-nowrap active:scale-[.97]",
+  "inline-flex items-center justify-center gap-2 font-medium transition-[transform,filter,background-color,border-color,box-shadow,opacity] duration-150 cursor-pointer select-none whitespace-nowrap active:scale-[.97] disabled:cursor-not-allowed aria-busy:cursor-wait",
   {
     variants: {
       variant: {
@@ -35,10 +35,50 @@ const buttonVariants = cva(
 
 export interface ButtonProps
   extends ButtonHTMLAttributes<HTMLButtonElement>,
-    VariantProps<typeof buttonVariants> {}
+    VariantProps<typeof buttonVariants> {
+  /** Show an inline spinner and disable the button while an action is in flight. */
+  loading?: boolean;
+}
 
-export function Button({ className, variant, size, ...props }: ButtonProps) {
+/** Inline "currentColor" spinner — inherits the button's text color and font size. */
+function Spinner() {
   return (
-    <button className={cn(buttonVariants({ variant, size }), className)} {...props} />
+    <svg
+      className="animate-spin size-[1.05em] -ml-0.5 shrink-0"
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" className="opacity-25" />
+      <path
+        d="M21 12a9 9 0 0 0-9-9"
+        stroke="currentColor"
+        strokeWidth="3"
+        strokeLinecap="round"
+        className="opacity-90"
+      />
+    </svg>
+  );
+}
+
+export function Button({
+  className,
+  variant,
+  size,
+  loading = false,
+  disabled,
+  children,
+  ...props
+}: ButtonProps) {
+  return (
+    <button
+      className={cn(buttonVariants({ variant, size }), className)}
+      disabled={disabled || loading}
+      aria-busy={loading || undefined}
+      {...props}
+    >
+      {loading && <Spinner />}
+      {children}
+    </button>
   );
 }

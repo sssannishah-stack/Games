@@ -30,7 +30,11 @@ export function Modal({ open, onClose, children, className }: ModalProps) {
             exit={{ opacity: 0, scale: 0.97, y: 8 }}
             transition={{ type: "spring", stiffness: 380, damping: 30 }}
             className={cn(
-              "relative w-full max-w-[680px] bg-[rgba(18,20,27,.94)] border border-line/10 rounded-[20px] shadow-[0_40px_120px_rgba(0,0,0,.7)] backdrop-blur-[20px] overflow-hidden",
+              // Theme-aware surface: dark panel in the dark theme, light panel
+              // in the bright theme. Must NOT be hardcoded dark — the content
+              // uses flip-aware text tokens (text-ink etc.), so a fixed dark
+              // panel renders dark-on-dark and vanishes in the bright theme.
+              "relative w-full max-w-[680px] bg-elev/[.96] border border-line/10 rounded-[20px] shadow-[0_40px_120px_rgba(0,0,0,.7)] backdrop-blur-[20px] overflow-hidden",
               className
             )}
           >

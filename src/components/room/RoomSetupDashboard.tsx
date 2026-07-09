@@ -10,15 +10,11 @@ import { Drawer } from "@/components/ui/Drawer";
 import { Icon } from "@/components/ui/Icon";
 import { Modal } from "@/components/ui/Modal";
 import { PublishPanel } from "@/components/room/PublishPanel";
-import { PowerCardsPanel } from "@/components/power-card/PowerCardsPanel";
-import { StorePanel } from "@/components/power-card/StorePanel";
 import { InventoryPanel } from "@/components/power-card/InventoryPanel";
-import { RequestsPanel } from "@/components/power-card/RequestsPanel";
-import { startRoomEvent, startRoomTestMode, setRoomSelectedRounds } from "@/actions/room.actions";
+import { PowerCardsPanel } from "@/components/power-card/PowerCardsPanel";
+import { startRoomEvent, startRoomTestMode, setRoomSelectedRounds, updateRoom } from "@/actions/room.actions";
+import { openStore, closeStore } from "@/actions/powerCard.actions";
 import {
-  createScene,
-  deleteScene,
-  duplicateScene,
   generateScenes,
   reorderScenes,
   updateScene,
@@ -28,7 +24,6 @@ import {
   bulkCreateParticipants,
   createTeam,
   deleteTeam,
-  duplicateTeam,
   moveParticipant,
   removeParticipant,
   updateTeam,
@@ -38,16 +33,11 @@ import type { TeamRecord } from "@/data/queries/team.queries";
 import type { RoundRecord } from "@/data/queries/round.queries";
 import type { QuestionRecord } from "@/data/queries/question.queries";
 import type { SceneRecord } from "@/data/queries/scene.queries";
-import type {
-  PowerCardRecord,
-  CoinTransactionRecord,
-  TeamPowerCardRecord,
-  PowerCardRequestRecord,
-} from "@/data/queries/powerCard.queries";
+import type { PowerCardRecord, TeamPowerCardRecord } from "@/data/queries/powerCard.queries";
 import type { BadgeProps } from "@/components/ui/Badge";
 import type { SceneType } from "@/types/db";
 
-const SECTIONS = ["Overview", "Teams", "Rounds", "Scenes", "Power Cards", "Settings"] as const;
+const SECTIONS = ["Setup", "Teams", "Rounds", "Event Flow", "Settings"] as const;
 const SWATCHES = ["#F5A93D", "#C98A5E", "#E8C84A", "#5EC9E8", "#B98AE8", "#E36A8A", "#3DD68C"];
 
 type Section = (typeof SECTIONS)[number];
@@ -182,7 +172,7 @@ function TeamEditorModal({
         <Button variant="plain" onClick={onClose} disabled={pending}>
           Cancel
         </Button>
-        <Button variant="primary" onClick={submit} disabled={pending} className="disabled:opacity-60">
+        <Button variant="primary" onClick={submit} loading={pending} className="disabled:opacity-60">
           {pending ? "Saving..." : "Save team"}
         </Button>
       </div>
@@ -303,7 +293,7 @@ function DeleteTeamModal({
         <Button variant="plain" onClick={onClose} disabled={pending}>
           Cancel
         </Button>
-        <Button variant="danger" onClick={submit} disabled={pending}>
+        <Button variant="danger" onClick={submit} loading={pending}>
           {pending ? "Deleting..." : "Delete team"}
         </Button>
       </div>
@@ -369,9 +359,10 @@ function NumberField({
   );
 }
 
-function RoomOverview({
+function SetupTab({
   room,
   onCreateTeam,
+  onSelectSection,
   joinUrl,
   localOnly,
   lanJoinUrl,
@@ -379,6 +370,7 @@ function RoomOverview({
 }: {
   room: RoomDetail;
   onCreateTeam: () => void;
+  onSelectSection: (section: Section) => void;
   joinUrl: string;
   localOnly: boolean;
   lanJoinUrl: string | null;
@@ -388,13 +380,57 @@ function RoomOverview({
   const [pending, startTransition] = useTransition();
   const router = useRouter();
 
-  const stats = [
-    ["Teams", room.teamCount],
-    ["Participants", room.participantCount],
-    ["Rounds", room.roundCount],
-    ["Questions", room.questionCount],
+  const teamsDone = room.teamCount > 0;
+  const roundsDone = room.roundCount > 0;
+  const flowDone = room.sceneCount > 0;
+  const testDone = ["TESTING", "LIVE", "COMPLETED"].includes(room.status);
+  const setupReady = teamsDone && roundsDone && flowDone;
+  const checklist = [
+    {
+      label: "Teams Created",
+      detail: teamsDone ? `${room.teamCount} ${room.teamCount === 1 ? "team" : "teams"}` : "Add the teams in this room",
+      done: teamsDone,
+      action: "Add Teams",
+      onClick: onCreateTeam,
+    },
+    {
+      label: "Rounds Selected",
+      detail: roundsDone
+        ? `${room.roundCount} ${room.roundCount === 1 ? "round" : "rounds"} selected`
+        : "Choose reusable rounds for this room",
+      done: roundsDone,
+      action: "Select Rounds",
+      onClick: () => onSelectSection("Rounds"),
+    },
+    {
+      label: "Event Flow Prepared",
+      detail: flowDone
+        ? `${room.sceneCount} ${room.sceneCount === 1 ? "step" : "steps"} ready`
+        : "Generate the live run order from selected rounds",
+      done: flowDone,
+      action: "Generate Event Flow",
+      onClick: generateFlow,
+    },
+    {
+      label: "Test Event",
+      detail: testDone ? "Console has been opened for rehearsal" : "Run a rehearsal before going live",
+      done: testDone,
+      action: "Test Event",
+      onClick: testMode,
+    },
   ];
-  const setupReady = room.teamCount > 0 && room.roundCount > 0 && room.questionCount > 0;
+
+  function generateFlow() {
+    setError(null);
+    startTransition(async () => {
+      try {
+        await generateScenes(room.id);
+        router.refresh();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not generate the event flow.");
+      }
+    });
+  }
 
   function goLive() {
     if (room.status === "LIVE") {
@@ -428,6 +464,26 @@ function RoomOverview({
     });
   }
 
+  function primaryAction() {
+    if (!teamsDone) return onCreateTeam();
+    if (!roundsDone) return onSelectSection("Rounds");
+    if (!flowDone) return generateFlow();
+    if (!testDone) return testMode();
+    return goLive();
+  }
+
+  const primaryLabel = !teamsDone
+    ? "Add Teams"
+    : !roundsDone
+      ? "Select Rounds"
+      : !flowDone
+        ? "Generate Event Flow"
+        : !testDone
+          ? "Test Event"
+          : room.status === "LIVE"
+            ? "Open Host Console"
+            : "Go Live";
+
   return (
     <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-4 items-start">
       <Card className="rounded-2xl p-6 flex flex-col gap-5">
@@ -439,19 +495,39 @@ function RoomOverview({
           <span className="text-[12px] text-mute-2">{room.name}</span>
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {stats.map(([label, value]) => (
-            <div key={label} className="rounded-xl bg-line/[.035] border border-line/[.07] p-3">
-              <span className="text-[11px] text-dim">{label}</span>
-              <div className="text-2xl font-bold text-ink mt-1">{value}</div>
-            </div>
+        <div className="flex flex-col gap-2">
+          {checklist.map((item, index) => (
+            <button
+              key={item.label}
+              onClick={item.done ? undefined : item.onClick}
+              className={`rounded-xl border px-4 py-3 text-left flex items-center gap-3 transition ${
+                item.done
+                  ? "border-success/20 bg-success/[.06]"
+                  : "border-line/[.08] bg-line/[.03] hover:border-accent/35 hover:bg-accent/[.06]"
+              }`}
+            >
+              <span
+                className={`w-7 h-7 rounded-full flex items-center justify-center text-[12px] font-bold shrink-0 ${
+                  item.done ? "bg-success/15 text-success" : "bg-line/[.06] text-mute-2"
+                }`}
+              >
+                {item.done ? <Icon name="check" size={14} /> : index + 1}
+              </span>
+              <span className="flex flex-col min-w-0">
+                <span className="text-[13.5px] font-bold text-ink-2">{item.label}</span>
+                <span className="text-[12px] text-mute-2">{item.detail}</span>
+              </span>
+              {!item.done && (
+                <span className="ml-auto text-[11.5px] font-semibold text-accent shrink-0">{item.action}</span>
+              )}
+            </button>
           ))}
         </div>
 
         <div className="flex flex-wrap gap-2">
-          <Button variant="primary" onClick={onCreateTeam}>
-            <Icon name="plus" size={14} />
-            Add Team
+          <Button variant="primary" onClick={primaryAction} loading={pending}>
+            {!pending && <Icon name={setupReady && testDone ? "radio" : "arrow-right"} size={14} />}
+            {pending ? "Working..." : primaryLabel}
           </Button>
           <Button
             variant="subtle"
@@ -460,22 +536,22 @@ function RoomOverview({
             className="disabled:opacity-45 disabled:cursor-not-allowed"
           >
             <Icon name="flask-conical" size={14} />
-            {pending ? "Starting..." : room.status === "TESTING" ? "Open Test Console" : "Test Mode"}
+            {room.status === "TESTING" ? "Open Test Console" : "Test"}
           </Button>
           <Button
-            variant="success"
+            variant="subtle"
             disabled={!setupReady || pending}
             onClick={goLive}
             className="disabled:opacity-45 disabled:cursor-not-allowed"
           >
             <Icon name="radio" size={14} />
-            {pending ? "Starting..." : room.status === "LIVE" ? "Open Host Console" : "Start Live"}
+            {room.status === "LIVE" ? "Open Host Console" : "Go Live"}
           </Button>
         </div>
 
         {!setupReady && (
           <span className="text-[12px] text-mute-2">
-            Start Live unlocks after teams, rounds and questions are ready.
+            Go Live unlocks after teams, rounds and event flow are ready.
           </span>
         )}
         <ErrorText error={error} />
@@ -781,16 +857,6 @@ function TeamDrawer({
             </Button>
           </div>
 
-          <div className="grid grid-cols-1 gap-3">
-            <Card className="rounded-xl p-4">
-              <div className="text-[12px] font-semibold text-ink-2">Power Inventory</div>
-              <div className="text-[11.5px] text-mute-2 mt-1">Placeholder for a later step.</div>
-            </Card>
-            <Card className="rounded-xl p-4">
-              <div className="text-[12px] font-semibold text-ink-2">Score History</div>
-              <div className="text-[11.5px] text-mute-2 mt-1">Placeholder for a later step.</div>
-            </Card>
-          </div>
         </div>
       </div>
     </Drawer>
@@ -800,28 +866,20 @@ function TeamDrawer({
 function TeamGrid({
   room,
   teams,
+  cards,
+  ownedCards,
   onCreate,
 }: {
   room: RoomDetail;
   teams: TeamRecord[];
+  cards: PowerCardRecord[];
+  ownedCards: TeamPowerCardRecord[];
   onCreate: () => void;
 }) {
   const [editingTeam, setEditingTeam] = useState<TeamRecord | null>(null);
   const [deletingTeam, setDeletingTeam] = useState<TeamRecord | null>(null);
   const [openTeamId, setOpenTeamId] = useState<string | null>(null);
-  const [pendingTeamId, setPendingTeamId] = useState<string | null>(null);
-  const [pending, startTransition] = useTransition();
-  const router = useRouter();
   const openTeam = teams.find((team) => team.id === openTeamId) ?? null;
-
-  function duplicate(team: TeamRecord) {
-    setPendingTeamId(team.id);
-    startTransition(async () => {
-      await duplicateTeam(team.id, room.id);
-      setPendingTeamId(null);
-      router.refresh();
-    });
-  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -853,28 +911,27 @@ function TeamGrid({
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {teams.map((team) => (
-            <div key={team.id} className="flex flex-col gap-2">
-              <TeamCard
-                team={team}
-                economyEnabled={room.economyEnabled}
-                onOpen={() => setOpenTeamId(team.id)}
-                onEdit={() => setEditingTeam(team)}
-                onDelete={() => setDeletingTeam(team)}
-              />
-              <Button
-                variant="plain"
-                size="sm"
-                onClick={() => duplicate(team)}
-                disabled={pending && pendingTeamId === team.id}
-                className="self-start"
-              >
-                <Icon name="copy" size={12} />
-                {pending && pendingTeamId === team.id ? "Duplicating..." : "Duplicate"}
-              </Button>
-            </div>
+            <TeamCard
+              key={team.id}
+              team={team}
+              economyEnabled={room.economyEnabled}
+              onOpen={() => setOpenTeamId(team.id)}
+              onEdit={() => setEditingTeam(team)}
+              onDelete={() => setDeletingTeam(team)}
+            />
           ))}
         </div>
       )}
+
+      {teams.length > 0 && (
+        <PowerCardsPanel
+          roomId={room.id}
+          cards={cards}
+          economyEnabled={room.economyEnabled}
+          teamCount={teams.length}
+        />
+      )}
+      {teams.length > 0 && <InventoryPanel teams={teams} cards={cards} ownedCards={ownedCards} />}
 
       {editingTeam && (
         <TeamEditorModal
@@ -1076,29 +1133,6 @@ function SceneBuilder({
     });
   }
 
-  function add(type: SceneType) {
-    startTransition(async () => {
-      const { id } = await createScene({ roomId: room.id, type, title: type.replace(/_/g, " ") });
-      setSelectedId(id);
-      refresh();
-    });
-  }
-
-  function remove(scene: SceneRecord) {
-    startTransition(async () => {
-      await deleteScene(scene.id, room.id);
-      refresh();
-    });
-  }
-
-  function duplicate(scene: SceneRecord) {
-    startTransition(async () => {
-      const { id } = await duplicateScene(scene.id, room.id);
-      setSelectedId(id);
-      refresh();
-    });
-  }
-
   function move(index: number, direction: -1 | 1) {
     const next = [...scenes];
     const target = index + direction;
@@ -1114,24 +1148,17 @@ function SceneBuilder({
     <div className="grid grid-cols-1 xl:grid-cols-[300px_minmax(0,1fr)_340px] gap-4 min-h-[620px]">
       <Card className="rounded-2xl p-4 flex flex-col gap-3">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-[13px] font-bold text-ink-2">Scene Timeline</span>
-          <Button variant="subtle" size="sm" onClick={generate} disabled={pending}>
-            Generate
+          <span className="text-[13px] font-bold text-ink-2">Event Flow</span>
+          <Button variant="subtle" size="sm" onClick={generate} loading={pending}>
+            {pending ? "Generating…" : "Regenerate"}
           </Button>
-        </div>
-        <div className="grid grid-cols-2 gap-1.5">
-          {(["WELCOME", "RULES", "ROUND_INTRO", "QUESTION", "DRAWING", "LEADERBOARD", "BREAK", "WINNER"] as SceneType[]).map((type) => (
-            <Button key={type} variant="plain" size="sm" onClick={() => add(type)} disabled={pending}>
-              + {type.replace(/_/g, " ")}
-            </Button>
-          ))}
         </div>
 
         {scenes.length === 0 ? (
           <div className="flex-1 rounded-xl border border-dashed border-line/[.12] flex flex-col items-center justify-center gap-3 text-center p-6">
             <span className="text-[15px] font-bold text-ink">Create your event flow</span>
-            <Button variant="primary" onClick={generate} disabled={pending}>
-              Generate From Rounds
+            <Button variant="primary" onClick={generate} loading={pending}>
+              {pending ? "Generating…" : "Generate Event Flow"}
             </Button>
           </div>
         ) : (
@@ -1157,12 +1184,6 @@ function SceneBuilder({
                   </Button>
                   <Button variant="plain" size="sm" onClick={(event) => { event.stopPropagation(); move(index, 1); }} disabled={index === scenes.length - 1 || pending}>
                     Down
-                  </Button>
-                  <Button variant="plain" size="sm" onClick={(event) => { event.stopPropagation(); duplicate(scene); }} disabled={pending}>
-                    Copy
-                  </Button>
-                  <Button variant="plain" size="sm" onClick={(event) => { event.stopPropagation(); remove(scene); }} disabled={pending}>
-                    Del
                   </Button>
                 </div>
               </div>
@@ -1194,13 +1215,13 @@ function ScenePreview({
   return (
     <Card className="rounded-2xl p-5 flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <span className="text-[11px] font-mono font-semibold tracking-[.12em] text-label">SCENE PREVIEW</span>
+        <span className="text-[11px] font-mono font-semibold tracking-[.12em] text-label">EVENT FLOW PREVIEW</span>
         <span className="text-[11px] text-mute-2">Mobile / Desktop</span>
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-[280px_minmax(0,1fr)] gap-4 flex-1">
         <div className="rounded-[28px] border-[6px] border-[#232634] bg-[#11131d] p-4 min-h-[460px] flex flex-col">
           <span className="self-center text-[10px] text-accent bg-accent/15 rounded-full px-3 py-1">
-            {scene?.type ?? "NO SCENE"}
+            {scene?.type?.replace(/_/g, " ") ?? "NO STEP"}
           </span>
           <div className="flex-1 flex flex-col items-center justify-center text-center gap-3">
             <div className="text-2xl font-bold text-ink">{question?.question || scene?.title || "Create your event flow"}</div>
@@ -1210,7 +1231,7 @@ function ScenePreview({
         <div className="rounded-2xl border border-line/[.08] bg-line/[.03] p-6 flex flex-col justify-center gap-3">
           <span className="text-[11px] font-mono text-label">DESKTOP PREVIEW</span>
           <div className="text-3xl font-bold text-ink">{question?.question || scene?.title || "No scene selected"}</div>
-          <div className="text-sm text-mute-2">{scene?.type?.replace(/_/g, " ") ?? "Generate scenes from rounds."}</div>
+          <div className="text-sm text-mute-2">{scene?.type?.replace(/_/g, " ") ?? "Generate event flow from rounds."}</div>
         </div>
       </div>
     </Card>
@@ -1241,7 +1262,7 @@ function SceneInspector({
   if (!scene) {
     return (
       <Card className="rounded-2xl p-6 flex items-center justify-center text-center text-mute-2">
-        Select a scene to edit its inspector settings.
+        Select a step to edit its settings.
       </Card>
     );
   }
@@ -1264,8 +1285,8 @@ function SceneInspector({
 
   return (
     <Card className="rounded-2xl p-5 flex flex-col gap-4">
-      <span className="text-[11px] font-mono font-semibold tracking-[.12em] text-label">SCENE INSPECTOR</span>
-      <TextField label="Scene title" value={title} onChange={setTitle} />
+      <span className="text-[11px] font-mono font-semibold tracking-[.12em] text-label">STEP SETTINGS</span>
+      <TextField label="Step title" value={title} onChange={setTitle} />
       <label className="flex flex-col gap-[7px]">
         <span className="text-xs font-semibold text-ink-3">Type</span>
         <select value={type} onChange={(event) => setType(event.target.value as SceneType)} className="bg-line/[.04] border border-line/[.1] rounded-[11px] px-3 py-2 text-sm text-ink outline-none">
@@ -1293,91 +1314,163 @@ function SceneInspector({
         <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} className="accent-[var(--color-accent)]" />
         Enabled
       </label>
-      <Button variant="primary" onClick={save} disabled={pending}>
-        {pending ? "Saving..." : "Save Scene"}
+      <Button variant="primary" onClick={save} loading={pending}>
+        {pending ? "Saving..." : "Save Step"}
       </Button>
     </Card>
   );
 }
 
-function ComingSoon({ section }: { section: Section }) {
-  return (
-    <Card className="rounded-2xl p-8 flex flex-col items-center justify-center gap-3 text-center">
-      <div className="w-12 h-12 rounded-2xl bg-line/[.04] border border-line/[.08] flex items-center justify-center">
-        <Icon name="construction" size={21} className="text-mute-2" />
-      </div>
-      <span className="text-[15px] font-bold text-ink">{section} coming soon</span>
-      <span className="text-xs text-mute-2 max-w-[360px] leading-relaxed">
-        Room-level production settings will live here for V1.
-      </span>
-    </Card>
-  );
-}
-
-const POWER_STORE_TABS = ["Cards", "Team Inventory", "Requests", "Economy Settings"] as const;
-type PowerStoreTab = (typeof POWER_STORE_TABS)[number];
-
-function PowerStoreSection({
+function RoomSettings({
   room,
-  teams,
-  cards,
-  purchases,
-  ownedCards,
-  requests,
 }: {
   room: RoomDetail;
-  teams: TeamRecord[];
-  cards: PowerCardRecord[];
-  purchases: CoinTransactionRecord[];
-  ownedCards: TeamPowerCardRecord[];
-  requests: PowerCardRequestRecord[];
 }) {
-  const [tab, setTab] = useState<PowerStoreTab>("Cards");
+  const [name, setName] = useState(room.name);
+  const [joinMethod, setJoinMethod] = useState(room.settings.joinMethod);
+  const [answerMode, setAnswerMode] = useState(room.settings.answerMode ?? "VERBAL");
+  const [permissions, setPermissions] = useState(room.settings.permissions);
+  const [storeStatus, setStoreStatus] = useState(room.storeStatus);
+  const [error, setError] = useState<string | null>(null);
+  const [pending, startTransition] = useTransition();
+  const router = useRouter();
+
+  function save() {
+    setError(null);
+    if (!name.trim()) return setError("Room name is required.");
+    startTransition(async () => {
+      try {
+        await updateRoom(room.id, {
+          name: name.trim(),
+          joinMethod,
+          answerMode,
+          permissions,
+        });
+        if (storeStatus !== room.storeStatus) {
+          if (storeStatus === "OPEN") await openStore(room.id);
+          else await closeStore(room.id);
+        }
+        router.refresh();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not save room settings.");
+      }
+    });
+  }
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-center gap-1.5 border-b border-line/[.07] pb-0.5">
-        {POWER_STORE_TABS.map((item) => (
-          <button
-            key={item}
-            onClick={() => setTab(item)}
-            className={`px-3 py-2 text-[12.5px] font-medium rounded-t-lg transition-colors cursor-pointer ${
-              tab === item
-                ? "text-ink-2 border-b-2 border-accent"
-                : "text-mute-2 hover:text-ink-3"
-            }`}
-          >
-            {item}
-            {item === "Requests" &&
-              requests.filter((r) => r.status === "REQUESTED").length > 0 && (
-                <span className="ml-1.5 font-mono text-[10px] text-accent">
-                  {requests.filter((r) => r.status === "REQUESTED").length}
-                </span>
-              )}
-          </button>
-        ))}
+    <Card className="rounded-2xl p-5 flex flex-col gap-5 max-w-[760px]">
+      <div className="flex flex-col gap-1">
+        <span className="text-[15px] font-bold text-ink-2">Room Settings</span>
+        <span className="text-[12px] text-mute-2">Settings participants and hosts rely on before the event starts.</span>
       </div>
 
-      {tab === "Cards" && (
-        <PowerCardsPanel
-          roomId={room.id}
-          cards={cards}
-          economyEnabled={room.economyEnabled}
-          teamCount={teams.length}
-        />
-      )}
-      {tab === "Team Inventory" && <InventoryPanel teams={teams} cards={cards} ownedCards={ownedCards} />}
-      {tab === "Requests" && <RequestsPanel requests={requests} />}
-      {tab === "Economy Settings" && (
-        <StorePanel
-          roomId={room.id}
-          storeStatus={room.storeStatus}
-          teams={teams}
-          cards={cards}
-          purchases={purchases}
-        />
-      )}
-    </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <TextField label="Room name" value={name} onChange={setName} />
+        <label className="flex flex-col gap-[7px]">
+          <span className="text-xs font-semibold text-ink-3">Room code</span>
+          <input
+            value={room.roomCode}
+            readOnly
+            className="bg-line/[.03] border border-line/[.08] rounded-[11px] px-3.5 py-[11px] text-sm text-mute-2 outline-none"
+          />
+        </label>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <label className="flex flex-col gap-[7px]">
+          <span className="text-xs font-semibold text-ink-3">Join method</span>
+          <select
+            value={joinMethod}
+            onChange={(event) => setJoinMethod(event.target.value as typeof joinMethod)}
+            className="bg-line/[.04] border border-line/[.1] rounded-[11px] px-3 py-2 text-sm text-ink outline-none"
+          >
+            <option value="CODE">Room Code</option>
+            <option value="QR">QR Code</option>
+            <option value="BOTH">Both</option>
+          </select>
+        </label>
+        <label className="flex flex-col gap-[7px]">
+          <span className="text-xs font-semibold text-ink-3">Answer mode</span>
+          <select
+            value={answerMode}
+            onChange={(event) => setAnswerMode(event.target.value as typeof answerMode)}
+            className="bg-line/[.04] border border-line/[.1] rounded-[11px] px-3 py-2 text-sm text-ink outline-none"
+          >
+            <option value="VERBAL">Verbal — teams answer out loud</option>
+            <option value="CAPTAIN_SUBMIT">Captain Submit — captain types the answer</option>
+          </select>
+        </label>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <label className="flex flex-col gap-[7px]">
+          <span className="text-xs font-semibold text-ink-3">Starting coins</span>
+          <input
+            value={room.economyEnabled ? room.startingCoins : 0}
+            readOnly
+            className="bg-line/[.03] border border-line/[.08] rounded-[11px] px-3.5 py-[11px] text-sm text-mute-2 outline-none"
+          />
+        </label>
+        <label className="flex flex-col gap-[7px]">
+          <span className="text-xs font-semibold text-ink-3">Store</span>
+          <select
+            value={storeStatus}
+            onChange={(event) => setStoreStatus(event.target.value as typeof storeStatus)}
+            className="bg-line/[.04] border border-line/[.1] rounded-[11px] px-3 py-2 text-sm text-ink outline-none"
+          >
+            <option value="OPEN">ON</option>
+            <option value="CLOSED">OFF</option>
+          </select>
+        </label>
+      </div>
+
+      <div className="rounded-xl border border-line/[.08] bg-line/[.03] p-4 flex flex-col gap-3">
+        <span className="text-xs font-semibold text-ink-3">Participants can</span>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <label className="flex items-center gap-2.5 text-[12.5px] text-ink-3">
+            <input
+              type="checkbox"
+              checked={permissions.viewLeaderboard}
+              onChange={(event) => setPermissions((current) => ({ ...current, viewLeaderboard: event.target.checked }))}
+              className="accent-[var(--color-accent)]"
+            />
+            See leaderboard
+          </label>
+          <label className="flex items-center gap-2.5 text-[12.5px] text-ink-3">
+            <input
+              type="checkbox"
+              checked={permissions.buyPowers}
+              onChange={(event) => setPermissions((current) => ({ ...current, buyPowers: event.target.checked }))}
+              className="accent-[var(--color-accent)]"
+            />
+            Use store
+          </label>
+          <label className="flex items-center gap-2.5 text-[12.5px] text-ink-3">
+            <input
+              type="checkbox"
+              checked={permissions.viewTeamScore}
+              onChange={(event) => setPermissions((current) => ({ ...current, viewTeamScore: event.target.checked }))}
+              className="accent-[var(--color-accent)]"
+            />
+            See team score
+          </label>
+          <label className="flex items-center gap-2.5 text-[12.5px] text-ink-3">
+            <input
+              type="checkbox"
+              checked={permissions.requestLifelines}
+              onChange={(event) => setPermissions((current) => ({ ...current, requestLifelines: event.target.checked }))}
+              className="accent-[var(--color-accent)]"
+            />
+            Request power cards
+          </label>
+        </div>
+      </div>
+
+      <ErrorText error={error} />
+      <Button variant="primary" onClick={save} loading={pending} className="self-start">
+        {pending ? "Saving..." : "Save Settings"}
+      </Button>
+    </Card>
   );
 }
 
@@ -1389,9 +1482,7 @@ export function RoomSetupDashboard({
   questions,
   scenes,
   cards,
-  purchases,
   ownedCards,
-  requests,
   joinUrl,
   localOnly,
   lanJoinUrl,
@@ -1404,22 +1495,21 @@ export function RoomSetupDashboard({
   questions: QuestionRecord[];
   scenes: SceneRecord[];
   cards: PowerCardRecord[];
-  purchases: CoinTransactionRecord[];
   ownedCards: TeamPowerCardRecord[];
-  requests: PowerCardRequestRecord[];
   joinUrl: string;
   localOnly: boolean;
   lanJoinUrl: string | null;
   qrDataUrl: string;
 }) {
-  const [section, setSection] = useState<Section>("Overview");
+  const [section, setSection] = useState<Section>("Setup");
   const [createTeamOpen, setCreateTeamOpen] = useState(false);
   const content = useMemo(() => {
-    if (section === "Overview") {
+    if (section === "Setup") {
       return (
-        <RoomOverview
+        <SetupTab
           room={room}
           onCreateTeam={() => setCreateTeamOpen(true)}
+          onSelectSection={setSection}
           joinUrl={joinUrl}
           localOnly={localOnly}
           lanJoinUrl={lanJoinUrl}
@@ -1428,27 +1518,23 @@ export function RoomSetupDashboard({
       );
     }
     if (section === "Teams") {
-      return <TeamGrid room={room} teams={teams} onCreate={() => setCreateTeamOpen(true)} />;
+      return (
+        <TeamGrid
+          room={room}
+          teams={teams}
+          cards={cards}
+          ownedCards={ownedCards}
+          onCreate={() => setCreateTeamOpen(true)}
+        />
+      );
     }
     if (section === "Rounds") {
       return <RoundPicker room={room} libraryRounds={libraryRounds} />;
     }
-    if (section === "Scenes") {
+    if (section === "Event Flow") {
       return <SceneBuilder room={room} rounds={rounds} questions={questions} scenes={scenes} />;
     }
-    if (section === "Power Cards") {
-      return (
-        <PowerStoreSection
-          room={room}
-          teams={teams}
-          cards={cards}
-          purchases={purchases}
-          ownedCards={ownedCards}
-          requests={requests}
-        />
-      );
-    }
-    return <ComingSoon section={section} />;
+    return <RoomSettings room={room} />;
   }, [
     cards,
     joinUrl,
@@ -1457,9 +1543,7 @@ export function RoomSetupDashboard({
     localOnly,
     qrDataUrl,
     ownedCards,
-    purchases,
     questions,
-    requests,
     room,
     rounds,
     scenes,
@@ -1480,14 +1564,14 @@ export function RoomSetupDashboard({
       <div className="flex items-center gap-3 flex-wrap">
         <div className="flex flex-col gap-0.5">
           <span className="text-[22px] font-bold text-ink-2 tracking-[-.02em]">{room.name}</span>
-          <span className="text-[13px] text-mute-2">{room.roomCode} - setup teams, rounds and questions.</span>
+          <span className="text-[13px] text-mute-2">{room.roomCode} - setup teams, rounds and event flow.</span>
         </div>
         <div className="ml-auto flex items-center gap-2.5">
           <Badge variant={ROOM_STATUS_BADGE[room.status]}>{displayRoomStatus(room.status)}</Badge>
         </div>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-7 gap-2">
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
         {SECTIONS.map((item) => (
           <button
             key={item}

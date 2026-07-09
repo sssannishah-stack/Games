@@ -30,6 +30,11 @@ export default function RootLayout({
     <html
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      // The no-flash theme script below sets data-theme on this element
+      // synchronously before hydration, by design — the server can't know the
+      // visitor's persisted theme choice, so a mismatch here is expected and
+      // harmless. Silence the warning for this element only.
+      suppressHydrationWarning
     >
       <head>
         {/* Reads the persisted theme choice before first paint so switching

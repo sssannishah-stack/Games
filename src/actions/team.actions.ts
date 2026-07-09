@@ -3,10 +3,10 @@
 import { Types } from "mongoose";
 import { revalidatePath } from "next/cache";
 import { connectToDatabase } from "@/lib/database/mongodb";
-import { Team, ScoreTransaction, TeamPowerCard, Participant } from "@/models";
+import { Team, ScoreTransaction, TeamPowerCard, Participant, EventLog } from "@/models";
 import { requireUser } from "@/lib/auth/getCurrentUser";
 import { assertRoomOwnership } from "@/lib/authz";
-import type { ITeam } from "@/types/db";
+import type { ITeam, ParticipantRole } from "@/types/db";
 
 export interface CreateTeamArgs {
   roomId: string;
@@ -256,4 +256,48 @@ export async function calculateLeaderboard(roomId: string): Promise<LeaderboardE
   }
 
   return ranked;
+}
+
+/**
+ * Host reassigns a connected device's team role (👑 Captain / ⭐ Vice Captain /
+ * 👤 Member). Making someone Captain demotes the current Captain to Member;
+ * making someone Vice Captain demotes the current Vice Captain. The host is
+ * the ultimate authority — this overrides any automatic assignment.
+ */
+export async function setTeamDeviceRole(
+  roomId: string,
+  participantId: string,
+  role: ParticipantRole
+): Promise<void> {
+  const user = await requireUser();
+  await assertRoomOwnership(roomId, user.id);
+  await connectToDatabase();
+
+  const participant = await Participant.findOne({ _id: participantId, roomId });
+  if (!participant) throw new Error("That device is not connected to this room.");
+  if (participant.role === role) return;
+
+  // One captain and one vice captain per team — demote the current holder.
+  if (role !== "MEMBER") {
+    await Participant.updateMany(
+      { teamId: participant.teamId, role, _id: { $ne: participant._id } },
+      { $set: { role: "MEMBER" } }
+    );
+  }
+  participant.role = role;
+  await participant.save();
+
+  if (role === "CAPTAIN") {
+    await EventLog.create({
+      roomId,
+      type: "CAPTAIN_CHANGED",
+      metadata: {
+        teamId: participant.teamId.toString(),
+        participantId: participant._id.toString(),
+        text: `${participant.name} is now team captain`,
+      },
+    });
+  }
+
+  revalidatePath(`/host/${roomId}`);
 }

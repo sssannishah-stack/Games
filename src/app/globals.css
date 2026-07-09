@@ -144,6 +144,15 @@
       opacity: 1;
     }
   }
+  /* Power-card activation: slow ray wheel behind the card. */
+  @keyframes encSpinSlow {
+    0% {
+      transform: rotate(0deg);
+    }
+    100% {
+      transform: rotate(360deg);
+    }
+  }
 }
 
 /* ─── Bright theme — swaps the whole surface/text/line ramp for a light,
@@ -181,6 +190,34 @@
   --color-sky: #1f97c2;
 
   --color-line: #14151b;
+}
+
+/* ─── Forced-dark subtree — re-declares the dark surface/text/line ramp on any
+   element carrying data-theme="dark", so a specific region can stay dark even
+   when the whole app is in the bright theme. Used by the host console: a dense,
+   intentionally dark OBS-style control room whose surfaces and glows assume a
+   dark backdrop and become dark-on-dark (unreadable) under the bright ramp.
+   Accent is left untouched (inherited from :root) so the user's accent choice
+   still applies. ─── */
+[data-theme="dark"] {
+  --color-base: #060709;
+  --color-surface: #0b0c10;
+  --color-shell: #08090c;
+  --color-card: #101218;
+  --color-elev: #14161e;
+  --color-drawer: #0e0f15;
+
+  --color-ink: #f4f5f8;
+  --color-ink-2: #edeef2;
+  --color-ink-3: #c9cdd6;
+  --color-mute: #9ba0ae;
+  --color-mute-2: #8a8f9c;
+  --color-dim: #636876;
+  --color-dim-2: #565b68;
+  --color-label: #4b505c;
+  --color-faint: #464b57;
+
+  --color-line: #ffffff;
 }
 
 body {

@@ -29,6 +29,7 @@ import {
   toggleRoomPowerCardOverride,
 } from "@/actions/powerCard.actions";
 import { giveCoins } from "@/actions/coin.actions";
+import { setTeamDeviceRole } from "@/actions/team.actions";
 import { giveMarks, hostUndoScoreTransaction } from "@/actions/score.actions";
 import { awardAchievement, dismissAchievement, giveManualAchievement } from "@/actions/achievement.actions";
 import { luckySpin, type SpinResult } from "@/actions/surprise.actions";
@@ -361,7 +362,10 @@ export function HostConsole({
   }
 
   return (
-    <div className="h-screen bg-shell flex flex-col overflow-hidden">
+    // Host console is an intentionally dark, OBS-style control room. Pin it to
+    // the dark ramp so it stays legible even when the app is in the bright theme
+    // (its surfaces/text tokens assume a dark backdrop). See globals.css.
+    <div data-theme="dark" className="h-screen bg-shell text-ink-2 flex flex-col overflow-hidden">
       {/* TOP BAR */}
       <div className="min-h-16 border-b border-line/[.07] px-3 sm:px-4 py-2 flex items-center gap-2 sm:gap-3 flex-wrap shrink-0">
         <div className="flex flex-col min-w-0">
@@ -603,6 +607,7 @@ export function HostConsole({
                       Reveal Answer
                     </Button>
                   </div>
+                  <SubmittedAnswers logs={logs} questionId={question.id} teamById={teamById} />
                 </>
               ) : (
                 <span className="text-[12px] text-mute-2">No question active.</span>
@@ -721,6 +726,12 @@ export function HostConsole({
                             ))}
                           </div>
                         )}
+                        <TeamDevicesPanel
+                          roomId={room.id}
+                          devices={participants.filter((p) => p.teamId === team.id)}
+                          pending={pending}
+                          action={action}
+                        />
                       </div>
                     )}
                   </div>
@@ -1685,10 +1696,118 @@ function ScoringModal({
         <Button variant="plain" onClick={onClose} disabled={pending}>
           Cancel
         </Button>
-        <Button variant="primary" onClick={submit} disabled={pending || !teamId}>
+        <Button variant="primary" onClick={submit} loading={pending} disabled={!teamId}>
           {pending ? "Saving..." : "Save"}
         </Button>
       </div>
     </Modal>
+  );
+}
+
+const DEVICE_ROLE_META: Record<ParticipantRecord["role"], { emoji: string; label: string }> = {
+  CAPTAIN: { emoji: "👑", label: "Captain" },
+  VICE_CAPTAIN: { emoji: "⭐", label: "Vice Captain" },
+  MEMBER: { emoji: "👤", label: "Member" },
+};
+
+/**
+ * Connected phones for one team, with host controls to reassign the
+ * Captain / Vice Captain. The host is the ultimate authority over roles —
+ * automatic assignment (first phone = captain) is just the default.
+ */
+function TeamDevicesPanel({
+  roomId,
+  devices,
+  pending,
+  action,
+}: {
+  roomId: string;
+  devices: ParticipantRecord[];
+  pending: boolean;
+  action: (run: () => Promise<void>) => void;
+}) {
+  if (devices.length === 0) {
+    return (
+      <span className="mt-1 text-[10.5px] text-dim">No phones connected for this team yet.</span>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-1 mt-1">
+      <span className="text-[10px] font-semibold text-dim-2 tracking-[.1em]">CONNECTED DEVICES</span>
+      {devices.map((device) => {
+        const meta = DEVICE_ROLE_META[device.role];
+        return (
+          <div key={device.id} className="flex items-center gap-2 text-[11.5px] text-ink-3">
+            <span
+              className={`w-1.5 h-1.5 rounded-full shrink-0 ${device.connected ? "bg-success" : "bg-line/[.25]"}`}
+              title={device.connected ? "Connected" : "Disconnected"}
+            />
+            <span className="truncate flex-1">
+              {meta.emoji} {device.name}
+              <span className="text-dim"> · {meta.label}{device.connected ? "" : " · offline"}</span>
+            </span>
+            {device.role !== "CAPTAIN" && (
+              <button
+                onClick={() => action(() => setTeamDeviceRole(roomId, device.id, "CAPTAIN"))}
+                disabled={pending}
+                className="text-warn hover:brightness-125 text-[10.5px] font-semibold cursor-pointer shrink-0"
+              >
+                Make Captain
+              </button>
+            )}
+            {device.role === "MEMBER" && (
+              <button
+                onClick={() => action(() => setTeamDeviceRole(roomId, device.id, "VICE_CAPTAIN"))}
+                disabled={pending}
+                className="text-accent hover:brightness-125 text-[10.5px] font-semibold cursor-pointer shrink-0"
+              >
+                Make VC
+              </button>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * Written answers submitted by team captains for the current question
+ * (rooms with answerMode CAPTAIN_SUBMIT). A record for the host to judge —
+ * marks are still given manually via Give Marks.
+ */
+function SubmittedAnswers({
+  logs,
+  questionId,
+  teamById,
+}: {
+  logs: EventLogRecord[];
+  questionId: string;
+  teamById: Map<string, TeamRecord>;
+}) {
+  // Latest submission per team for this question only.
+  const byTeam = new Map<string, EventLogRecord>();
+  for (const log of logs) {
+    if (log.type !== "ANSWER_SUBMITTED") continue;
+    if (String(log.metadata?.questionId ?? "") !== questionId) continue;
+    const teamId = String(log.metadata?.teamId ?? "");
+    if (!byTeam.has(teamId)) byTeam.set(teamId, log); // logs are newest-first
+  }
+  if (byTeam.size === 0) return null;
+
+  return (
+    <div className="flex flex-col gap-1 mt-1">
+      <span className="text-[10px] font-semibold text-dim-2 tracking-[.1em]">SUBMITTED ANSWERS</span>
+      {[...byTeam.entries()].map(([teamId, log]) => {
+        const team = teamById.get(teamId);
+        return (
+          <div key={log.id} className="flex items-center gap-2 rounded-lg bg-line/[.04] px-2 py-1.5 text-[11.5px]">
+            <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: team?.color ?? "#6C7BFA" }} />
+            <span className="font-semibold text-ink-3 shrink-0">{team?.name ?? "Team"}:</span>
+            <span className="text-ink-2 truncate">{String(log.metadata?.text ?? "")}</span>
+          </div>
+        );
+      })}
+    </div>
   );
 }

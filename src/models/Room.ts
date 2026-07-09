@@ -25,6 +25,13 @@ const RoomSchema = new Schema<IRoom>(
         default: "BOTH",
         required: true,
       },
+      // VERBAL: teams answer out loud (default). CAPTAIN_SUBMIT: the captain's
+      // phone can also submit a written answer — still judged by the host.
+      answerMode: {
+        type: String,
+        enum: ["VERBAL", "CAPTAIN_SUBMIT"],
+        default: "VERBAL",
+      },
       permissions: {
         viewLeaderboard: { type: Boolean, default: true },
         viewTeamScore: { type: Boolean, default: true },
@@ -51,10 +58,6 @@ const RoomSchema = new Schema<IRoom>(
   },
   { timestamps: true }
 );
-
-// roomCode already has a unique index via the field option; keep it explicit
-// for the participant-join lookup path.
-RoomSchema.index({ roomCode: 1 }, { unique: true });
 
 export const Room: Model<IRoom> = models.Room || model<IRoom>("Room", RoomSchema);
 export default Room;

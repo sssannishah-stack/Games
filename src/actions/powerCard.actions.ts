@@ -5,6 +5,7 @@ import { connectToDatabase } from "@/lib/database/mongodb";
 import { PowerCard, Team, PowerCardRequest, TeamPowerCard, Room, Round, EventLog } from "@/models";
 import { requireUser } from "@/lib/auth/getCurrentUser";
 import { assertRoomOwnership, assertPowerCardOwnership } from "@/lib/authz";
+import { assertTeamController } from "@/lib/teamRoles";
 import { createCoinTransaction } from "@/actions/coin.actions";
 import { DEFAULT_POWER_CARDS } from "@/lib/defaultPowerCards";
 import { effectivePrice } from "@/lib/storePricing";
@@ -72,7 +73,7 @@ async function assertPowerCardAllowedForRoom(
   if (!allowed) throw new Error("This power card isn't allowed in the current round.");
 }
 
-/** Create a power card in the host's global catalog. */
+/** Create a power card in the host's global catalog. Card names must be unique per host (case-insensitive). */
 export async function createPowerCard(
   input: CreatePowerCardInput
 ): Promise<{ id: string }> {
@@ -80,6 +81,13 @@ export async function createPowerCard(
   const data = createPowerCardSchema.parse(input);
 
   await connectToDatabase();
+
+  const existing = await PowerCard.findOne({
+    ownerId: user.id,
+    name: { $regex: `^${data.name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" },
+  }).select("_id").lean();
+  if (existing) throw new Error(`A power card named "${data.name.trim()}" already exists.`);
+
   const card = await PowerCard.create({ ownerId: user.id, ...data });
 
   refreshCatalogPaths();
@@ -91,13 +99,23 @@ export interface UpdatePowerCardArgs {
   changes: Partial<CreatePowerCardInput>;
 }
 
-/** Host edits a card — price, stock, enabled state, or any other field. */
+/** Host edits a card — price, stock, enabled state, or any other field. Renaming still enforces per-host name uniqueness. */
 export async function updatePowerCard({ powerCardId, changes }: UpdatePowerCardArgs): Promise<void> {
   const user = await requireUser();
   await assertPowerCardOwnership(powerCardId, user.id);
   const data = updatePowerCardSchema.parse(changes);
 
   await connectToDatabase();
+
+  if (data.name) {
+    const existing = await PowerCard.findOne({
+      ownerId: user.id,
+      _id: { $ne: powerCardId },
+      name: { $regex: `^${data.name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" },
+    }).select("_id").lean();
+    if (existing) throw new Error(`A power card named "${data.name.trim()}" already exists.`);
+  }
+
   await PowerCard.findByIdAndUpdate(powerCardId, { $set: data });
 
   refreshCatalogPaths();
@@ -192,9 +210,13 @@ export async function giveFreeCard(
 export async function purchasePowerCard(
   roomId: string,
   teamId: string,
-  powerCardId: string
+  powerCardId: string,
+  participantId?: string
 ): Promise<void> {
   await connectToDatabase();
+
+  // Only the team's captain (or acting captain) may spend team coins.
+  await assertTeamController(teamId, participantId);
 
   const room = await Room.findById(roomId).lean();
   if (!room) throw new Error("Room not found.");
@@ -307,16 +329,20 @@ export interface RequestPowerCardInput {
   teamId: string;
   powerCardId: string;
   targetTeamId?: string | null;
+  participantId?: string;
 }
 
 /**
  * A team requests to use an owned power card. If the card doesn't require
  * approval, it activates immediately; otherwise it waits for the host.
+ * Only the team's captain device (or acting captain) may request.
  */
 export async function requestPowerCard(
   input: RequestPowerCardInput
 ): Promise<IPowerCardRequest> {
   await connectToDatabase();
+
+  await assertTeamController(input.teamId, input.participantId);
 
   const room = await Room.findById(input.roomId).lean();
   if (!room) throw new Error("Room not found.");

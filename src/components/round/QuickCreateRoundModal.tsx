@@ -86,7 +86,7 @@ export function QuickCreateRoundModal({ open, onClose, onCreated }: QuickCreateR
         <Button variant="plain" onClick={onClose} disabled={pending}>
           Cancel
         </Button>
-        <Button variant="primary" onClick={submit} disabled={pending}>
+        <Button variant="primary" onClick={submit} loading={pending}>
           {pending ? "Creating..." : "Create round"}
         </Button>
       </div>

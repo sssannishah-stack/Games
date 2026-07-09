@@ -115,6 +115,8 @@ export const EVENT_LOG_TYPES = [
   "AUCTION_STARTED",
   "AUCTION_SOLD",
   "AUCTION_CANCELLED",
+  "CAPTAIN_CHANGED",
+  "ANSWER_SUBMITTED",
 ] as const;
 export type EventLogType = (typeof EVENT_LOG_TYPES)[number];
 
@@ -290,8 +292,18 @@ export interface RoomLiveState {
   flashSaleEndsAt: Date | null;
 }
 
+export const ANSWER_MODES = ["VERBAL", "CAPTAIN_SUBMIT"] as const;
+export type AnswerMode = (typeof ANSWER_MODES)[number];
+
 export interface RoomSettings {
   joinMethod: "CODE" | "QR" | "BOTH";
+  /**
+   * VERBAL (default): teams answer out loud, the host judges and gives marks.
+   * CAPTAIN_SUBMIT: the team captain's phone can also type/submit an answer —
+   * still judged manually by the host (never auto-graded), it just gives the
+   * host a written record next to the current question.
+   */
+  answerMode?: AnswerMode;
   permissions: {
     viewLeaderboard: boolean;
     viewTeamScore: boolean;
@@ -439,11 +451,28 @@ export interface IAuctionBid {
   updatedAt: Date;
 }
 
+/**
+ * A connected phone's role within its team. A team roster can list 10 member
+ * names while only 2-3 phones actually connect — roles belong to the
+ * *connected devices* (Participants), not the roster:
+ * - CAPTAIN 👑 — the team controller: uses/buys power cards, bids in auctions.
+ * - VICE_CAPTAIN ⭐ — backup controller; acts as captain while the captain is
+ *   disconnected (or when the host promotes them).
+ * - MEMBER 👤 — view-only companion screen (question, score, leaderboard).
+ * The first phone to join a team becomes CAPTAIN, the second VICE_CAPTAIN,
+ * the rest MEMBER. The host can reassign roles at any time.
+ */
+export const PARTICIPANT_ROLES = ["CAPTAIN", "VICE_CAPTAIN", "MEMBER"] as const;
+export type ParticipantRole = (typeof PARTICIPANT_ROLES)[number];
+
 export interface IParticipant {
   _id: Types.ObjectId;
   name: string;
   teamId: Types.ObjectId;
   roomId: Types.ObjectId;
+  role: ParticipantRole;
+  /** Heartbeat — bumped by every live poll; "connected" = seen in the last ~15s. */
+  lastSeenAt: Date;
   joinedAt: Date;
 }
 

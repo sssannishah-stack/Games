@@ -370,7 +370,7 @@ export function QuestionEditorModal({
             <Button variant="plain" onClick={close} disabled={pending}>
               Cancel
             </Button>
-            <Button variant="primary" onClick={() => save()} disabled={pending}>
+            <Button variant="primary" onClick={() => save()} loading={pending}>
               {pending ? "Saving..." : "Save Question"}
             </Button>
           </div>

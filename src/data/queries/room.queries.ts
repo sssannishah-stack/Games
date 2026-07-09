@@ -31,6 +31,8 @@ export interface RoomDetail extends RoomSummary {
   onlineDevices: number;
   storeStatus: StoreStatus;
   economyEnabled: boolean;
+  startingCoins: number;
+  storeAvailability: string;
   /** Ordered library Round ids selected to run in this room. */
   selectedRounds: string[];
   /** Power card ids the host has force-enabled for this room's live event. */
@@ -162,6 +164,8 @@ export async function getRoomById(
     createdAt: room.createdAt,
     onlineDevices: room.onlineDevices,
     storeStatus: room.liveState?.storeStatus ?? "CLOSED",
+    startingCoins: competition.settings?.economy?.startingCoins ?? 0,
+    storeAvailability: competition.settings?.economy?.storeAvailability ?? "HOST_MANUAL",
     selectedRounds: selectedRoundIds,
     powerCardOverrides: room.powerCardOverrides ?? [],
     currentSceneId: room.currentSceneId ? room.currentSceneId.toString() : null,

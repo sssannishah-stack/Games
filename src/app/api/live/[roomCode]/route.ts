@@ -5,6 +5,7 @@ import {
   AuctionBid,
   Competition,
   EventLog,
+  Participant,
   PowerCard,
   PowerCardRequest,
   Question,
@@ -17,9 +18,11 @@ import {
 } from "@/models";
 import { serialize } from "@/lib/serialize";
 import { effectivePrice, flashSaleLive } from "@/lib/storePricing";
+import { isDeviceConnected, resolveTeamControl } from "@/lib/teamRoles";
 import type {
   ICompetition,
   IEventLog,
+  IParticipant,
   IPowerCard,
   IPowerCardRequest,
   IQuestion,
@@ -49,12 +52,22 @@ export async function GET(
   const { roomCode } = await context.params;
   const url = new URL(request.url);
   const teamId = url.searchParams.get("teamId");
+  const participantId = url.searchParams.get("participantId");
 
   await connectToDatabase();
 
   const room = await Room.findOne({ roomCode: roomCode.toUpperCase() }).lean<IRoom>();
   if (!room) {
     return NextResponse.json({ error: "Room not found." }, { status: 404 });
+  }
+
+  // Heartbeat: this poll *is* the device's "I'm still here" signal. Connected
+  // status (and captain-disconnect fallback) derives from lastSeenAt.
+  if (participantId && /^[a-f0-9]{24}$/i.test(participantId)) {
+    await Participant.updateOne(
+      { _id: participantId, roomId: room._id },
+      { $set: { lastSeenAt: new Date() } }
+    ).catch(() => {});
   }
 
   const [competition, teams, scenes, latestBroadcast, recentScores, recentEvents] = await Promise.all([
@@ -80,7 +93,7 @@ export async function GET(
   ]);
 
   const selectedTeam = teamId ? teams.find((team) => id(team._id) === teamId) ?? null : null;
-  const [catalog, inventory, requests] = await Promise.all([
+  const [catalog, inventory, requests, teamDevices, myAnswerLog] = await Promise.all([
     competition
       ? PowerCard.find({ ownerId: competition.ownerId, enabled: true }).sort({ price: 1 }).lean<IPowerCard[]>()
       : Promise.resolve([]),
@@ -91,7 +104,29 @@ export async function GET(
           .limit(8)
           .lean<IPowerCardRequest[]>()
       : [],
+    selectedTeam
+      ? Participant.find({ teamId: selectedTeam._id }).sort({ joinedAt: 1 }).lean<IParticipant[]>()
+      : Promise.resolve([] as IParticipant[]),
+    // The team's own submitted answer for the current question (captain-submit
+    // mode). Scoped to *my* team only — never leaked to other teams' phones.
+    selectedTeam && room.currentQuestionId
+      ? EventLog.findOne({
+          roomId: room._id,
+          type: "ANSWER_SUBMITTED",
+          "metadata.teamId": id(selectedTeam._id),
+          "metadata.questionId": id(room.currentQuestionId),
+        })
+          .sort({ createdAt: -1 })
+          .lean<IEventLog>()
+      : null,
   ]);
+
+  // Team device roles: who controls this team right now. The captain while
+  // connected; otherwise the connected vice captain acts as temporary captain.
+  const nowMs = Date.now();
+  const control = resolveTeamControl(teamDevices, nowMs);
+  const meDevice = participantId ? teamDevices.find((d) => id(d._id) === participantId) ?? null : null;
+  const canControl = Boolean(meDevice && control.actingCaptainId === id(meDevice._id));
 
   // A round with powerCardMode "CUSTOM" restricts play to its allow-list —
   // plus whatever the host has force-enabled for this room's live event
@@ -110,6 +145,7 @@ export async function GET(
   // resolved server-side — the phone has no team/catalog maps of its own.
   // `notable` entries also drive the transient "moment" overlays on-device.
   const teamMetaById = new Map(teams.map((t) => [id(t._id), { name: t.name, color: t.color }]));
+  const catalogCardById = new Map(catalog.map((c) => [id(c._id), c]));
   const cardNameById = new Map(catalog.map((c) => [id(c._id), c.name]));
 
   function feedEntry(log: IEventLog) {
@@ -131,9 +167,28 @@ export async function GET(
           notable: Math.abs(points) >= 20,
         };
       }
-      case "POWER_CARD_USED":
+      case "POWER_CARD_USED": {
         if (meta.source === "HOST_REMOVED") return null;
-        return { text: `${teamName} activated ${cardName}`, icon: "⚡", tone: "power", teamColor, notable: true };
+        // Full card details ride along so phones can play the card's own
+        // activation animation, not a generic toast.
+        const usedCard = catalogCardById.get(id(meta.powerCardId));
+        return {
+          text: `${teamName} activated ${cardName}`,
+          icon: "⚡",
+          tone: "power",
+          teamColor,
+          notable: true,
+          power: usedCard
+            ? {
+                name: usedCard.name,
+                icon: usedCard.icon,
+                effectType: usedCard.effectType,
+                rarity: usedCard.rarity,
+                teamName,
+              }
+            : null,
+        };
+      }
       case "POWER_CARD_REQUESTED":
         return { text: `${teamName} requested ${cardName}`, icon: "✋", tone: "info", teamColor, notable: false };
       case "CARD_PURCHASED":
@@ -198,6 +253,16 @@ export async function GET(
         };
       case "AUCTION_CANCELLED":
         return { text: "Auction cancelled", icon: "🔨", tone: "info", teamColor: null, notable: false };
+      case "CAPTAIN_CHANGED":
+        return {
+          text: String(meta.text ?? `${teamName} has a new captain`),
+          icon: "👑",
+          tone: "info",
+          teamColor,
+          notable: true,
+        };
+      // ANSWER_SUBMITTED deliberately has no feed entry — a team's written
+      // answer must never appear on other teams' phones.
       default:
         return null;
     }
@@ -252,8 +317,29 @@ export async function GET(
         roomCode: room.roomCode,
         status: room.status,
         storeStatus: room.liveState.storeStatus,
+        answerMode: room.settings?.answerMode ?? "VERBAL",
         permissions: room.settings?.permissions,
       },
+      // This device's team role + whether it currently controls team actions.
+      me: meDevice
+        ? {
+            id: id(meDevice._id),
+            name: meDevice.name,
+            role: meDevice.role,
+            canControl,
+            isActingCaptain: canControl && meDevice.role !== "CAPTAIN",
+            captainConnected: control.captainConnected,
+            captainName: control.captain?.name ?? null,
+          }
+        : null,
+      // My team's own submitted answer for the current question (captain-submit mode).
+      myAnswer: myAnswerLog
+        ? {
+            text: String(myAnswerLog.metadata?.text ?? ""),
+            submittedBy: String(myAnswerLog.metadata?.submittedBy ?? ""),
+            createdAt: myAnswerLog.createdAt,
+          }
+        : null,
       competition: {
         id: id(room.competitionId),
         title: competition?.title ?? room.name,
@@ -305,6 +391,8 @@ export async function GET(
             timer: question.timer,
             positiveMarks: question.positiveMarks,
             negativeMarks: question.negativeMarks,
+            isMCQ: question.isMCQ,
+            options: question.options ?? [],
             answer: room.liveState.showAnswer ? question.answer : null,
             hints: question.hints ?? [],
           }
@@ -317,6 +405,12 @@ export async function GET(
             score: selectedTeam.score,
             coins: selectedTeam.coins,
             members: selectedTeam.members ?? [],
+            devices: teamDevices.map((d) => ({
+              id: id(d._id),
+              name: d.name,
+              role: d.role,
+              connected: isDeviceConnected(d.lastSeenAt, nowMs),
+            })),
             rank: sortedTeams.findIndex((team) => id(team._id) === id(selectedTeam._id)) + 1,
             streak: selectedTeam.stats?.streak ?? 0,
             bestStreak: selectedTeam.stats?.bestStreak ?? 0,

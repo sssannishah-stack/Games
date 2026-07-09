@@ -250,7 +250,7 @@ function RoundSettingsForm({ round, roomUsageCount }: { round: RoundRecord; room
       </label>
 
       <ErrorText error={error} />
-      <Button variant="primary" onClick={() => save()} disabled={pending} className="self-start disabled:opacity-60">
+      <Button variant="primary" onClick={() => save()} loading={pending} className="self-start disabled:opacity-60">
         {pending ? "Saving..." : "Save Settings"}
       </Button>
       {safetyOpen && (

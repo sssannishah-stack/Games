@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { purchasePowerCard, requestPowerCard } from "@/actions/powerCard.actions";
 import { placeBid } from "@/actions/auction.actions";
+import { submitTeamAnswer } from "@/actions/room.actions";
 import { JoinForm, type JoinedParticipant } from "@/components/room/JoinForm";
 import { JoinPageShell } from "@/components/room/JoinPageShell";
 import { Icon } from "@/components/ui/Icon";
@@ -11,10 +12,20 @@ import { Button } from "@/components/ui/Button";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import { Confetti } from "@/components/motion/Confetti";
 import { NumberTicker } from "@/components/motion/NumberTicker";
+import { PowerCardFace } from "@/components/power-card/PowerCardFace";
 import { useMotionEnabled } from "@/components/motion/useMotionEnabled";
 import type { PublicRoomInfo } from "@/data/queries/room.queries";
 import type { TeamRecord } from "@/data/queries/team.queries";
 import type { SceneType } from "@/types/db";
+
+type TeamDeviceRole = "CAPTAIN" | "VICE_CAPTAIN" | "MEMBER";
+
+type TeamDevice = {
+  id: string;
+  name: string;
+  role: TeamDeviceRole;
+  connected: boolean;
+};
 
 type LiveTeam = {
   id: string;
@@ -24,6 +35,7 @@ type LiveTeam = {
   coins: number;
   rank: number;
   members: { name: string }[];
+  devices?: TeamDevice[];
   streak?: number;
   bestStreak?: number;
 };
@@ -73,6 +85,14 @@ type LiveFeedItem = {
   teamColor: string | null;
   notable: boolean;
   createdAt: string;
+  /** Card details for POWER_CARD_USED — drives the card's activation animation. */
+  power?: {
+    name: string;
+    icon: string;
+    effectType: string;
+    rarity: string;
+    teamName: string;
+  } | null;
 };
 
 type LivePayload = {
@@ -83,6 +103,7 @@ type LivePayload = {
     roomCode: string;
     status: string;
     storeStatus: "OPEN" | "CLOSED";
+    answerMode?: "VERBAL" | "CAPTAIN_SUBMIT";
     permissions?: {
       viewLeaderboard: boolean;
       viewTeamScore: boolean;
@@ -90,6 +111,18 @@ type LivePayload = {
       requestLifelines: boolean;
     };
   };
+  /** This device's team role + whether it currently controls team actions. */
+  me: {
+    id: string;
+    name: string;
+    role: TeamDeviceRole;
+    canControl: boolean;
+    isActingCaptain: boolean;
+    captainConnected: boolean;
+    captainName: string | null;
+  } | null;
+  /** My team's own submitted answer for the current question (captain-submit mode). */
+  myAnswer: { text: string; submittedBy: string; createdAt: string } | null;
   competition: { id: string; title: string };
   currentScene: {
     id: string | null;
@@ -124,6 +157,8 @@ type LivePayload = {
     timer: number;
     positiveMarks: number;
     negativeMarks: number;
+    isMCQ: boolean;
+    options: string[];
     answer: string | null;
     hints: { text: string; penalty: number }[];
   } | null;
@@ -186,13 +221,23 @@ function textValue(value: unknown, fallback = "") {
 }
 
 export function LivePlayClient({ room, teams }: LivePlayClientProps) {
-  const [participant, setParticipant] = useState<StoredParticipant | null>(() => readParticipant(room.roomCode));
+  // Initialize to null (matching the server, which has no access to
+  // localStorage) and read the stored participant after mount — reading it
+  // synchronously in the initializer caused a hydration mismatch, since the
+  // server always renders the "not joined" JoinForm but the client's first
+  // render pass would already see a returning participant.
+  const [participant, setParticipant] = useState<StoredParticipant | null>(null);
+  useEffect(() => {
+    const stored = readParticipant(room.roomCode);
+    if (stored) setParticipant(stored);
+  }, [room.roomCode]);
   const [live, setLive] = useState<LivePayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [offline, setOffline] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [toast, setToast] = useState<string | null>(null);
   const [moment, setMoment] = useState<LiveFeedItem | null>(null);
+  const [powerMoment, setPowerMoment] = useState<LiveFeedItem | null>(null);
   const lastNotableId = useRef<string | null>(null);
   const seededNotable = useRef(false);
   const [celebrate, setCelebrate] = useState(false);
@@ -249,7 +294,10 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
   function handleJoined(joined: JoinedParticipant) {
     const stored = { ...joined, roomCode: room.roomCode.toUpperCase() };
     window.localStorage.setItem(storageKey(room.roomCode), JSON.stringify(stored));
-    setParticipant(stored);
+    // JoinForm shows its own "You're in!" confirmation on successful join —
+    // delay swapping to the live view so that moment is actually visible
+    // instead of being replaced in the very same render.
+    window.setTimeout(() => setParticipant(stored), 1400);
   }
 
   function leavePhone() {
@@ -259,10 +307,10 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
   }
 
   function buy(card: LivePower) {
-    if (!live?.team) return;
+    if (!live?.team || !participant) return;
     startTransition(async () => {
       try {
-        await purchasePowerCard(live.room.id, live.team!.id, card.id);
+        await purchasePowerCard(live.room.id, live.team!.id, card.id, participant.id);
         setToast(`${card.name} added to your team.`);
       } catch (err) {
         setToast(err instanceof Error ? err.message : "Could not buy card.");
@@ -271,13 +319,14 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
   }
 
   function request(card: LivePower) {
-    if (!live?.team) return;
+    if (!live?.team || !participant) return;
     startTransition(async () => {
       try {
         await requestPowerCard({
           roomId: live.room.id,
           teamId: live.team!.id,
           powerCardId: card.id,
+          participantId: participant.id,
         });
         setToast(`${card.name} request sent to host.`);
       } catch (err) {
@@ -287,13 +336,30 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
   }
 
   function bid(amount: number) {
-    if (!live?.team || !live.auction) return;
+    if (!live?.team || !live.auction || !participant) return;
     startTransition(async () => {
       try {
-        await placeBid(live.room.id, live.team!.id, live.auction!.id, amount);
+        await placeBid(live.room.id, live.team!.id, live.auction!.id, amount, participant.id);
         setToast(`Bid placed: ${amount} coins.`);
       } catch (err) {
         setToast(err instanceof Error ? err.message : "Could not place bid.");
+      }
+    });
+  }
+
+  function submitAnswer(text: string) {
+    if (!live?.team || !participant) return;
+    startTransition(async () => {
+      try {
+        await submitTeamAnswer({
+          roomId: live.room.id,
+          teamId: live.team!.id,
+          participantId: participant.id,
+          text,
+        });
+        setToast("Answer submitted — the host will judge it.");
+      } catch (err) {
+        setToast(err instanceof Error ? err.message : "Could not submit answer.");
       }
     });
   }
@@ -305,26 +371,42 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
   }, [toast]);
 
   // Flash a transient "moment" overlay when a new notable event lands. The
-  // first poll only seeds the baseline so we never replay history on join.
+  // first poll only seeds the baseline so we never replay history on join —
+  // seeded on the first poll *result* (even an empty feed), otherwise a fresh
+  // room would swallow the first big moment of the night as "baseline".
+  // Power card activations get their own cinematic overlay instead of the
+  // generic moment card.
   useEffect(() => {
-    const newest = live?.feed.find((item) => item.notable);
-    if (!newest) return;
+    if (!live) return;
+    const newest = live.feed.find((item) => item.notable);
     if (!seededNotable.current) {
       seededNotable.current = true;
-      lastNotableId.current = newest.id;
+      lastNotableId.current = newest?.id ?? null;
       return;
     }
+    if (!newest) return;
     if (newest.id !== lastNotableId.current) {
       lastNotableId.current = newest.id;
-      setMoment(newest);
+      if (newest.power) {
+        setPowerMoment(newest);
+        if (motionEnabled && typeof navigator !== "undefined") navigator.vibrate?.([30, 40, 60]);
+      } else {
+        setMoment(newest);
+      }
     }
-  }, [live?.feed]);
+  }, [live, motionEnabled]);
 
   useEffect(() => {
     if (!moment) return;
     const timeout = window.setTimeout(() => setMoment(null), 2600);
     return () => window.clearTimeout(timeout);
   }, [moment]);
+
+  useEffect(() => {
+    if (!powerMoment) return;
+    const timeout = window.setTimeout(() => setPowerMoment(null), 3200);
+    return () => window.clearTimeout(timeout);
+  }, [powerMoment]);
 
   // Celebrate when our own team's score rises (confetti + a happy buzz), or a
   // gentle shake + longer buzz when it drops. The first reading only seeds the
@@ -384,8 +466,11 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
           </div>
           <div className="flex flex-col min-w-0">
             <span className="text-[13px] font-bold text-ink truncate">{live?.competition.title ?? room.name}</span>
-            <span className="text-[11px] text-mute-2 truncate">
-              {participant.name} - {live?.team?.name ?? participant.teamName}
+            <span className="flex items-center gap-1.5 text-[11px] text-mute-2 truncate">
+              <span className="truncate">
+                {participant.name} - {live?.team?.name ?? participant.teamName}
+              </span>
+              {live?.me && <RoleBadge role={live.me.role} acting={live.me.isActingCaptain} />}
             </span>
           </div>
           <div className="ml-auto flex items-center gap-2">
@@ -425,12 +510,30 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
         ) : (
           <>
             <StatusStrip live={live} seconds={seconds} shake={scoreShake} />
+            {live.me && !live.me.captainConnected && (
+              <CaptainStatusBanner me={live.me} />
+            )}
             <main className="flex-1 min-h-0 py-4">
-              <SceneScreen live={live} seconds={seconds} onRequest={request} pending={pending} participantName={participant.name} />
+              <SceneScreen
+                live={live}
+                seconds={seconds}
+                onRequest={request}
+                onSubmitAnswer={submitAnswer}
+                pending={pending}
+                participantName={participant.name}
+              />
             </main>
-            {live.auction && <AuctionPanel auction={live.auction} coins={live.team?.coins ?? 0} pending={pending} onBid={bid} />}
+            {live.auction && (
+              <AuctionPanel
+                auction={live.auction}
+                coins={live.team?.coins ?? 0}
+                pending={pending}
+                onBid={bid}
+                canControl={live.me?.canControl ?? false}
+              />
+            )}
             <LiveFeed feed={live.feed} />
-            <PowerTray live={live} pending={pending} onBuy={buy} onRequest={request} />
+            <BottomBar live={live} pending={pending} onBuy={buy} onRequest={request} />
           </>
         )}
       </div>
@@ -438,6 +541,9 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
       {celebrate && <Confetti count={80} />}
       <AnimatePresence>
         {moment && <MomentOverlay key={moment.id} moment={moment} />}
+      </AnimatePresence>
+      <AnimatePresence>
+        {powerMoment?.power && <PowerActivationOverlay key={powerMoment.id} power={powerMoment.power} />}
       </AnimatePresence>
       <AnimatePresence>
         {live?.broadcast?.message && <BroadcastOverlay key={live.broadcast.id} message={live.broadcast.message} />}
@@ -590,16 +696,298 @@ function Metric({
   );
 }
 
+const ROLE_META: Record<TeamDeviceRole, { emoji: string; label: string; color: string }> = {
+  CAPTAIN: { emoji: "👑", label: "Captain", color: "#E8C84A" },
+  VICE_CAPTAIN: { emoji: "⭐", label: "Vice Captain", color: "#5EC9E8" },
+  MEMBER: { emoji: "👤", label: "Member", color: "#8EA0B8" },
+};
+
+function RoleBadge({ role, acting }: { role: TeamDeviceRole; acting?: boolean }) {
+  const meta = acting ? { ...ROLE_META.CAPTAIN, label: "Temp Captain" } : ROLE_META[role];
+  return (
+    <span
+      className="shrink-0 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold border"
+      style={{
+        color: meta.color,
+        borderColor: `color-mix(in oklab, ${meta.color} 38%, transparent)`,
+        background: `color-mix(in oklab, ${meta.color} 12%, transparent)`,
+      }}
+    >
+      {meta.emoji} {meta.label}
+    </span>
+  );
+}
+
+/** Shown when the team captain's phone has dropped off. */
+function CaptainStatusBanner({ me }: { me: NonNullable<LivePayload["me"]> }) {
+  return (
+    <div className="mt-2 rounded-2xl border border-warn/30 bg-warn/[.08] px-3 py-2 text-[12px] font-medium text-warn">
+      {me.isActingCaptain
+        ? "👑 Captain disconnected — you are temporary captain."
+        : `Captain${me.captainName ? ` ${me.captainName}` : ""} disconnected${me.role === "MEMBER" ? "." : " — vice captain has control."}`}
+    </div>
+  );
+}
+
+/**
+ * Persistent bottom action bar: 🏆 Leaderboard / ⚡ Powers / 🛒 Store.
+ * The store button only exists while the host has the store open.
+ */
+function BottomBar({
+  live,
+  pending,
+  onBuy,
+  onRequest,
+}: {
+  live: LivePayload;
+  pending: boolean;
+  onBuy: (card: LivePower) => void;
+  onRequest: (card: LivePower) => void;
+}) {
+  const [open, setOpen] = useState<"LEADERBOARD" | "POWERS" | "STORE" | null>(null);
+  const canControl = live.me?.canControl ?? false;
+  const storeVisible = live.powers.economyEnabled && live.powers.storeOpen;
+  const showLeaderboard = live.room.permissions?.viewLeaderboard !== false;
+  const inventory = live.powers.cards.filter((c) => c.remainingUses > 0);
+
+  // The host closing the store while its sheet is open should dismiss it.
+  useEffect(() => {
+    if (open === "STORE" && !storeVisible) setOpen(null);
+  }, [open, storeVisible]);
+
+  return (
+    <>
+      <nav className="shrink-0 grid gap-2 pt-1" style={{ gridTemplateColumns: `repeat(${(showLeaderboard ? 1 : 0) + 1 + (storeVisible ? 1 : 0)}, 1fr)` }}>
+        {showLeaderboard && (
+          <button
+            onClick={() => setOpen("LEADERBOARD")}
+            className="rounded-2xl border border-line/[.09] bg-line/[.04] px-3 py-3 text-[12.5px] font-bold text-ink-2 cursor-pointer"
+          >
+            🏆 Leaderboard
+          </button>
+        )}
+        <button
+          onClick={() => setOpen("POWERS")}
+          className="rounded-2xl border border-line/[.09] bg-line/[.04] px-3 py-3 text-[12.5px] font-bold text-ink-2 cursor-pointer"
+        >
+          ⚡ Powers{inventory.length > 0 ? ` · ${inventory.length}` : ""}
+        </button>
+        {storeVisible && (
+          <button
+            onClick={() => setOpen("STORE")}
+            className="rounded-2xl border border-warn/35 bg-warn/[.1] px-3 py-3 text-[12.5px] font-bold text-warn cursor-pointer"
+          >
+            🛒 Store
+          </button>
+        )}
+      </nav>
+
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-end justify-center"
+          >
+            <div className="absolute inset-0 bg-black/55 backdrop-blur-[2px]" onClick={() => setOpen(null)} />
+            <motion.div
+              initial={{ y: "100%" }}
+              animate={{ y: 0 }}
+              exit={{ y: "100%" }}
+              transition={{ type: "spring", stiffness: 320, damping: 32 }}
+              className="relative w-full max-w-[520px] max-h-[78dvh] overflow-y-auto rounded-t-[28px] border border-line/[.1] bg-card p-5 pb-8"
+            >
+              <div className="flex items-center gap-2 mb-4">
+                <span className="text-[13px] font-bold text-ink">
+                  {open === "LEADERBOARD" ? "🏆 Leaderboard" : open === "POWERS" ? "⚡ Team Powers" : "🛒 Power Store"}
+                </span>
+                <button
+                  onClick={() => setOpen(null)}
+                  className="ml-auto w-8 h-8 rounded-xl bg-line/[.05] border border-line/[.08] text-mute-2 flex items-center justify-center cursor-pointer"
+                  aria-label="Close"
+                >
+                  <Icon name="x" size={14} />
+                </button>
+              </div>
+
+              {open === "LEADERBOARD" && <LeaderboardSheet live={live} />}
+              {open === "POWERS" && (
+                <PowersSheet live={live} pending={pending} canControl={canControl} onRequest={onRequest} />
+              )}
+              {open === "STORE" && (
+                <StoreSheet live={live} pending={pending} canControl={canControl} onBuy={onBuy} onRequest={onRequest} />
+              )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
+  );
+}
+
+/** Rank / team / score / gap-to-leader table, opened from the bottom bar. */
+function LeaderboardSheet({ live }: { live: LivePayload }) {
+  const leaderScore = live.leaderboard[0]?.score ?? 0;
+  return (
+    <div className="flex flex-col gap-1.5">
+      {live.leaderboard.length === 0 && <span className="text-sm text-mute-2">No teams yet.</span>}
+      {live.leaderboard.map((team) => {
+        const isMine = team.id === live.team?.id;
+        const diff = leaderScore - team.score;
+        return (
+          <div
+            key={team.id}
+            className={`flex items-center gap-3 rounded-2xl border px-3.5 py-3 ${
+              isMine ? "border-accent/45 bg-accent/[.08]" : "border-line/[.08] bg-line/[.03]"
+            }`}
+          >
+            <span className="w-7 text-center font-mono text-[13px] font-black text-ink-3">{team.rank}</span>
+            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: team.color ?? "#6C7BFA" }} />
+            <span className="text-[13.5px] font-semibold text-ink truncate flex-1">
+              {team.name}
+              {isMine && <span className="ml-1.5 text-[10px] text-accent font-bold">YOU</span>}
+            </span>
+            <span className="flex flex-col items-end shrink-0">
+              <span className="font-mono text-[15px] font-black text-ink tabular-nums">{team.score}</span>
+              {team.rank > 1 && <span className="text-[10px] text-mute-2">-{diff} behind</span>}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Team inventory drawer — the deck in your hand. Only the captain (or acting captain) can activate. */
+function PowersSheet({
+  live,
+  pending,
+  canControl,
+  onRequest,
+}: {
+  live: LivePayload;
+  pending: boolean;
+  canControl: boolean;
+  onRequest: (card: LivePower) => void;
+}) {
+  const inventory = live.powers.cards.filter((c) => c.remainingUses > 0);
+  const requestsAllowed = live.room.permissions?.requestLifelines !== false;
+
+  return (
+    <div className="flex flex-col gap-2.5">
+      {!canControl && (
+        <div className="rounded-xl border border-line/[.09] bg-line/[.04] px-3 py-2 text-[11.5px] text-mute-2">
+          👑 Only the captain can activate powers — you can watch the inventory here.
+        </div>
+      )}
+      {inventory.length === 0 ? (
+        <span className="text-sm text-mute-2 py-4 text-center">
+          No power cards owned yet{live.powers.economyEnabled ? " — buy some when the store opens." : "."}
+        </span>
+      ) : (
+        <div className="grid grid-cols-2 gap-3">
+          {inventory.map((card) => (
+            <div key={card.id} className="flex flex-col gap-1.5">
+              <div className="relative">
+                <PowerCardFace
+                  name={card.name}
+                  icon={card.icon}
+                  effectType={card.effectType}
+                  rarity={card.rarity}
+                  size="md"
+                  className={card.status === "ACTIVE" ? "ring-2 ring-success/70" : ""}
+                />
+                {/* Copies badge, deck-style. */}
+                <span className="absolute -top-1.5 -right-1.5 min-w-6 h-6 px-1 rounded-full bg-ink text-shell text-[11px] font-black flex items-center justify-center border-2 border-card shadow">
+                  ×{card.remainingUses}
+                </span>
+                {card.status === "ACTIVE" && (
+                  <span className="absolute top-1.5 left-1/2 -translate-x-1/2 rounded-full bg-success/90 text-white text-[9px] font-bold tracking-[.1em] px-2 py-0.5">
+                    ACTIVE
+                  </span>
+                )}
+              </div>
+              {canControl ? (
+                <Button
+                  variant="primary"
+                  size="sm"
+                  disabled={pending || !requestsAllowed || card.status === "REQUESTED" || card.status === "ACTIVE"}
+                  onClick={() => onRequest(card)}
+                  className="justify-center"
+                >
+                  {card.status === "REQUESTED" ? "Pending" : "Use Power"}
+                </Button>
+              ) : (
+                <span className="text-center text-[10.5px] text-dim py-1">Only captain can activate</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Store sheet — captain buys, members can only look. */
+function StoreSheet({
+  live,
+  pending,
+  canControl,
+  onBuy,
+  onRequest,
+}: {
+  live: LivePayload;
+  pending: boolean;
+  canControl: boolean;
+  onBuy: (card: LivePower) => void;
+  onRequest: (card: LivePower) => void;
+}) {
+  const cards = useMemo(() => {
+    const rank = (c: LivePower) => (c.isMystery ? 0 : c.limited ? 1 : 2);
+    return [...live.powers.cards].sort((a, b) => rank(a) - rank(b));
+  }, [live.powers.cards]);
+  const flashSale = live.powers.flashSale;
+
+  return (
+    <div className="flex flex-col gap-2.5">
+      <div className="flex items-center gap-2">
+        <span className="text-[11px] text-warn font-semibold">{live.team?.coins ?? 0} 🪙 team coins</span>
+        {!canControl && (
+          <span className="ml-auto text-[10.5px] text-mute-2">👑 Only the captain can buy</span>
+        )}
+      </div>
+      {flashSale.active && <FlashSaleBanner percent={flashSale.percent} endsAt={flashSale.endsAt} />}
+      <div className="grid grid-cols-2 gap-2">
+        {cards.map((card) => (
+          <StoreCard
+            key={card.id}
+            card={card}
+            live={live}
+            pending={pending}
+            economyEnabled={live.powers.economyEnabled}
+            canControl={canControl}
+            onBuy={onBuy}
+            onRequest={onRequest}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function SceneScreen({
   live,
   seconds,
   onRequest,
+  onSubmitAnswer,
   pending,
   participantName,
 }: {
   live: LivePayload;
   seconds: number | null;
   onRequest: (card: LivePower) => void;
+  onSubmitAnswer: (text: string) => void;
   pending: boolean;
   participantName: string;
 }) {
@@ -636,7 +1024,9 @@ function SceneScreen({
       {type === "WAITING" && <WaitingScene live={live} participantName={participantName} />}
       {type === "WELCOME" && <WelcomeScene live={live} />}
       {type === "ROUND_INTRO" && <RoundIntroScene live={live} />}
-      {type === "QUESTION" && <QuestionScene live={live} seconds={seconds} onRequest={onRequest} pending={pending} />}
+      {type === "QUESTION" && (
+        <QuestionScene live={live} seconds={seconds} onRequest={onRequest} onSubmitAnswer={onSubmitAnswer} pending={pending} />
+      )}
       {type === "DRAWING" && <DrawingScene live={live} />}
       {type === "ANSWER_REVEAL" && <AnswerRevealScene live={live} />}
       {type === "LEADERBOARD" && <LeaderboardScene live={live} />}
@@ -752,14 +1142,18 @@ function QuestionScene({
   live,
   seconds,
   onRequest,
+  onSubmitAnswer,
   pending,
 }: {
   live: LivePayload;
   seconds: number | null;
   onRequest: (card: LivePower) => void;
+  onSubmitAnswer: (text: string) => void;
   pending: boolean;
 }) {
   const available = live.powers.cards.filter((card) => card.remainingUses > 0).slice(0, 3);
+  const canControl = live.me?.canControl ?? false;
+  const captainSubmit = live.room.answerMode === "CAPTAIN_SUBMIT";
   return (
     <div className="flex-1 flex flex-col gap-4 pt-5">
       <div className="flex items-center justify-center">
@@ -785,13 +1179,35 @@ function QuestionScene({
         <h1 className="text-[28px] leading-[1.08] font-black tracking-[-.03em]">
           {live.question?.question || live.currentScene.title}
         </h1>
-        <p className="text-sm text-mute-2 mt-3">Discuss with your team. The host gives marks manually.</p>
+        <p className="text-sm text-mute-2 mt-3">
+          {captainSubmit
+            ? canControl
+              ? "Discuss with your team, then submit the team's answer below."
+              : "Discuss with your team — the captain submits the answer."
+            : "Discuss with your team. The host gives marks manually."}
+        </p>
       </div>
+      {live.question?.isMCQ && live.question.options.length > 0 && (
+        <div className="grid grid-cols-1 gap-2">
+          {live.question.options.map((option, index) => (
+            <div
+              key={option}
+              className="flex items-center gap-3 rounded-2xl border border-line/[.08] bg-line/[.04] px-4 py-3"
+            >
+              <span className="w-7 h-7 rounded-full bg-line/[.06] border border-line/[.09] flex items-center justify-center text-xs font-bold text-ink-3 shrink-0">
+                {String.fromCharCode(65 + index)}
+              </span>
+              <span className="text-sm font-semibold text-ink">{option}</span>
+            </div>
+          ))}
+        </div>
+      )}
       {live.question?.answer && (
         <div className="rounded-2xl border border-success/25 bg-success/[.1] px-4 py-3 text-center text-sm font-bold text-success">
           Answer: {live.question.answer}
         </div>
       )}
+      {captainSubmit && <CaptainAnswerBox live={live} canControl={canControl} pending={pending} onSubmit={onSubmitAnswer} />}
       <div className="mt-auto">
         <span className="text-[10px] font-semibold tracking-[.12em] text-label">AVAILABLE POWERS</span>
         <div className="grid grid-cols-3 gap-2 mt-2">
@@ -803,18 +1219,86 @@ function QuestionScene({
             available.map((card) => (
               <button
                 key={card.id}
-                onClick={() => onRequest(card)}
-                disabled={pending || card.status === "REQUESTED"}
+                onClick={() => canControl && onRequest(card)}
+                disabled={pending || card.status === "REQUESTED" || !canControl}
                 className="rounded-2xl border border-line/[.08] bg-line/[.04] px-2 py-3 text-center disabled:opacity-55"
               >
                 <span className="block text-xl">{card.icon}</span>
                 <span className="block text-[11px] font-bold text-ink mt-1 truncate">{card.name}</span>
-                <span className="block text-[10px] text-mute-2">{card.status === "REQUESTED" ? "Pending" : `${card.remainingUses} left`}</span>
+                <span className="block text-[10px] text-mute-2">
+                  {!canControl ? "Captain only" : card.status === "REQUESTED" ? "Pending" : `${card.remainingUses} left`}
+                </span>
               </button>
             ))
           )}
         </div>
+        {!canControl && available.length > 0 && (
+          <span className="block mt-1.5 text-center text-[10.5px] text-dim">👑 Only the captain can activate powers.</span>
+        )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Captain-submit answer mode (room setting): the captain types the team's
+ * answer; everyone else sees the submitted state. The host still judges and
+ * awards marks manually — this is a written record, not auto-grading.
+ */
+function CaptainAnswerBox({
+  live,
+  canControl,
+  pending,
+  onSubmit,
+}: {
+  live: LivePayload;
+  canControl: boolean;
+  pending: boolean;
+  onSubmit: (text: string) => void;
+}) {
+  const [text, setText] = useState("");
+  const submitted = live.myAnswer;
+
+  if (submitted) {
+    return (
+      <div className="rounded-2xl border border-accent/30 bg-accent/[.08] px-4 py-3">
+        <span className="block text-[10px] font-semibold tracking-[.12em] text-accent">TEAM ANSWER SUBMITTED</span>
+        <span className="block text-[14px] font-bold text-ink mt-1">{submitted.text}</span>
+        <span className="block text-[10.5px] text-mute-2 mt-0.5">
+          by {submitted.submittedBy} · waiting for the host to judge
+        </span>
+      </div>
+    );
+  }
+
+  if (!canControl) {
+    return (
+      <div className="rounded-2xl border border-line/[.09] bg-line/[.04] px-4 py-3 text-center text-[12px] text-mute-2">
+        👑 The captain submits the team&apos;s answer.
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex gap-1.5">
+      <input
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder="Type your team's answer…"
+        className="flex-1 min-w-0 bg-line/[.05] border border-line/[.1] rounded-[13px] px-3.5 py-3 text-[14px] text-ink outline-none focus:border-accent/60"
+      />
+      <Button
+        variant="primary"
+        size="sm"
+        disabled={pending || !text.trim()}
+        onClick={() => {
+          onSubmit(text.trim());
+          setText("");
+        }}
+        className="shrink-0 px-4"
+      >
+        Submit
+      </Button>
     </div>
   );
 }
@@ -997,11 +1481,13 @@ function AuctionPanel({
   coins,
   pending,
   onBid,
+  canControl,
 }: {
   auction: LiveAuction;
   coins: number;
   pending: boolean;
   onBid: (amount: number) => void;
+  canControl: boolean;
 }) {
   const suggested =
     auction.type === "NORMAL"
@@ -1050,39 +1536,47 @@ function AuctionPanel({
         </div>
       </div>
 
-      <div className="mt-2.5 flex items-center gap-1.5">
-        <button
-          onClick={() => setAmount((a) => Math.max(auction.startingBid, a - auction.minIncrement))}
-          className="w-8 h-9 rounded-lg bg-line/[.06] text-ink font-bold cursor-pointer"
-        >
-          −
-        </button>
-        <input
-          type="number"
-          value={amount}
-          onChange={(e) => setAmount(Number(e.target.value))}
-          className="flex-1 min-w-0 h-9 bg-line/[.05] border border-line/[.1] rounded-lg px-2 text-center text-[14px] font-bold text-ink outline-none"
-        />
-        <button
-          onClick={() => setAmount((a) => a + auction.minIncrement)}
-          className="w-8 h-9 rounded-lg bg-line/[.06] text-ink font-bold cursor-pointer"
-        >
-          +
-        </button>
-        <Button
-          variant="primary"
-          size="sm"
-          disabled={pending || !canAfford}
-          onClick={() => onBid(amount)}
-          className="h-9 px-3.5"
-        >
-          {sealed && auction.myBid != null ? "Update" : "Bid"}
-        </Button>
-      </div>
-      {!canAfford && (
-        <span className="mt-1.5 block text-[10.5px] text-danger-soft">
-          {amount < auction.startingBid ? `Minimum bid is ${auction.startingBid}` : "Not enough coins"}
-        </span>
+      {canControl ? (
+        <>
+          <div className="mt-2.5 flex items-center gap-1.5">
+            <button
+              onClick={() => setAmount((a) => Math.max(auction.startingBid, a - auction.minIncrement))}
+              className="w-8 h-9 rounded-lg bg-line/[.06] text-ink font-bold cursor-pointer"
+            >
+              −
+            </button>
+            <input
+              type="number"
+              value={amount}
+              onChange={(e) => setAmount(Number(e.target.value))}
+              className="flex-1 min-w-0 h-9 bg-line/[.05] border border-line/[.1] rounded-lg px-2 text-center text-[14px] font-bold text-ink outline-none"
+            />
+            <button
+              onClick={() => setAmount((a) => a + auction.minIncrement)}
+              className="w-8 h-9 rounded-lg bg-line/[.06] text-ink font-bold cursor-pointer"
+            >
+              +
+            </button>
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={pending || !canAfford}
+              onClick={() => onBid(amount)}
+              className="h-9 px-3.5"
+            >
+              {sealed && auction.myBid != null ? "Update" : "Bid"}
+            </Button>
+          </div>
+          {!canAfford && (
+            <span className="mt-1.5 block text-[10.5px] text-danger-soft">
+              {amount < auction.startingBid ? `Minimum bid is ${auction.startingBid}` : "Not enough coins"}
+            </span>
+          )}
+        </>
+      ) : (
+        <div className="mt-2.5 rounded-lg border border-line/[.09] bg-line/[.04] px-3 py-2 text-center text-[12px] text-mute-2">
+          👑 Waiting for your captain to bid…
+        </div>
       )}
     </motion.div>
   );
@@ -1123,6 +1617,7 @@ function StoreCard({
   live,
   pending,
   economyEnabled,
+  canControl,
   onBuy,
   onRequest,
 }: {
@@ -1130,45 +1625,55 @@ function StoreCard({
   live: LivePayload;
   pending: boolean;
   economyEnabled: boolean;
+  canControl: boolean;
   onBuy: (card: LivePower) => void;
   onRequest: (card: LivePower) => void;
 }) {
   const canRequest =
-    (card.remainingUses > 0 || card.requestable) && live.room.permissions?.requestLifelines !== false;
-  const canBuy = economyEnabled && live.powers.storeOpen && live.room.permissions?.buyPowers !== false;
+    canControl &&
+    (card.remainingUses > 0 || card.requestable) &&
+    live.room.permissions?.requestLifelines !== false;
+  const canBuy =
+    canControl && economyEnabled && live.powers.storeOpen && live.room.permissions?.buyPowers !== false;
   const soldOut = card.limited && (card.stock ?? 0) <= 0;
 
   return (
-    <div
-      className={`relative min-w-[150px] rounded-2xl border p-3 ${
-        card.isMystery
-          ? "border-accent/40 bg-[linear-gradient(160deg,color-mix(in_oklab,var(--color-accent)_14%,var(--color-card)),var(--color-card))]"
-          : "border-line/[.08] bg-card"
-      }`}
-    >
-      <div className="flex items-center gap-1 mb-1.5 min-h-[16px]">
-        {card.isMystery && (
-          <span className="rounded-full bg-accent/20 text-accent text-[8.5px] font-bold tracking-[.1em] px-1.5 py-0.5">
-            MYSTERY
-          </span>
-        )}
-        {card.limited && !card.isMystery && (
-          <span className="rounded-full bg-pink/20 text-pink text-[8.5px] font-bold tracking-[.08em] px-1.5 py-0.5">
+    <div className="relative flex flex-col gap-1.5">
+      <div className={`relative ${soldOut ? "opacity-45 saturate-50" : ""}`}>
+        <PowerCardFace
+          name={card.name}
+          icon={card.icon}
+          effectType={card.effectType}
+          rarity={card.rarity}
+          size="md"
+          footer={
+            economyEnabled ? (
+              <span className="rounded-full bg-black/45 border border-white/15 px-2 py-0.5 text-[10px] font-black text-warn tabular-nums">
+                {card.onSale && card.basePrice != null && (
+                  <span className="line-through opacity-60 mr-1 font-semibold">{card.basePrice}</span>
+                )}
+                {card.price} 🪙
+              </span>
+            ) : undefined
+          }
+        />
+        {/* Status ribbons over the card art. */}
+        {card.limited && (
+          <span
+            className={`absolute top-1.5 left-1/2 -translate-x-1/2 rounded-full px-2 py-0.5 text-[8.5px] font-bold tracking-[.08em] ${
+              soldOut ? "bg-black/70 text-mute-2" : "bg-pink/85 text-white"
+            }`}
+          >
             {soldOut ? "SOLD OUT" : `${card.stock} LEFT`}
           </span>
         )}
-        {card.onSale && (
-          <span className="ml-auto rounded-full bg-warn/20 text-warn text-[8.5px] font-bold tracking-[.08em] px-1.5 py-0.5">
+        {card.onSale && !card.limited && (
+          <span className="absolute top-1.5 left-1/2 -translate-x-1/2 rounded-full bg-warn/90 text-black px-2 py-0.5 text-[8.5px] font-black tracking-[.08em]">
             SALE
           </span>
         )}
       </div>
-      <div className="flex items-center gap-2">
-        <span className="text-xl">{card.icon}</span>
-        <span className="text-[12px] font-bold text-ink truncate">{card.name}</span>
-      </div>
-      <p className="text-[10.5px] text-mute-2 mt-1 line-clamp-2 min-h-[30px]">{card.description}</p>
-      <div className={`mt-3 grid gap-1.5 ${economyEnabled ? "grid-cols-2" : "grid-cols-1"}`}>
+      <div className={`grid gap-1.5 ${economyEnabled ? "grid-cols-2" : "grid-cols-1"}`}>
         <Button
           variant="subtle"
           size="sm"
@@ -1186,70 +1691,11 @@ function StoreCard({
             onClick={() => onBuy(card)}
             className="justify-center text-[11px] px-2"
           >
-            {card.onSale && card.basePrice != null ? (
-              <span className="flex items-center gap-1">
-                <span className="line-through opacity-60 text-[9px]">{card.basePrice}</span>
-                {card.price}
-              </span>
-            ) : (
-              card.price
-            )}
+            Buy {card.price}
           </Button>
         )}
       </div>
     </div>
-  );
-}
-
-function PowerTray({
-  live,
-  pending,
-  onBuy,
-  onRequest,
-}: {
-  live: LivePayload;
-  pending: boolean;
-  onBuy: (card: LivePower) => void;
-  onRequest: (card: LivePower) => void;
-}) {
-  // Shop ordering: mystery boxes and limited stock first (the exciting stuff),
-  // then everything else. Flash-sale pricing is shown per-card.
-  const cards = useMemo(() => {
-    const rank = (c: LivePower) => (c.isMystery ? 0 : c.limited ? 1 : 2);
-    return [...live.powers.cards].sort((a, b) => rank(a) - rank(b));
-  }, [live.powers.cards]);
-  if (!cards.length) return null;
-
-  const economyEnabled = live.powers.economyEnabled;
-  const storeClosed = economyEnabled && !live.powers.storeOpen;
-  const flashSale = live.powers.flashSale;
-
-  return (
-    <footer className="shrink-0 rounded-[24px] border border-line/[.08] bg-line/[.035] p-3">
-      <div className="flex items-center gap-2 mb-2">
-        <span className="text-[10px] font-semibold tracking-[.12em] text-label">POWER STORE</span>
-        {economyEnabled && <span className="ml-auto text-[11px] text-warn font-semibold">{live.team?.coins ?? 0} 🪙</span>}
-      </div>
-      {flashSale.active && <FlashSaleBanner percent={flashSale.percent} endsAt={flashSale.endsAt} />}
-      {storeClosed && !flashSale.active && (
-        <div className="mb-2 rounded-xl border border-line/[.08] bg-line/[.03] px-3 py-2 text-center text-[12px] text-mute-2">
-          Store currently closed
-        </div>
-      )}
-      <div className="flex gap-2 overflow-x-auto pb-1">
-        {cards.map((card) => (
-          <StoreCard
-            key={card.id}
-            card={card}
-            live={live}
-            pending={pending}
-            economyEnabled={economyEnabled}
-            onBuy={onBuy}
-            onRequest={onRequest}
-          />
-        ))}
-      </div>
-    </footer>
   );
 }
 
@@ -1334,6 +1780,66 @@ function MomentOverlay({ moment }: { moment: LiveFeedItem }) {
         </span>
         <span className="text-xl font-bold text-ink">{moment.text}</span>
       </motion.div>
+    </motion.div>
+  );
+}
+
+/**
+ * The big moment: a team plays a power card and every phone in the room sees
+ * the card itself slam in — ray wheel behind it, card flips up from the deck,
+ * team name stamped below. ~3s, pointer-events-none, then gone.
+ */
+function PowerActivationOverlay({ power }: { power: NonNullable<LiveFeedItem["power"]> }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[70] flex items-center justify-center pointer-events-none"
+    >
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-[3px]" />
+
+      {/* Slow-spinning ray wheel behind the card. */}
+      <div
+        aria-hidden
+        className="absolute w-[560px] h-[560px] animate-[encSpinSlow_14s_linear_infinite]"
+        style={{
+          background:
+            "repeating-conic-gradient(rgba(255,255,255,.07) 0deg 9deg, transparent 9deg 24deg)",
+          maskImage: "radial-gradient(circle, black 0%, transparent 68%)",
+          WebkitMaskImage: "radial-gradient(circle, black 0%, transparent 68%)",
+        }}
+      />
+
+      <div className="relative flex flex-col items-center gap-4">
+        <motion.div
+          initial={{ scale: 0.25, rotateY: 180, y: 140, opacity: 0 }}
+          animate={{ scale: 1, rotateY: 0, y: 0, opacity: 1 }}
+          exit={{ scale: 0.85, y: -30, opacity: 0 }}
+          transition={{ type: "spring", stiffness: 210, damping: 20 }}
+          style={{ transformPerspective: 900 }}
+          className="w-[212px]"
+        >
+          <PowerCardFace
+            name={power.name}
+            icon={power.icon}
+            effectType={power.effectType}
+            rarity={power.rarity}
+            size="lg"
+          />
+        </motion.div>
+        <motion.div
+          initial={{ opacity: 0, y: 14 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.35 }}
+          className="flex flex-col items-center gap-1"
+        >
+          <span className="text-[11px] font-bold tracking-[.24em] text-warn">POWER PLAYED</span>
+          <span className="text-lg font-black text-white drop-shadow-[0_2px_12px_rgba(0,0,0,.8)]">
+            {power.teamName} activated {power.name}!
+          </span>
+        </motion.div>
+      </div>
     </motion.div>
   );
 }

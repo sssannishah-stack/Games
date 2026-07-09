@@ -13,7 +13,7 @@ import {
   duplicateCompetition,
   updateCompetition,
 } from "@/actions/competition.actions";
-import { createRoom, deleteRoom, duplicateRoom, updateRoom } from "@/actions/room.actions";
+import { createRoom, deleteRoom, startRoomEvent, startRoomTestMode } from "@/actions/room.actions";
 import type { CompetitionRecord } from "@/data/queries/competition.queries";
 import type { RoomSummary } from "@/data/queries/room.queries";
 import type { BadgeProps } from "@/components/ui/Badge";
@@ -232,7 +232,7 @@ function EditCompetitionModal({
         <Button variant="plain" onClick={onClose} disabled={pending}>
           Cancel
         </Button>
-        <Button variant="primary" onClick={submit} disabled={pending} className="disabled:opacity-60">
+        <Button variant="primary" onClick={submit} loading={pending} className="disabled:opacity-60">
           {pending ? "Saving..." : "Save changes"}
         </Button>
       </div>
@@ -271,7 +271,7 @@ function DeleteCompetitionModal({
       <ModalHeader title="Delete Competition?" onClose={onClose} />
       <div className="px-6 py-5 flex flex-col gap-3.5">
         <div className="text-[13px] text-mute-2 leading-relaxed">
-          This removes this competition and its rooms, including room teams, participants, scores, scenes, and live history.
+          This removes this competition and its rooms, including room teams, participants, scores, event flow, and live history.
         </div>
         <Field label="Type DELETE to confirm" value={confirmation} onChange={setConfirmation} />
         <ErrorText error={error} />
@@ -283,7 +283,8 @@ function DeleteCompetitionModal({
         <Button
           variant="danger"
           onClick={submit}
-          disabled={pending || confirmation !== "DELETE"}
+          loading={pending}
+          disabled={confirmation !== "DELETE"}
           className="disabled:opacity-50"
         >
           {pending ? "Deleting..." : "Delete"}
@@ -373,139 +374,8 @@ function CreateRoomModal({
         <Button variant="plain" onClick={onClose} disabled={pending}>
           Cancel
         </Button>
-        <Button variant="primary" onClick={submit} disabled={pending} className="disabled:opacity-60">
+        <Button variant="primary" onClick={submit} loading={pending} className="disabled:opacity-60">
           {pending ? "Saving..." : "Save room"}
-        </Button>
-      </div>
-    </Modal>
-  );
-}
-
-function EditRoomModal({
-  room,
-  open,
-  onClose,
-}: {
-  room: RoomSummary;
-  open: boolean;
-  onClose: () => void;
-}) {
-  const [name, setName] = useState(room.name);
-  const [joinMethod, setJoinMethod] = useState<JoinMethod>(room.settings.joinMethod);
-  const [permissions, setPermissions] = useState(room.settings.permissions);
-  const [error, setError] = useState<string | null>(null);
-  const [pending, startTransition] = useTransition();
-  const router = useRouter();
-
-  function submit() {
-    setError(null);
-    if (!name.trim()) return setError("Room name is required.");
-    startTransition(async () => {
-      try {
-        await updateRoom(room.id, { name: name.trim(), joinMethod, permissions });
-        onClose();
-        router.refresh();
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Could not update room.");
-      }
-    });
-  }
-
-  return (
-    <Modal open={open} onClose={() => !pending && onClose()} className="max-w-[560px]">
-      <ModalHeader title="Edit room" onClose={onClose} />
-      <div className="px-6 py-5 flex flex-col gap-4">
-        <Field label="Room name" value={name} onChange={setName} />
-        <JoinMethodPicker value={joinMethod} onChange={setJoinMethod} />
-        <div className="flex flex-col gap-2">
-          <span className="text-xs font-semibold text-ink-3">Allow participants to</span>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            <PermissionToggle
-              label="See leaderboard"
-              checked={permissions.viewLeaderboard}
-              onChange={(checked) => setPermissions((p) => ({ ...p, viewLeaderboard: checked }))}
-            />
-            <PermissionToggle
-              label="See team score"
-              checked={permissions.viewTeamScore}
-              onChange={(checked) => setPermissions((p) => ({ ...p, viewTeamScore: checked }))}
-            />
-            <PermissionToggle
-              label="Buy powers"
-              checked={permissions.buyPowers}
-              onChange={(checked) => setPermissions((p) => ({ ...p, buyPowers: checked }))}
-            />
-            <PermissionToggle
-              label="Request powers"
-              checked={permissions.requestLifelines}
-              onChange={(checked) => setPermissions((p) => ({ ...p, requestLifelines: checked }))}
-            />
-          </div>
-        </div>
-        <ErrorText error={error} />
-      </div>
-      <div className="flex items-center justify-end gap-2.5 px-6 py-4 border-t border-line/[.07] bg-line/[.015]">
-        <Button variant="plain" onClick={onClose} disabled={pending}>
-          Cancel
-        </Button>
-        <Button variant="primary" onClick={submit} disabled={pending} className="disabled:opacity-60">
-          {pending ? "Saving..." : "Save room"}
-        </Button>
-      </div>
-    </Modal>
-  );
-}
-
-function DeleteRoomModal({
-  room,
-  open,
-  onClose,
-}: {
-  room: RoomSummary | null;
-  open: boolean;
-  onClose: () => void;
-}) {
-  const [confirmation, setConfirmation] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [pending, startTransition] = useTransition();
-  const router = useRouter();
-
-  function submit() {
-    if (!room) return;
-    setError(null);
-    startTransition(async () => {
-      try {
-        await deleteRoom(room.id, confirmation);
-        setConfirmation("");
-        onClose();
-        router.refresh();
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Could not delete room.");
-      }
-    });
-  }
-
-  return (
-    <Modal open={open && room !== null} onClose={() => !pending && onClose()} className="max-w-[500px]">
-      <ModalHeader title="Delete room?" onClose={onClose} />
-      <div className="px-6 py-5 flex flex-col gap-3.5">
-        <div className="text-[13px] text-mute-2 leading-relaxed">
-          This removes the room setup, teams, participants, rounds, questions, scores, and live history.
-        </div>
-        <Field label="Type DELETE to confirm" value={confirmation} onChange={setConfirmation} />
-        <ErrorText error={error} />
-      </div>
-      <div className="flex items-center justify-end gap-2.5 px-6 py-4 border-t border-line/[.07] bg-line/[.015]">
-        <Button variant="plain" onClick={onClose} disabled={pending}>
-          Cancel
-        </Button>
-        <Button
-          variant="danger"
-          onClick={submit}
-          disabled={pending || confirmation !== "DELETE"}
-          className="disabled:opacity-50"
-        >
-          {pending ? "Deleting..." : "Delete room"}
         </Button>
       </div>
     </Modal>
@@ -556,8 +426,8 @@ function CompetitionHeader({
           <Icon name="pencil" size={14} />
           Edit
         </Button>
-        <Button variant="subtle" onClick={duplicate} disabled={pending}>
-          <Icon name="copy" size={14} />
+        <Button variant="subtle" onClick={duplicate} loading={pending}>
+          {!pending && <Icon name="copy" size={14} />}
           {pending ? "Duplicating..." : "Duplicate"}
         </Button>
         <Button variant="danger" onClick={onDelete}>
@@ -578,10 +448,9 @@ function SetupProgress({ rooms }: { rooms: RoomSummary[] }) {
   const items = [
     { label: "Competition Created", done: true },
     { label: "Room Added", done: stats.rooms > 0 },
-    { label: "Teams Added", done: stats.teams > 0 },
+    { label: "Teams Created", done: stats.teams > 0 },
     { label: "Rounds Selected", done: stats.rounds > 0 },
-    { label: "Questions Added", done: stats.questions > 0 },
-    { label: "Scene Flow Ready", done: stats.scenes > 0 },
+    { label: "Event Flow Ready", done: stats.scenes > 0 },
   ];
   const complete = items.filter((item) => item.done).length;
   const percent = Math.round((complete / items.length) * 100);
@@ -673,22 +542,107 @@ function OverviewCard({ competition, rooms }: { competition: CompetitionRecord; 
   );
 }
 
-function RoomCard({
+function DeleteRoomModal({
   room,
-  onEdit,
-  onDelete,
+  open,
+  onClose,
 }: {
   room: RoomSummary;
-  onEdit: () => void;
-  onDelete: () => void;
+  open: boolean;
+  onClose: () => void;
 }) {
+  const [confirmation, setConfirmation] = useState("");
+  const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
   const router = useRouter();
 
-  function duplicate() {
+  function submit() {
+    setError(null);
     startTransition(async () => {
-      await duplicateRoom(room.id);
-      router.refresh();
+      try {
+        await deleteRoom(room.id, confirmation);
+        onClose();
+        router.refresh();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not delete room.");
+      }
+    });
+  }
+
+  return (
+    <Modal open={open} onClose={() => !pending && onClose()} className="max-w-[480px]">
+      <ModalHeader title="Delete room?" onClose={onClose} />
+      <div className="px-6 py-5 flex flex-col gap-3.5">
+        <div className="text-[13px] text-mute-2 leading-relaxed">
+          This removes <span className="text-ink-2 font-semibold">{room.name}</span> and its teams,
+          participants, event flow, scores, and live history. Reusable rounds and questions are not
+          deleted.
+        </div>
+        <Field label="Type DELETE to confirm" value={confirmation} onChange={setConfirmation} />
+        <ErrorText error={error} />
+      </div>
+      <div className="flex items-center justify-end gap-2.5 px-6 py-4 border-t border-line/[.07] bg-line/[.015]">
+        <Button variant="plain" onClick={onClose} disabled={pending}>
+          Cancel
+        </Button>
+        <Button
+          variant="danger"
+          onClick={submit}
+          loading={pending}
+          disabled={confirmation !== "DELETE"}
+          className="disabled:opacity-50"
+        >
+          {pending ? "Deleting..." : "Delete room"}
+        </Button>
+      </div>
+    </Modal>
+  );
+}
+
+function RoomCard({ room }: { room: RoomSummary }) {
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const router = useRouter();
+  const teamsDone = room.teamCount > 0;
+  const roundsDone = room.roundCount > 0;
+  const flowDone = room.sceneCount > 0;
+  const ready = teamsDone && roundsDone && flowDone;
+  const progress = [
+    { label: "Teams", done: teamsDone },
+    { label: "Rounds", done: roundsDone },
+    { label: "Event Flow", done: flowDone },
+  ];
+
+  function test() {
+    setError(null);
+    if (room.status === "TESTING") {
+      router.push(`/host/${room.id}`);
+      return;
+    }
+    startTransition(async () => {
+      try {
+        await startRoomTestMode(room.id);
+        router.push(`/host/${room.id}`);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not start test mode.");
+      }
+    });
+  }
+
+  function goLive() {
+    setError(null);
+    if (room.status === "LIVE") {
+      router.push(`/host/${room.id}`);
+      return;
+    }
+    startTransition(async () => {
+      try {
+        await startRoomEvent(room.id);
+        router.push(`/host/${room.id}`);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not go live.");
+      }
     });
   }
 
@@ -706,15 +660,21 @@ function RoomCard({
         </Badge>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 text-[11.5px] text-mute-2">
-        <span>{room.teamCount} teams</span>
-        <span>{room.participantCount} participants</span>
-        <span>{room.roundCount} rounds</span>
-        <span>{room.sceneCount} scenes</span>
+      <div className="flex flex-col gap-2">
+        {progress.map((item) => (
+          <div key={item.label} className="flex items-center gap-2 text-[12px] text-ink-3">
+            <Icon
+              name={item.done ? "circle-check" : "circle"}
+              size={14}
+              className={item.done ? "text-success" : "text-dim-2"}
+            />
+            <span>{item.label}</span>
+          </div>
+        ))}
       </div>
 
       <div className="text-[11px] text-dim">
-        Join: {room.settings.joinMethod} · Leaderboard {room.settings.permissions.viewLeaderboard ? "on" : "off"}
+        {room.teamCount} teams - {room.roundCount} rounds - {room.sceneCount} flow steps
       </div>
 
       <div className="flex flex-wrap gap-2 mt-auto">
@@ -722,32 +682,46 @@ function RoomCard({
           href={`/admin/rooms/${room.id}`}
           className="inline-flex items-center justify-center gap-2 font-medium transition cursor-pointer select-none whitespace-nowrap bg-line/[.04] border border-line/[.09] text-ink-3 hover:bg-line/[.08] text-[12.5px] rounded-[10px] px-3.5 py-2"
         >
-          Setup Room
+          Continue Setup
         </Link>
-        <Link
-          href={`/host/${room.id}`}
-          className="inline-flex items-center justify-center gap-2 font-medium transition cursor-pointer select-none whitespace-nowrap bg-accent text-white text-[12.5px] rounded-[10px] px-3.5 py-2 hover:brightness-110"
+        <Button
+          variant="subtle"
+          size="md"
+          onClick={test}
+          disabled={!ready || pending}
+          className="disabled:opacity-45 disabled:cursor-not-allowed"
+        >
+          Test
+        </Button>
+        <Button
+          variant="success"
+          size="md"
+          onClick={goLive}
+          disabled={!ready || pending}
+          className="disabled:opacity-45 disabled:cursor-not-allowed"
         >
           Go Live
-        </Link>
-        <Button variant="subtle" size="md" onClick={onEdit}>
-          Edit
         </Button>
-        <Button variant="subtle" size="md" onClick={duplicate} disabled={pending}>
-          {pending ? "Duplicating..." : "Duplicate"}
-        </Button>
-        <Button variant="danger" size="md" onClick={onDelete}>
+        <Button
+          variant="danger"
+          size="md"
+          onClick={() => setDeleteOpen(true)}
+          disabled={pending}
+          className="ml-auto"
+          aria-label={`Delete room ${room.name}`}
+        >
+          <Icon name="trash-2" size={14} />
           Delete
         </Button>
       </div>
+      <ErrorText error={error} />
+      <DeleteRoomModal room={room} open={deleteOpen} onClose={() => setDeleteOpen(false)} />
     </Card>
   );
 }
 
 function RoomsTab({ competitionId, rooms }: { competitionId: string; rooms: RoomSummary[] }) {
   const [createOpen, setCreateOpen] = useState(false);
-  const [editingRoom, setEditingRoom] = useState<RoomSummary | null>(null);
-  const [deletingRoom, setDeletingRoom] = useState<RoomSummary | null>(null);
 
   return (
     <div id="rooms-section" className="flex flex-col gap-4">
@@ -769,7 +743,7 @@ function RoomsTab({ competitionId, rooms }: { competitionId: string; rooms: Room
           </div>
           <span className="text-[15px] font-bold text-ink">No rooms created</span>
           <span className="text-xs text-mute-2 max-w-[360px] leading-relaxed">
-            Create your first event room to add teams, select rounds, build scenes, and go live.
+            Create your first event room to add teams, select rounds, prepare event flow, and go live.
           </span>
           <Button variant="primary" onClick={() => setCreateOpen(true)}>
             <Icon name="plus" size={14} />
@@ -779,12 +753,7 @@ function RoomsTab({ competitionId, rooms }: { competitionId: string; rooms: Room
       ) : (
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
           {rooms.map((room) => (
-            <RoomCard
-              key={room.id}
-              room={room}
-              onEdit={() => setEditingRoom(room)}
-              onDelete={() => setDeletingRoom(room)}
-            />
+            <RoomCard key={room.id} room={room} />
           ))}
         </div>
       )}
@@ -793,18 +762,6 @@ function RoomsTab({ competitionId, rooms }: { competitionId: string; rooms: Room
         competitionId={competitionId}
         open={createOpen}
         onClose={() => setCreateOpen(false)}
-      />
-      {editingRoom && (
-        <EditRoomModal
-          room={editingRoom}
-          open={editingRoom !== null}
-          onClose={() => setEditingRoom(null)}
-        />
-      )}
-      <DeleteRoomModal
-        room={deletingRoom}
-        open={deletingRoom !== null}
-        onClose={() => setDeletingRoom(null)}
       />
     </div>
   );

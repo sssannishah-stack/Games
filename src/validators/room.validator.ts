@@ -38,6 +38,7 @@ export const liveStateSchema = z.object({
 export const updateRoomSchema = z.object({
   name: z.string().min(1, "Room name is required").max(80).optional(),
   joinMethod: z.enum(["CODE", "QR", "BOTH"]).optional(),
+  answerMode: z.enum(["VERBAL", "CAPTAIN_SUBMIT"]).optional(),
   permissions: z
     .object({
       viewLeaderboard: z.boolean().optional(),
