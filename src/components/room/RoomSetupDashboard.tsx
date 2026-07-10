@@ -1175,12 +1175,12 @@ function SceneBuilder({
               return (
                 <div
                   key={scene.id}
-                  className={`relative overflow-hidden rounded-xl border p-3 pl-4 flex flex-col gap-2 cursor-pointer transition ${
-                    isSelected ? `${visual.row} ring-1 ring-accent/50` : visual.row
+                  className={`relative overflow-hidden rounded-xl border p-3 pl-4 flex flex-col gap-2 cursor-pointer transition hover:bg-line/[.05] ${
+                    isSelected ? `${visual.row} ring-1 ring-accent/50 bg-accent/[.06]` : visual.row
                   }`}
                   onClick={() => setSelectedId(scene.id)}
                 >
-                  <span className={`absolute left-0 inset-y-0 w-[5px] ${visual.bar}`} />
+                  <span className={`absolute left-0 inset-y-0 w-[3px] ${visual.bar}`} />
                   <div className="flex items-center gap-2">
                     <span className="font-mono text-[11px] text-dim">{index + 1}</span>
                     <span
@@ -1241,22 +1241,16 @@ function ScenePreview({
   questions: QuestionRecord[];
 }) {
   const question = scene?.questionId ? questions.find((item) => item.id === scene.questionId) : null;
-  const visual = scene ? sceneVisual(scene.type) : null;
   const typeLabel = scene?.type?.replace(/_/g, " ") ?? "NO STEP";
   return (
-    <Card className="rounded-2xl p-5 flex flex-col gap-4">
+    <Card className="rounded-2xl p-5 flex flex-col gap-4 h-[680px]">
       <div className="flex items-center justify-between">
         <span className="text-[11px] font-mono font-semibold tracking-[.12em] text-label">EVENT FLOW PREVIEW</span>
         <span className="text-[11px] text-mute-2">Mobile / Desktop</span>
       </div>
-      <div className="grid grid-cols-1 lg:grid-cols-[280px_minmax(0,1fr)] gap-4 flex-1">
-        <div className="relative overflow-hidden rounded-[28px] border-[6px] border-[#232634] bg-[#11131d] p-4 min-h-[460px] flex flex-col">
-          {visual && <span className={`absolute inset-x-0 top-0 h-1.5 ${visual.bar}`} />}
-          <span
-            className={`self-center text-[10px] font-bold tracking-[.08em] rounded-full px-3 py-1 ${
-              visual ? visual.badge : "text-accent bg-accent/15"
-            }`}
-          >
+      <div className="grid grid-cols-1 lg:grid-cols-[280px_minmax(0,1fr)] gap-4">
+        <div className="rounded-[28px] border-[6px] border-[#232634] bg-[#11131d] p-4 min-h-[460px] flex flex-col">
+          <span className="self-center text-[10px] text-accent bg-accent/15 rounded-full px-3 py-1">
             {typeLabel}
           </span>
           <div className="flex-1 flex flex-col items-center justify-center text-center gap-3">
@@ -1264,19 +1258,10 @@ function ScenePreview({
             {question?.media?.url && <div className="text-sm text-mute-2">{question.media.type}: {question.media.name}</div>}
           </div>
         </div>
-        <div
-          className={`relative overflow-hidden rounded-2xl border p-6 flex flex-col justify-center gap-3 ${
-            visual ? visual.row : "border-line/[.08] bg-line/[.03]"
-          }`}
-        >
-          {visual && <span className={`absolute left-0 inset-y-0 w-1.5 ${visual.bar}`} />}
-          <span className={`text-[11px] font-mono font-semibold tracking-[.1em] ${visual ? visual.label : "text-label"}`}>
-            {typeLabel}
-          </span>
+        <div className="rounded-2xl border border-line/[.08] bg-line/[.03] p-6 flex flex-col justify-center gap-3">
+          <span className="text-[11px] font-mono text-label">DESKTOP PREVIEW</span>
           <div className="text-3xl font-bold text-ink">{question?.question || scene?.title || "No scene selected"}</div>
-          <div className="text-sm text-mute-2">
-            {scene ? `Step type: ${typeLabel}` : "Generate event flow from rounds."}
-          </div>
+          <div className="text-sm text-mute-2">{scene ? typeLabel : "Generate event flow from rounds."}</div>
         </div>
       </div>
     </Card>

@@ -1,12 +1,12 @@
 /**
  * One shared color language for scene/step types, used by both the host
  * console's Event Flow list and the room setup dashboard's Event Flow tab so
- * WELCOME / QUESTION / ANSWER etc. are distinguishable at a glance instead of
- * looking like identical gray rows.
+ * WELCOME / QUESTION / ANSWER etc. are distinguishable at a glance.
  *
- * `bar` is a bold left-edge strip (the most legible signal on the dark theme),
- * `row` tints the whole card, `badge` styles a type chip, and `label` colors
- * the type caption.
+ * Design intent: NOT a deck of colored cards. Every row sits on the same calm
+ * neutral surface (`row`); type identity is carried by a compact color chip
+ * (`badge`), a colored caption (`label`), and a slim accent edge (`bar`).
+ * Color accents, not color blocks.
  */
 import type { SceneType } from "@/types/db";
 
@@ -18,28 +18,31 @@ export interface SceneVisual {
   label: string;
 }
 
+/** All rows share this neutral surface so the list reads as one calm flow. */
+const NEUTRAL_ROW = "border-line/[.09] bg-line/[.025]";
+
 const SCENE_VISUAL: Partial<Record<SceneType, SceneVisual>> = {
-  WELCOME: { marker: "WELCOME", row: "border-violet-400/40 bg-violet-400/[.13]", badge: "bg-violet-400/25 text-violet-100", bar: "bg-violet-400", label: "text-violet-200" },
-  ROUND_INTRO: { marker: "ROUND", row: "border-info/45 bg-info/[.14]", badge: "bg-info/25 text-info", bar: "bg-info", label: "text-info" },
-  QUESTION: { marker: "Q", row: "border-accent/50 bg-accent/[.15]", badge: "bg-accent/30 text-accent", bar: "bg-accent", label: "text-accent" },
-  DRAWING: { marker: "DRAW", row: "border-pink/50 bg-pink/[.15]", badge: "bg-pink/30 text-pink", bar: "bg-pink", label: "text-pink" },
-  HINT: { marker: "HINT", row: "border-warn/45 bg-warn/[.13]", badge: "bg-warn/25 text-warn", bar: "bg-warn", label: "text-warn" },
-  ANSWER_REVEAL: { marker: "A", row: "border-success/50 bg-success/[.15]", badge: "bg-success/30 text-success", bar: "bg-success", label: "text-success" },
-  LEADERBOARD: { marker: "RANK", row: "border-amber/50 bg-amber/[.15]", badge: "bg-amber/30 text-amber", bar: "bg-amber", label: "text-amber" },
-  RULES: { marker: "RULES", row: "border-info/40 bg-info/[.1]", badge: "bg-info/20 text-info", bar: "bg-info/70", label: "text-info" },
-  WAITING: { marker: "WAIT", row: "border-line/[.14] bg-line/[.06]", badge: "bg-line/[.1] text-mute-2", bar: "bg-line/[.3]", label: "text-mute-2" },
-  BREAK: { marker: "BREAK", row: "border-line/[.14] bg-line/[.06]", badge: "bg-line/[.1] text-mute-2", bar: "bg-line/[.3]", label: "text-mute-2" },
-  BROADCAST: { marker: "SAY", row: "border-info/45 bg-info/[.14]", badge: "bg-info/25 text-info", bar: "bg-info", label: "text-info" },
-  WINNER: { marker: "WIN", row: "border-warn/55 bg-warn/[.16]", badge: "bg-warn/30 text-warn", bar: "bg-warn", label: "text-warn" },
+  WELCOME:       { marker: "WELCOME", row: NEUTRAL_ROW, badge: "bg-violet-400/15 text-violet-200 border border-violet-400/25", bar: "bg-violet-400/70", label: "text-violet-200/90" },
+  ROUND_INTRO:   { marker: "ROUND",   row: NEUTRAL_ROW, badge: "bg-info/15 text-info border border-info/25",                 bar: "bg-info/70",       label: "text-info/90" },
+  QUESTION:      { marker: "Q",       row: NEUTRAL_ROW, badge: "bg-accent/15 text-accent border border-accent/30",           bar: "bg-accent/80",     label: "text-accent/90" },
+  DRAWING:       { marker: "DRAW",    row: NEUTRAL_ROW, badge: "bg-pink/15 text-pink border border-pink/30",                 bar: "bg-pink/75",       label: "text-pink/90" },
+  HINT:          { marker: "HINT",    row: NEUTRAL_ROW, badge: "bg-warn/15 text-warn border border-warn/25",                 bar: "bg-warn/70",       label: "text-warn/90" },
+  ANSWER_REVEAL: { marker: "A",       row: NEUTRAL_ROW, badge: "bg-success/15 text-success border border-success/30",        bar: "bg-success/80",    label: "text-success/90" },
+  LEADERBOARD:   { marker: "RANK",    row: NEUTRAL_ROW, badge: "bg-amber/15 text-amber border border-amber/30",             bar: "bg-amber/75",      label: "text-amber/90" },
+  RULES:         { marker: "RULES",   row: NEUTRAL_ROW, badge: "bg-info/12 text-info border border-info/20",                bar: "bg-info/55",       label: "text-info/80" },
+  WAITING:       { marker: "WAIT",    row: NEUTRAL_ROW, badge: "bg-line/[.08] text-mute-2 border border-line/[.12]",        bar: "bg-line/[.25]",    label: "text-mute-2" },
+  BREAK:         { marker: "BREAK",   row: NEUTRAL_ROW, badge: "bg-line/[.08] text-mute-2 border border-line/[.12]",        bar: "bg-line/[.25]",    label: "text-mute-2" },
+  BROADCAST:     { marker: "SAY",     row: NEUTRAL_ROW, badge: "bg-info/15 text-info border border-info/25",                bar: "bg-info/70",       label: "text-info/90" },
+  WINNER:        { marker: "WIN",     row: NEUTRAL_ROW, badge: "bg-warn/18 text-warn border border-warn/35",                bar: "bg-warn/85",       label: "text-warn" },
 };
 
 export function sceneVisual(type: SceneType): SceneVisual {
   return (
     SCENE_VISUAL[type] ?? {
       marker: type.replace(/_/g, " "),
-      row: "border-line/[.08] bg-line/[.03]",
-      badge: "bg-line/[.07] text-mute-2",
-      bar: "bg-line/[.3]",
+      row: NEUTRAL_ROW,
+      badge: "bg-line/[.07] text-mute-2 border border-line/[.12]",
+      bar: "bg-line/[.25]",
       label: "text-mute-2",
     }
   );
