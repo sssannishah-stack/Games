@@ -70,9 +70,12 @@ export async function seedDefaultPowerCards(): Promise<void> {
  * No active round, or a round left on "DEFAULT", means no restriction at all.
  */
 async function assertPowerCardAllowedForRoom(
-  room: { currentRoundId: unknown; powerCardOverrides: string[] },
+  room: { currentRoundId: unknown; powerCardOverrides: string[]; powerCardExclusions: string[] },
   powerCardId: string
 ): Promise<void> {
+  if (room.powerCardExclusions.includes(powerCardId)) {
+    throw new Error("This power card has been turned off for this event.");
+  }
   if (!room.currentRoundId) return;
   const round = await Round.findById(room.currentRoundId).select("powerCardMode allowedPowerCards").lean();
   if (!round || round.powerCardMode !== "CUSTOM") return;
@@ -282,6 +285,16 @@ export async function giveFreeCard(
 
   const card = await PowerCard.findById(powerCardId).lean();
   if (!card) throw new Error("Power card not found.");
+
+  // A Mystery Box has no "use" step — powerCardPlayability blocks it outright
+  // (see comment there), so gifting it into inventory the normal way would
+  // strand it: never playable, never openable. Resolve the gamble now instead,
+  // exactly like a store purchase does.
+  if (card.effectType === "MYSTERY") {
+    await resolveMysteryReward(roomId, teamId, card.ownerId.toString(), card.price || 100);
+    revalidatePath(`/rooms/${roomId}`);
+    return;
+  }
 
   await TeamPowerCard.findOneAndUpdate(
     { teamId, powerCardId },
@@ -837,6 +850,31 @@ export async function toggleRoomPowerCardOverride(roomId: string, powerCardId: s
   const isOverridden = room.powerCardOverrides.includes(powerCardId);
   await Room.findByIdAndUpdate(roomId, {
     [isOverridden ? "$pull" : "$addToSet"]: { powerCardOverrides: powerCardId },
+    // Re-enabling a card should clear any earlier exclusion of the same card.
+    ...(isOverridden ? {} : { $pull: { powerCardExclusions: powerCardId } }),
+  });
+
+  revalidatePath(`/host/${roomId}`);
+  revalidatePath(`/admin/rooms/${roomId}`);
+}
+
+/**
+ * Host force-disables a power card for this room's live event, even though
+ * the round would otherwise allow it (restricted or not). The mirror image
+ * of `toggleRoomPowerCardOverride` — lets the host shrink the round's card
+ * count mid-event (e.g. picked 3 in the library, wants only 2 live) without
+ * editing the round itself.
+ */
+export async function toggleRoomPowerCardExclusion(roomId: string, powerCardId: string): Promise<void> {
+  const user = await requireUser();
+  const room = await assertRoomOwnership(roomId, user.id);
+  await connectToDatabase();
+
+  const isExcluded = room.powerCardExclusions.includes(powerCardId);
+  await Room.findByIdAndUpdate(roomId, {
+    [isExcluded ? "$pull" : "$addToSet"]: { powerCardExclusions: powerCardId },
+    // Excluding a card should clear any earlier force-on override of the same card.
+    ...(isExcluded ? {} : { $pull: { powerCardOverrides: powerCardId } }),
   });
 
   revalidatePath(`/host/${roomId}`);

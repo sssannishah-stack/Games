@@ -28,6 +28,7 @@ import {
   resolvePowerCardRequest,
   startFlashSale,
   toggleRoomPowerCardOverride,
+  toggleRoomPowerCardExclusion,
 } from "@/actions/powerCard.actions";
 import { giveCoins } from "@/actions/coin.actions";
 import { setTeamDeviceRole } from "@/actions/team.actions";
@@ -166,6 +167,7 @@ export function HostConsole({
   const [manualAchType, setManualAchType] = useState<AchievementType>(MANUAL_ACHIEVEMENTS[0]);
   const [spinOpen, setSpinOpen] = useState(false);
   const [surpriseTeamId, setSurpriseTeamId] = useState(teams[0]?.id ?? "");
+  const [bonusTarget, setBonusTarget] = useState("__ALL__");
   const [bonusAmount, setBonusAmount] = useState(200);
   const [auctionType, setAuctionType] = useState<AuctionType>("NORMAL");
   const [auctionCardId, setAuctionCardId] = useState(cards[0]?.id ?? "");
@@ -177,6 +179,7 @@ export function HostConsole({
   const question = current?.questionId ? questions.find((item) => item.id === current.questionId) : null;
   const round = current?.roundId ? rounds.find((item) => item.id === current.roundId) : null;
   const overrideSet = new Set(room.powerCardOverrides);
+  const exclusionSet = new Set(room.powerCardExclusions);
   const roundIsRestricted = round?.powerCardMode === "CUSTOM";
 
   const teamById = new Map(teams.map((t) => [t.id, t]));
@@ -829,10 +832,12 @@ export function HostConsole({
                 <span className="text-[11px] font-semibold tracking-[.08em] text-label">GIVE BONUS COINS</span>
                 <div className="grid grid-cols-2 gap-1.5">
                   <select
-                    value={surpriseTeamId}
-                    onChange={(e) => setSurpriseTeamId(e.target.value)}
+                    value={bonusTarget}
+                    onChange={(e) => setBonusTarget(e.target.value)}
                     className="bg-line/[.04] border border-line/[.1] rounded-lg px-2 py-1.5 text-[12px] text-ink outline-none"
                   >
+                    <option value="__ALL__" className="bg-surface">🌐 All teams</option>
+                    <option value="__RANDOM__" className="bg-surface">🎲 Random team</option>
                     {teams.map((team) => (
                       <option key={team.id} value={team.id} className="bg-surface">
                         {team.name}
@@ -850,11 +855,21 @@ export function HostConsole({
                   variant="subtle"
                   size="sm"
                   onClick={() =>
-                    surpriseTeamId &&
+                    bonusTarget &&
                     bonusAmount !== 0 &&
-                    action(() => giveCoins(room.id, surpriseTeamId, bonusAmount, "Bonus"))
+                    action(async () => {
+                      if (bonusTarget === "__ALL__") {
+                        await Promise.all(teams.map((team) => giveCoins(room.id, team.id, bonusAmount, "Bonus")));
+                        return;
+                      }
+                      const targetTeamId =
+                        bonusTarget === "__RANDOM__"
+                          ? teams[Math.floor(Math.random() * teams.length)]?.id
+                          : bonusTarget;
+                      if (targetTeamId) await giveCoins(room.id, targetTeamId, bonusAmount, "Bonus");
+                    })
                   }
-                  disabled={pending || !surpriseTeamId}
+                  disabled={pending || !bonusTarget || !teams.length}
                 >
                   <Icon name="coins" size={14} />
                   Give +{bonusAmount} coins
@@ -1167,49 +1182,50 @@ export function HostConsole({
             {round && (
               <section className="rounded-2xl border border-line/[.08] bg-line/[.03] p-4 flex flex-col gap-2">
                 <span className="text-sm font-bold text-ink-2">Round Power Card Access</span>
-                {!roundIsRestricted ? (
-                  <span className="text-[12px] text-mute-2">
-                    &quot;{round.title}&quot; allows every power card — no restrictions to override.
-                  </span>
-                ) : (
-                  <>
-                    <span className="text-[11.5px] text-mute-2">
-                      &quot;{round.title}&quot; restricts play to its allowed cards. Force one on for this event anyway:
-                    </span>
-                    <div className="flex flex-col gap-1.5">
-                      {cards.map((card) => {
-                        const allowedByRound = round.allowedPowerCards.includes(card.id);
-                        const forced = overrideSet.has(card.id);
-                        return (
-                          <label
-                            key={card.id}
-                            className={`flex items-center gap-2 rounded-lg border px-2.5 py-2 text-[12px] ${
-                              allowedByRound || forced
-                                ? "border-success/30 bg-success/[.06] text-ink-2"
-                                : "border-line/[.08] bg-line/[.02] text-mute-2"
-                            }`}
-                          >
-                            {allowedByRound ? (
-                              <Icon name="check" size={13} className="text-success shrink-0" />
-                            ) : (
-                              <input
-                                type="checkbox"
-                                checked={forced}
-                                disabled={pending}
-                                onChange={() => action(() => toggleRoomPowerCardOverride(room.id, card.id))}
-                                className="accent-accent"
-                              />
-                            )}
-                            <span className="truncate">{card.name}</span>
-                            {!allowedByRound && forced && (
-                              <span className="ml-auto text-[10px] font-semibold text-accent shrink-0">FORCED ON</span>
-                            )}
-                          </label>
-                        );
-                      })}
-                    </div>
-                  </>
-                )}
+                <span className="text-[11.5px] text-mute-2">
+                  {roundIsRestricted
+                    ? <>&quot;{round.title}&quot; restricts play to its allowed cards — check/uncheck to change what&apos;s live for this event.</>
+                    : <>&quot;{round.title}&quot; allows every power card by default — uncheck any to turn it off for this event.</>}
+                </span>
+                <div className="flex flex-col gap-1.5">
+                  {cards.map((card) => {
+                    const allowedByRound = roundIsRestricted ? round.allowedPowerCards.includes(card.id) : true;
+                    const forced = overrideSet.has(card.id);
+                    const excluded = exclusionSet.has(card.id);
+                    const live = (allowedByRound || forced) && !excluded;
+                    return (
+                      <label
+                        key={card.id}
+                        className={`flex items-center gap-2 rounded-lg border px-2.5 py-2 text-[12px] cursor-pointer ${
+                          live
+                            ? "border-success/30 bg-success/[.06] text-ink-2"
+                            : "border-line/[.08] bg-line/[.02] text-mute-2"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={live}
+                          disabled={pending}
+                          onChange={() =>
+                            action(() =>
+                              allowedByRound
+                                ? toggleRoomPowerCardExclusion(room.id, card.id)
+                                : toggleRoomPowerCardOverride(room.id, card.id)
+                            )
+                          }
+                          className="accent-accent"
+                        />
+                        <span className="truncate">{card.name}</span>
+                        {!allowedByRound && forced && (
+                          <span className="ml-auto text-[10px] font-semibold text-accent shrink-0">FORCED ON</span>
+                        )}
+                        {allowedByRound && excluded && (
+                          <span className="ml-auto text-[10px] font-semibold text-danger-soft shrink-0">TURNED OFF</span>
+                        )}
+                      </label>
+                    );
+                  })}
+                </div>
               </section>
             )}
 

@@ -140,9 +140,18 @@ export async function GET(
   // (Room.powerCardOverrides). Participants must never see a card that
   // isn't actually usable right now (mirrors the same check the server
   // enforces in requestPowerCard/purchasePowerCard).
+  // Same-named catalog entries (e.g. leftover duplicates from before card
+  // names were enforced unique) would otherwise show as repeated tiles in
+  // the store — collapse to one card per name, keeping the first (cheapest,
+  // since catalog is price-sorted).
+  const uniqueCatalog = [...new Map(catalog.map((card) => [card.name, card])).values()];
+
   const roundIsRestricted = round?.powerCardMode === "CUSTOM";
   const allowedCardIds = new Set([...(round?.allowedPowerCards ?? []), ...(room.powerCardOverrides ?? [])]);
-  const visibleCards = roundIsRestricted ? catalog.filter((card) => allowedCardIds.has(id(card._id))) : catalog;
+  const excludedCardIds = new Set(room.powerCardExclusions ?? []);
+  const visibleCards = uniqueCatalog
+    .filter((card) => (roundIsRestricted ? allowedCardIds.has(id(card._id)) : true))
+    .filter((card) => !excludedCardIds.has(id(card._id)));
 
   const requestByCard = new Map(requests.map((item) => [id(item.powerCardId), item]));
   const inventoryByCard = new Map(inventory.map((item) => [id(item.powerCardId), item]));

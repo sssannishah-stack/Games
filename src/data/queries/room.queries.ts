@@ -37,6 +37,8 @@ export interface RoomDetail extends RoomSummary {
   selectedRounds: string[];
   /** Power card ids the host has force-enabled for this room's live event. */
   powerCardOverrides: string[];
+  /** Power card ids the host has force-disabled for this room's live event. */
+  powerCardExclusions: string[];
   /** Inventory restored when the host resets this room. */
   powerCardDefaults: Array<{ powerCardId: string; uses: number }>;
   currentSceneId: string | null;
@@ -170,6 +172,7 @@ export async function getRoomById(
     storeAvailability: competition.settings?.economy?.storeAvailability ?? "HOST_MANUAL",
     selectedRounds: selectedRoundIds,
     powerCardOverrides: room.powerCardOverrides ?? [],
+    powerCardExclusions: room.powerCardExclusions ?? [],
     powerCardDefaults: room.powerCardDefaults ?? [],
     currentSceneId: room.currentSceneId ? room.currentSceneId.toString() : null,
     currentRoundId: room.currentRoundId ? room.currentRoundId.toString() : null,

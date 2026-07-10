@@ -550,7 +550,7 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
             )}
             <ThemeToggle className="w-8 h-8" />
             {liveProtection && (
-              <span title="Live content is identity-watermarked" className="w-8 h-8 rounded-xl bg-warn/10 border border-warn/25 text-warn flex items-center justify-center">
+              <span title="Live content is protected from screenshots" className="w-8 h-8 rounded-xl bg-warn/10 border border-warn/25 text-warn flex items-center justify-center">
                 <Icon name="lock" size={14} />
               </span>
             )}
@@ -676,18 +676,6 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
         )}
       </AnimatePresence>
 
-      {liveProtection && (
-        <div className="fixed -inset-24 z-[45] pointer-events-none overflow-hidden opacity-[.065]" aria-hidden="true">
-          <div className="grid h-full grid-cols-2 gap-x-14 gap-y-20 -rotate-[22deg] scale-125 content-center">
-            {Array.from({ length: 18 }, (_, index) => (
-              <span key={index} className="whitespace-nowrap text-center text-[11px] font-black tracking-[.08em] text-white">
-                {participant.name} · {live?.team?.name ?? participant.teamName} · {room.roomCode}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
       {privacyActive && (
         <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center gap-3 bg-[#08090d] px-8 text-center">
           <div className="w-16 h-16 rounded-3xl border border-warn/30 bg-warn/10 text-warn flex items-center justify-center">
@@ -695,7 +683,7 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
           </div>
           <span className="text-lg font-black text-ink">Live content protected</span>
           <span className="max-w-[300px] text-[13px] leading-relaxed text-mute-2">
-            Return to the game to reveal the current question. Live screens are watermarked with your identity.
+            Return to the game to reveal the current question.
           </span>
         </div>
       )}

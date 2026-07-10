@@ -379,6 +379,12 @@ export interface IRoom {
    * the final say during a live event, even over settings decided earlier.
    */
   powerCardOverrides: string[];
+  /**
+   * Power card ids the host has force-disabled for this room's live event,
+   * even though the round would otherwise allow them (or allows everything).
+   * Lets the host shrink a round's card count mid-event, not just grow it.
+   */
+  powerCardExclusions: string[];
   /** Inventory restored by Reset Room. Empty means the automatic starter hand. */
   powerCardDefaults: Array<{ powerCardId: string; uses: number }>;
   currentSceneId: Types.ObjectId | null;
