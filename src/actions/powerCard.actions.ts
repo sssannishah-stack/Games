@@ -32,8 +32,21 @@ export async function seedDefaultPowerCards(): Promise<void> {
   const user = await requireUser();
   await connectToDatabase();
 
-  const hasExistingCards = await PowerCard.exists({ ownerId: user.id });
-  if (!hasExistingCards) {
+  // This runs on every Round Builder / Room Setup page load, which in turn
+  // reruns on every router.refresh() after a click — so the steady-state
+  // path (a host who already has a reconciled catalog) must cost exactly
+  // one cheap read, not an unconditional write every time.
+  const existingDefaults = await PowerCard.find({
+    ownerId: user.id,
+    name: { $in: DEFAULT_POWER_CARDS.map((card) => card.name) },
+  })
+    .select("requiresApproval")
+    .lean();
+
+  if (existingDefaults.length === 0) {
+    const hasExistingCards = await PowerCard.exists({ ownerId: user.id });
+    if (hasExistingCards) return; // host kept only custom cards on purpose
+
     await PowerCard.insertMany(
       DEFAULT_POWER_CARDS.map((card) => ({
         ownerId: user.id,
@@ -53,13 +66,18 @@ export async function seedDefaultPowerCards(): Promise<void> {
         priceMode: "FIXED",
       }))
     );
+    return;
   }
 
-  // Reconcile catalogs seeded when defaults still required host approval.
-  await PowerCard.updateMany(
-    { ownerId: user.id, name: { $in: DEFAULT_POWER_CARDS.map((card) => card.name) } },
-    { $set: { requiresApproval: false } }
-  );
+  // Reconcile catalogs seeded back when defaults still required host
+  // approval — only write if one of them is actually still stale.
+  const needsReconcile = existingDefaults.some((card) => card.requiresApproval);
+  if (needsReconcile) {
+    await PowerCard.updateMany(
+      { ownerId: user.id, name: { $in: DEFAULT_POWER_CARDS.map((card) => card.name) } },
+      { $set: { requiresApproval: false } }
+    );
+  }
 }
 
 /**

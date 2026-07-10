@@ -13,7 +13,6 @@ import {
   getTeamPowerCardsByRoom,
 } from "@/data/queries/powerCard.queries";
 import { seedDefaultPowerCards } from "@/actions/powerCard.actions";
-import { ensureRoomDefaultPowerCardsForTeams } from "@/lib/starterPowerCards";
 
 export default async function AdminRoomSetupPage({
   params,
@@ -26,20 +25,19 @@ export default async function AdminRoomSetupPage({
   if (!room) notFound();
 
   await seedDefaultPowerCards();
-  const [teams, rounds, libraryRounds, scenes, cards, baseUrl] = await Promise.all([
+  const [teams, rounds, libraryRounds, scenes, cards, baseUrl, questions] = await Promise.all([
     getTeamsByRoom(roomId),
     getSelectedRoundsForRoom(room.selectedRounds),
     getRoundsByOwner(user.id),
     getScenesByRoom(roomId),
     getPowerCardsByOwner(user.id),
     getBaseUrl(),
-  ]);
-  const [questions, ownedCards] = await Promise.all([
     getQuestionsForRoomRounds(room.selectedRounds),
-    ensureRoomDefaultPowerCardsForTeams(teams.map((team) => team.id), room.id, user.id).then(() =>
-      getTeamPowerCardsByRoom(teams.map((team) => team.id))
-    ),
   ]);
+  // Starter/default cards are ensured once at team creation and on Reset
+  // Room — re-running that find+bulkWrite here on every render (i.e. every
+  // save, since this page re-executes on router.refresh()) was redundant.
+  const ownedCards = await getTeamPowerCardsByRoom(teams.map((team) => team.id));
 
   const joinUrl = `${baseUrl}/play/${room.roomCode}`;
 

@@ -16,7 +16,6 @@ import { getScoreHistoryByRoom } from "@/data/queries/score.queries";
 import { getParticipantsByRoom } from "@/data/queries/participant.queries";
 import { getAchievementsByRoom } from "@/data/queries/achievement.queries";
 import { getActiveAuction } from "@/data/queries/auction.queries";
-import { ensureRoomDefaultPowerCardsForTeams } from "@/lib/starterPowerCards";
 
 export default async function HostRoomPage({
   params,
@@ -28,7 +27,7 @@ export default async function HostRoomPage({
   const room = await getRoomById(roomId, user.id);
   if (!room) notFound();
 
-  const [scenes, rounds, questions, teams, logs, powerRequests, scoreHistory, cards, participants, achievements] =
+  const [scenes, rounds, questions, teams, logs, powerRequests, scoreHistory, cards, participants, achievements, auction] =
     await Promise.all([
       getScenesByRoom(roomId),
       getSelectedRoundsForRoom(room.selectedRounds),
@@ -40,13 +39,13 @@ export default async function HostRoomPage({
       getPowerCardsByOwner(user.id),
       getParticipantsByRoom(roomId),
       getAchievementsByRoom(roomId),
+      getActiveAuction(roomId),
     ]);
-  const [ownedCards, auction] = await Promise.all([
-    ensureRoomDefaultPowerCardsForTeams(teams.map((team) => team.id), room.id, user.id).then(() =>
-      getTeamPowerCardsByRoom(teams.map((team) => team.id))
-    ),
-    getActiveAuction(roomId),
-  ]);
+  // Starter/default cards are ensured once at team creation and on Reset
+  // Room (see team.actions.ts / room.actions.ts) — re-running that
+  // find+bulkWrite here on every render (i.e. every button click, since
+  // router.refresh() re-executes this whole page) was pure redundant work.
+  const ownedCards = await getTeamPowerCardsByRoom(teams.map((team) => team.id));
 
   return (
     <HostConsole
