@@ -13,6 +13,7 @@ import { PublishPanel } from "@/components/room/PublishPanel";
 import { InventoryPanel } from "@/components/power-card/InventoryPanel";
 import { PowerCardsPanel } from "@/components/power-card/PowerCardsPanel";
 import { startRoomEvent, startRoomTestMode, setRoomSelectedRounds, updateRoom } from "@/actions/room.actions";
+import { setRoomEconomyMode } from "@/actions/competition.actions";
 import { openStore, closeStore } from "@/actions/powerCard.actions";
 import {
   generateScenes,
@@ -1336,6 +1337,18 @@ function RoomSettings({
   const [pending, startTransition] = useTransition();
   const router = useRouter();
 
+  function toggleEconomy(enabled: boolean) {
+    setError(null);
+    startTransition(async () => {
+      try {
+        await setRoomEconomyMode(room.id, enabled);
+        router.refresh();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not change game mode.");
+      }
+    });
+  }
+
   function save() {
     setError(null);
     if (!name.trim()) return setError("Room name is required.");
@@ -1401,6 +1414,56 @@ function RoomSettings({
             <option value="CAPTAIN_SUBMIT">Captain Submit — captain types the answer</option>
           </select>
         </label>
+      </div>
+
+      {/* Game mode — Simple (host hands out cards) vs Economy (coins + store).
+          Applies immediately (and to every room in this competition); switching
+          to Economy grants starting coins so the store is usable right away. */}
+      <div className="rounded-xl border border-line/[.09] bg-line/[.03] p-4 flex flex-col gap-3">
+        <div className="flex items-center gap-2">
+          <span className="text-[13px] font-bold text-ink-2">Game mode</span>
+          <span
+            className={`text-[10.5px] font-bold tracking-[.06em] rounded-full px-2.5 py-1 ${
+              room.economyEnabled
+                ? "bg-warn/15 text-warn border border-warn/30"
+                : "bg-line/[.06] text-mute-2 border border-line/[.12]"
+            }`}
+          >
+            {room.economyEnabled ? "💰 ECONOMY MODE" : "🎁 SIMPLE MODE"}
+          </span>
+        </div>
+        <span className="text-[12px] text-mute-2 leading-relaxed">
+          {room.economyEnabled
+            ? `Teams start with ${room.startingCoins} coins and buy power cards from the store (host opens it during the event).`
+            : "The host hands power cards to teams directly. No coins, no store."}
+        </span>
+        <div className="grid grid-cols-2 gap-2 max-w-[360px]">
+          <button
+            onClick={() => toggleEconomy(false)}
+            disabled={pending || !room.economyEnabled}
+            className={`rounded-[11px] border px-3 py-2.5 text-[12.5px] font-semibold transition ${
+              !room.economyEnabled
+                ? "border-accent/50 bg-accent/[.12] text-ink"
+                : "border-line/[.12] bg-line/[.04] text-mute-2 hover:text-ink cursor-pointer"
+            }`}
+          >
+            🎁 Simple
+          </button>
+          <button
+            onClick={() => toggleEconomy(true)}
+            disabled={pending || room.economyEnabled}
+            className={`rounded-[11px] border px-3 py-2.5 text-[12.5px] font-semibold transition ${
+              room.economyEnabled
+                ? "border-warn/50 bg-warn/[.12] text-ink"
+                : "border-line/[.12] bg-line/[.04] text-mute-2 hover:text-ink cursor-pointer"
+            }`}
+          >
+            💰 Economy (store)
+          </button>
+        </div>
+        <span className="text-[11px] text-dim">
+          Changing mode affects every room in this competition.
+        </span>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

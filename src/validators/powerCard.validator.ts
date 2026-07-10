@@ -17,7 +17,7 @@ export const createPowerCardSchema = z.object({
   // null/undefined = unlimited stock.
   stock: z.number().int().min(0).nullable().default(null),
   enabled: z.boolean().default(true),
-  requiresApproval: z.boolean().default(true),
+  requiresApproval: z.boolean().default(false),
   usesPerTeam: z.number().int().min(1).default(1),
   priceMode: z.enum(PRICE_MODES).default("FIXED"),
 });

@@ -83,6 +83,10 @@ export async function applyQuestionTeamAssignments(roomId: string, competitionId
                     "settings.assignedTeamId": assignment.teamId,
                     "settings.assignmentSource": assignment.source,
                   },
+                  $unset: {
+                    "settings.turnStolen": "",
+                    "settings.stolenFromTeamId": "",
+                  },
                 },
               },
             }
@@ -91,7 +95,12 @@ export async function applyQuestionTeamAssignments(roomId: string, competitionId
                 filter: { _id: scene._id, roomId },
                 update: {
                   $set: { "settings.assignmentMode": effectiveMode },
-                  $unset: { "settings.assignedTeamId": "", "settings.assignmentSource": "" },
+                  $unset: {
+                    "settings.assignedTeamId": "",
+                    "settings.assignmentSource": "",
+                    "settings.turnStolen": "",
+                    "settings.stolenFromTeamId": "",
+                  },
                 },
               },
             }

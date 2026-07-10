@@ -94,6 +94,12 @@ test.describe.serial("Team Device Roles: captain / vice captain / member", () =>
   });
 
   test("R5: captain can request a power; host receives it", async () => {
+    // Cards can only be played while a question is live (server-enforced) —
+    // advance WELCOME -> ROUND_INTRO -> QUESTION before using one.
+    await host.getByRole("button", { name: "Next", exact: true }).click();
+    await host.getByRole("button", { name: "Next", exact: true }).click();
+    await expect(host.getByText("Current Question", { exact: true })).toBeVisible({ timeout: 30_000 });
+
     await p1.getByRole("button", { name: /⚡ Powers/ }).click();
     const useButton = p1.getByRole("button", { name: "Use Power" });
     await expect(useButton).toBeVisible({ timeout: 10_000 });
@@ -176,7 +182,8 @@ test.describe.serial("Team Device Roles: captain / vice captain / member", () =>
       { $set: { "settings.answerMode": "CAPTAIN_SUBMIT" } }
     );
 
-    // Advance WELCOME -> ROUND_INTRO -> QUESTION.
+    // R5 already advanced to Q1 — two more steps land on Q2 (via A1), still a
+    // live question, which is what captain-submit needs.
     await host.getByRole("button", { name: "Next", exact: true }).click();
     await host.getByRole("button", { name: "Next", exact: true }).click();
     await expect(host.getByText("Current Question", { exact: true })).toBeVisible({ timeout: 30_000 });

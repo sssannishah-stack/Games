@@ -2,10 +2,11 @@
 
 import { revalidatePath } from "next/cache";
 import { connectToDatabase } from "@/lib/database/mongodb";
-import { PowerCard, Team, PowerCardRequest, TeamPowerCard, Room, Round, EventLog, Competition } from "@/models";
+import { PowerCard, Team, PowerCardRequest, TeamPowerCard, Room, Round, Scene, EventLog, Competition } from "@/models";
 import { requireUser } from "@/lib/auth/getCurrentUser";
 import { assertRoomOwnership, assertPowerCardOwnership } from "@/lib/authz";
 import { assertTeamController } from "@/lib/teamRoles";
+import { powerCardPlayability } from "@/lib/powerCardPlay";
 import { createCoinTransaction } from "@/actions/coin.actions";
 import { DEFAULT_POWER_CARDS } from "@/lib/defaultPowerCards";
 import { effectivePrice } from "@/lib/storePricing";
@@ -15,7 +16,6 @@ import {
   type CreatePowerCardInput,
 } from "@/validators/powerCard.validator";
 import type { IPowerCardRequest, PowerCardRequestStatus } from "@/types/db";
-import { STARTER_POWER_CARD_NAMES } from "@/lib/starterPowerCards";
 
 function refreshCatalogPaths() {
   revalidatePath("/admin/power-cards");
@@ -46,18 +46,18 @@ export async function seedDefaultPowerCards(): Promise<void> {
         price: card.price,
         stock: null,
         enabled: true,
-        requiresApproval: !STARTER_POWER_CARD_NAMES.includes(
-          card.name as (typeof STARTER_POWER_CARD_NAMES)[number]
-        ),
+        // Instant use: pressing "Use Power" activates the card immediately —
+        // no host approval step. Hosts can re-enable approval per card.
+        requiresApproval: false,
         usesPerTeam: 1,
         priceMode: "FIXED",
       }))
     );
   }
 
-  // Reconcile catalogs seeded before starter cards became instant-use.
+  // Reconcile catalogs seeded when defaults still required host approval.
   await PowerCard.updateMany(
-    { ownerId: user.id, name: { $in: STARTER_POWER_CARD_NAMES } },
+    { ownerId: user.id, name: { $in: DEFAULT_POWER_CARDS.map((card) => card.name) } },
     { $set: { requiresApproval: false } }
   );
 }
@@ -96,6 +96,61 @@ async function getEnabledPowerCardForRoom(
   }).lean();
   if (!card) throw new Error("This power card is not available in this room.");
   return card;
+}
+
+async function applyStealChance(roomId: string, stealingTeamId: string): Promise<void> {
+  const room = await Room.findById(roomId).select("currentSceneId currentRoundId currentQuestionId").lean();
+  if (!room?.currentSceneId || !room.currentQuestionId) {
+    throw new Error("There is no assigned question to steal right now.");
+  }
+
+  const current = await Scene.findOneAndUpdate(
+    {
+      _id: room.currentSceneId,
+      roomId,
+      type: { $in: ["QUESTION", "DRAWING"] },
+      "settings.assignedTeamId": { $exists: true, $ne: stealingTeamId },
+      "settings.turnStolen": { $ne: true },
+    },
+    {
+      $set: {
+        "settings.assignedTeamId": stealingTeamId,
+        "settings.assignmentSource": "STEAL",
+        "settings.turnStolen": true,
+      },
+    },
+    { new: false }
+  ).lean();
+  if (!current) throw new Error("This turn cannot be stolen or has already been stolen.");
+
+  const stolenFromTeamId = String(current.settings?.assignedTeamId ?? "");
+  await Scene.updateMany(
+    {
+      roomId,
+      questionId: room.currentQuestionId,
+      ...(room.currentRoundId ? { roundId: room.currentRoundId } : {}),
+      _id: { $ne: room.currentSceneId },
+    },
+    {
+      $set: {
+        "settings.assignedTeamId": stealingTeamId,
+        "settings.assignmentSource": "STEAL",
+        "settings.turnStolen": true,
+        "settings.stolenFromTeamId": stolenFromTeamId,
+      },
+    }
+  );
+  await Scene.findByIdAndUpdate(room.currentSceneId, {
+    $set: { "settings.stolenFromTeamId": stolenFromTeamId },
+  });
+}
+
+async function applyImmediatePowerEffect(
+  roomId: string,
+  teamId: string,
+  effectType: string
+): Promise<void> {
+  if (effectType === "STEAL") await applyStealChance(roomId, teamId);
 }
 
 /** Create a power card in the host's global catalog. Card names must be unique per host (case-insensitive). */
@@ -401,6 +456,32 @@ export async function requestPowerCard(
 
   const card = await getEnabledPowerCardForRoom(room, input.powerCardId);
 
+  // Cards are played in the moment, not from the lobby: only while a question
+  // is on screen (Extra Time additionally needs a ticking clock). Server-side
+  // so a phone can never bypass it — the UI mirrors the same rulebook.
+  const currentScene = room.currentSceneId
+    ? await Scene.findById(room.currentSceneId)
+        .select("type settings")
+        .lean<{ type: string; settings?: Record<string, unknown> }>()
+    : null;
+  const timerRunning =
+    Boolean(room.liveState?.timerEndsAt) &&
+    !room.liveState?.timerPaused &&
+    new Date(room.liveState.timerEndsAt as unknown as string).getTime() > Date.now();
+  const playability = powerCardPlayability(card.effectType, {
+    sceneType: currentScene?.type ?? null,
+    timerRunning,
+    assignedTeamId:
+      typeof currentScene?.settings?.assignedTeamId === "string"
+        ? currentScene.settings.assignedTeamId
+        : null,
+    actingTeamId: input.teamId,
+    turnStolen: currentScene?.settings?.turnStolen === true,
+  });
+  if (!playability.usable) {
+    throw new Error(playability.reason ?? "This card can't be played right now.");
+  }
+
   const skipApproval = !card.requiresApproval;
   const owned = await TeamPowerCard.findOneAndUpdate(
     {
@@ -416,11 +497,26 @@ export async function requestPowerCard(
     throw new Error("Your team does not own an available copy of this card.");
   }
 
+  if (skipApproval) {
+    try {
+      await applyImmediatePowerEffect(input.roomId, input.teamId, card.effectType);
+    } catch (error) {
+      await TeamPowerCard.findByIdAndUpdate(owned._id, { $set: { status: "AVAILABLE" } });
+      throw error;
+    }
+  }
+
+  const assignedTeamId =
+    typeof currentScene?.settings?.assignedTeamId === "string"
+      ? currentScene.settings.assignedTeamId
+      : null;
+  const effectiveTargetTeamId = card.effectType === "STEAL" ? assignedTeamId : input.targetTeamId ?? null;
+
   const request = await PowerCardRequest.create({
     roomId: input.roomId,
     teamId: input.teamId,
     powerCardId: input.powerCardId,
-    targetTeamId: input.targetTeamId ?? null,
+    targetTeamId: effectiveTargetTeamId,
     status: skipApproval ? "ACTIVE" : "REQUESTED",
     approvedBy: null,
   });
@@ -431,7 +527,7 @@ export async function requestPowerCard(
     metadata: {
       teamId: input.teamId,
       powerCardId: input.powerCardId,
-      targetTeamId: input.targetTeamId ?? null,
+      targetTeamId: effectiveTargetTeamId,
     },
   });
 
@@ -519,6 +615,24 @@ async function activatePowerCard(requestId: string): Promise<IPowerCardRequest> 
     { status: "ACTIVE" }
   );
   if (!owned) throw new Error("Team has no approved copy of this card.");
+
+  const card = await PowerCard.findById(request.powerCardId).select("effectType").lean();
+  if (!card) {
+    await TeamPowerCard.findByIdAndUpdate(owned._id, { $set: { status: "AVAILABLE" } });
+    request.status = "REJECTED";
+    await request.save();
+    throw new Error("Power card not found.");
+  }
+  try {
+    await applyImmediatePowerEffect(request.roomId.toString(), request.teamId.toString(), card.effectType);
+  } catch (error) {
+    // Another team may have stolen the turn while this request was waiting
+    // for approval. Cancel cleanly instead of leaving the card stuck ACTIVE.
+    await TeamPowerCard.findByIdAndUpdate(owned._id, { $set: { status: "AVAILABLE" } });
+    request.status = "REJECTED";
+    await request.save();
+    throw error;
+  }
 
   request.status = "ACTIVE";
   await request.save();

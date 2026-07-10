@@ -31,7 +31,9 @@ const PowerCardSchema = new Schema<IPowerCard>(
     // null = unlimited stock.
     stock: { type: Number, default: null },
     enabled: { type: Boolean, default: true },
-    requiresApproval: { type: Boolean, default: true },
+    // Instant use by default — "Use Power" activates immediately. A host can
+    // opt a card back into the approval flow from the card editor.
+    requiresApproval: { type: Boolean, default: false },
     usesPerTeam: { type: Number, default: 1 },
     // Prepared for future dynamic pricing (demand-based price changes) — no
     // logic reads this yet beyond storing the mode.

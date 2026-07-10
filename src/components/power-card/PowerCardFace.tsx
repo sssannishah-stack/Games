@@ -39,6 +39,13 @@ const EFFECT_THEMES: Record<string, EffectTheme> = {
 
 const FALLBACK_THEME: EffectTheme = { deep: "#24283b", accent: "#8EA0B8", glyph: "✦", tag: "POWER", typographic: true };
 
+/** Resolve the color/glyph world for an effect — shared with the flip-side info panel. */
+export function getPowerCardTheme(effectType?: string, icon?: string): EffectTheme {
+  return (
+    EFFECT_THEMES[effectType ?? ""] ?? { ...FALLBACK_THEME, glyph: icon || FALLBACK_THEME.glyph, typographic: !icon }
+  );
+}
+
 const RARITY_FRAME: Record<PowerCardRarityName, { border: string; glow: string; gem: string }> = {
   COMMON: { border: "rgba(160,172,196,.28)", glow: "transparent", gem: "#8EA0B8" },
   RARE: { border: "rgba(94,201,232,.55)", glow: "rgba(94,201,232,.22)", gem: "#5EC9E8" },
@@ -62,6 +69,7 @@ export function PowerCardFace({
   effectType,
   rarity = "COMMON",
   icon,
+  category,
   size = "md",
   footer,
   className = "",
@@ -71,12 +79,14 @@ export function PowerCardFace({
   rarity?: string;
   /** Catalog emoji — used when the effect has no theme of its own. */
   icon?: string;
+  /** Optional category caption shown along the top edge (md/lg only). */
+  category?: string;
   size?: FaceSize;
   /** Optional slot pinned inside the card's bottom edge (price chip, uses badge). */
   footer?: ReactNode;
   className?: string;
 }) {
-  const theme = EFFECT_THEMES[effectType ?? ""] ?? { ...FALLBACK_THEME, glyph: icon || FALLBACK_THEME.glyph, typographic: !icon };
+  const theme = getPowerCardTheme(effectType, icon);
   const frame = RARITY_FRAME[(rarity as PowerCardRarityName) in RARITY_FRAME ? (rarity as PowerCardRarityName) : "COMMON"];
   const s = SIZE_STYLES[size];
   const legendary = rarity === "LEGENDARY";
@@ -90,19 +100,23 @@ export function PowerCardFace({
         boxShadow: `0 10px 30px rgba(0,0,0,.45)${frame.glow !== "transparent" ? `, 0 0 22px ${frame.glow}` : ""}`,
       }}
     >
-      {/* Slanted ring around the glyph — our nod to classic card decks. */}
+      {/* Encore emblem: concentric rotated-square frames behind the glyph —
+          our own mark, deliberately not a card-game oval. */}
       <div
         aria-hidden
-        className="absolute left-[-18%] right-[-18%] top-1/2 h-[54%] -translate-y-[58%] rotate-[-22deg] rounded-[50%]"
-        style={{ border: `2px solid color-mix(in oklab, ${theme.accent} 45%, transparent)`, opacity: 0.5 }}
+        className="absolute left-1/2 top-[42%] w-[64%] aspect-square -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-[16%]"
+        style={{ border: `2px solid color-mix(in oklab, ${theme.accent} 42%, transparent)`, opacity: 0.55 }}
       />
-      {/* Soft diagonal light band. */}
+      <div
+        aria-hidden
+        className="absolute left-1/2 top-[42%] w-[46%] aspect-square -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-[16%]"
+        style={{ border: `1px solid color-mix(in oklab, ${theme.accent} 30%, transparent)`, opacity: 0.45 }}
+      />
+      {/* Top gloss. */}
       <div
         aria-hidden
         className="absolute inset-0"
-        style={{
-          background: `linear-gradient(115deg, transparent 32%, color-mix(in oklab, ${theme.accent} 22%, transparent) 50%, transparent 68%)`,
-        }}
+        style={{ background: "linear-gradient(180deg, rgba(255,255,255,.09), transparent 30%)" }}
       />
       {/* Legendary: animated shine sweep. */}
       {legendary && (
@@ -114,11 +128,26 @@ export function PowerCardFace({
         </div>
       )}
 
-      {/* Corner pip — small glyph top-left. (No mirrored bottom pip: the
-          name banner owns the bottom edge and they collide.) */}
-      <span className={`absolute top-1.5 left-2 font-black ${s.pip}`} style={{ color: theme.accent }}>
+      {/* Corner chip — small squared tag with the glyph, top-left. */}
+      <span
+        className={`absolute top-1.5 left-1.5 rounded-md px-1 py-0.5 font-black leading-none ${s.pip}`}
+        style={{
+          color: theme.accent,
+          background: `color-mix(in oklab, ${theme.accent} 14%, transparent)`,
+          border: `1px solid color-mix(in oklab, ${theme.accent} 32%, transparent)`,
+        }}
+      >
         {theme.glyph}
       </span>
+      {/* Category caption along the top edge. */}
+      {category && size !== "sm" && (
+        <span
+          className="absolute top-2 left-1/2 -translate-x-1/2 text-[7.5px] font-bold tracking-[.26em]"
+          style={{ color: theme.accent, opacity: 0.85 }}
+        >
+          {category}
+        </span>
+      )}
       {/* Rarity gem. */}
       <span
         aria-hidden
@@ -140,7 +169,7 @@ export function PowerCardFace({
         </span>
       </div>
 
-      {/* Name banner. Skip the tag when it would just repeat the card's name
+      {/* Name plate. Skip the tag when it would just repeat the card's name
           (e.g. a card literally called "Double Points"). */}
       <div className="relative text-center pb-0.5">
         <span className={`block font-black uppercase tracking-[.06em] text-white leading-tight ${s.name}`}>{name}</span>
@@ -149,6 +178,11 @@ export function PowerCardFace({
             {theme.tag}
           </span>
         )}
+        <span
+          aria-hidden
+          className="mx-auto mt-1 block h-[2px] w-7 rounded-full"
+          style={{ background: `color-mix(in oklab, ${theme.accent} 70%, transparent)` }}
+        />
         {footer && <div className="mt-1.5 flex items-center justify-center">{footer}</div>}
       </div>
     </div>

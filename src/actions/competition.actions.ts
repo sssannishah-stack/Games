@@ -15,7 +15,8 @@ import {
   EventLog,
 } from "@/models";
 import { requireUser } from "@/lib/auth/getCurrentUser";
-import { assertCompetitionOwnership } from "@/lib/authz";
+import { assertCompetitionOwnership, assertRoomOwnership } from "@/lib/authz";
+import { grantStartingCoins } from "@/actions/coin.actions";
 import {
   createCompetitionSchema,
   updateCompetitionSchema,
@@ -102,6 +103,53 @@ export async function updateCompetition(
   revalidatePath("/admin");
   revalidatePath("/admin/competitions");
   revalidatePath(`/admin/competitions/${competitionId}`);
+}
+
+/**
+ * Flip a competition between Simple and Economy mode after creation — the
+ * mode was previously locked at creation time. Economy mode turns on coins +
+ * the power store; Simple mode means the host hands out cards directly.
+ *
+ * Called from a room's settings, but the flag lives on the parent competition
+ * (so it applies to all its rooms). When switching *to* Economy, teams in the
+ * given room that still have 0 coins are granted the starting balance so the
+ * store is immediately usable — idempotent, so toggling repeatedly never
+ * double-grants.
+ */
+export async function setRoomEconomyMode(roomId: string, enabled: boolean): Promise<void> {
+  const user = await requireUser();
+  const room = await assertRoomOwnership(roomId, user.id);
+  await connectToDatabase();
+
+  const competition = await Competition.findById(room.competitionId).lean();
+  if (!competition) throw new Error("Competition not found.");
+
+  await Competition.findByIdAndUpdate(room.competitionId, {
+    $set: {
+      "settings.mode": enabled ? "ADVANCED" : "SIMPLE",
+      "settings.economy.enabled": enabled,
+    },
+  });
+
+  if (enabled) {
+    const startingCoins = competition.settings?.economy?.startingCoins ?? 0;
+    if (startingCoins > 0) {
+      const teams = await Team.find({ roomId, coins: { $lte: 0 } }).select("_id").lean();
+      if (teams.length > 0) {
+        await grantStartingCoins(roomId, teams.map((team) => team._id.toString()), startingCoins);
+      }
+    }
+  } else {
+    // Leaving Economy: close any open store so a stale store panel doesn't linger.
+    await Room.updateMany(
+      { competitionId: room.competitionId },
+      { $set: { "liveState.storeStatus": "CLOSED" } }
+    );
+  }
+
+  revalidatePath(`/admin/rooms/${roomId}`);
+  revalidatePath(`/host/${roomId}`);
+  revalidatePath(`/admin/competitions/${room.competitionId.toString()}`);
 }
 
 export async function duplicateCompetition(competitionId: string): Promise<{ id: string }> {

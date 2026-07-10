@@ -13,6 +13,9 @@ import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import { Confetti } from "@/components/motion/Confetti";
 import { NumberTicker } from "@/components/motion/NumberTicker";
 import { PowerCardFace } from "@/components/power-card/PowerCardFace";
+import { FlippablePowerCard } from "@/components/power-card/FlippablePowerCard";
+import { powerCardPlayability, type PowerPlayContext } from "@/lib/powerCardPlay";
+import { timerUrgency, TIMER_URGENCY_RING, TIMER_URGENCY_TEXT, TIMER_URGENCY_GLOW } from "@/lib/timerUrgency";
 import { useMotionEnabled } from "@/components/motion/useMotionEnabled";
 import type { PublicRoomInfo } from "@/data/queries/room.queries";
 import type { TeamRecord } from "@/data/queries/team.queries";
@@ -124,6 +127,12 @@ type LivePayload = {
   /** My team's own submitted answer for the current question (captain-submit mode). */
   myAnswer: { text: string; submittedBy: string; createdAt: string } | null;
   competition: { id: string; title: string };
+  turn: {
+    assignedTeamId: string | null;
+    assignedTeamName: string | null;
+    isMyTurn: boolean;
+    stolen: boolean;
+  };
   currentScene: {
     id: string | null;
     type: SceneType;
@@ -220,6 +229,18 @@ function textValue(value: unknown, fallback = "") {
   return typeof value === "string" && value.trim() ? value : fallback;
 }
 
+/** Current "can cards be played?" context — mirrors the server's gate exactly. */
+function livePlayContext(live: LivePayload): PowerPlayContext {
+  const endsAt = live.timer.endsAt ? new Date(live.timer.endsAt).getTime() : 0;
+  return {
+    sceneType: live.currentScene?.type ?? null,
+    timerRunning: endsAt > Date.now() && !live.timer.paused,
+    assignedTeamId: live.turn.assignedTeamId,
+    actingTeamId: live.team?.id ?? null,
+    turnStolen: live.turn.stolen,
+  };
+}
+
 export function LivePlayClient({ room, teams }: LivePlayClientProps) {
   // Initialize to null (matching the server, which has no access to
   // localStorage) and read the stored participant after mount — reading it
@@ -238,6 +259,8 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
   const [toast, setToast] = useState<string | null>(null);
   const [moment, setMoment] = useState<LiveFeedItem | null>(null);
   const [powerMoment, setPowerMoment] = useState<LiveFeedItem | null>(null);
+  const [leaveConfirm, setLeaveConfirm] = useState(false);
+  const [privacyCovered, setPrivacyCovered] = useState(false);
   const lastNotableId = useRef<string | null>(null);
   const seededNotable = useRef(false);
   const [celebrate, setCelebrate] = useState(false);
@@ -245,6 +268,8 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
   const prevScoreRef = useRef<number | null>(null);
   const { enabled: motionEnabled } = useMotionEnabled();
   const [pending, startTransition] = useTransition();
+  const liveProtection = live?.room.status === "LIVE";
+  const privacyActive = Boolean(liveProtection && privacyCovered);
   const seconds = useMemo(() => {
     if (!live?.timer.endsAt || live.timer.paused) return null;
     return Math.max(0, Math.ceil((new Date(live.timer.endsAt).getTime() - now) / 1000));
@@ -290,6 +315,37 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
     const interval = window.setInterval(() => setNow(Date.now()), 250);
     return () => window.clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    function cover() {
+      if (liveProtection) setPrivacyCovered(true);
+    }
+    function uncover() {
+      setPrivacyCovered(false);
+    }
+    function handleVisibility() {
+      if (document.hidden) cover();
+      else if (document.hasFocus()) uncover();
+    }
+    function blockCopy(event: ClipboardEvent) {
+      if (liveProtection) event.preventDefault();
+    }
+
+    window.addEventListener("blur", cover);
+    window.addEventListener("focus", uncover);
+    window.addEventListener("beforeprint", cover);
+    window.addEventListener("afterprint", uncover);
+    document.addEventListener("visibilitychange", handleVisibility);
+    document.addEventListener("copy", blockCopy);
+    return () => {
+      window.removeEventListener("blur", cover);
+      window.removeEventListener("focus", uncover);
+      window.removeEventListener("beforeprint", cover);
+      window.removeEventListener("afterprint", uncover);
+      document.removeEventListener("visibilitychange", handleVisibility);
+      document.removeEventListener("copy", blockCopy);
+    };
+  }, [liveProtection]);
 
   function handleJoined(joined: JoinedParticipant) {
     const stored = { ...joined, roomCode: room.roomCode.toUpperCase() };
@@ -458,7 +514,12 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
   }
 
   return (
-    <div className="min-h-[100dvh] bg-shell text-ink overflow-hidden">
+    <>
+    <div
+      className={`min-h-[100dvh] bg-shell text-ink overflow-hidden ${liveProtection ? "select-none print:hidden" : ""}`}
+      onContextMenu={(event) => liveProtection && event.preventDefault()}
+      onDragStart={(event) => liveProtection && event.preventDefault()}
+    >
       <div className="fixed inset-0 -z-10 bg-[radial-gradient(520px_380px_at_50%_-10%,rgba(108,123,250,.22),transparent_65%)]" />
       <div className="max-w-[520px] mx-auto min-h-[100dvh] flex flex-col px-4 pt-4 pb-5">
         <header className="flex items-center gap-3 shrink-0">
@@ -488,8 +549,13 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
               </span>
             )}
             <ThemeToggle className="w-8 h-8" />
+            {liveProtection && (
+              <span title="Live content is identity-watermarked" className="w-8 h-8 rounded-xl bg-warn/10 border border-warn/25 text-warn flex items-center justify-center">
+                <Icon name="lock" size={14} />
+              </span>
+            )}
             <button
-              onClick={leavePhone}
+              onClick={() => setLeaveConfirm(true)}
               className="w-8 h-8 rounded-xl bg-line/[.04] border border-line/[.08] text-mute-2 flex items-center justify-center"
               aria-label="Leave room"
             >
@@ -564,7 +630,82 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Confirm before actually leaving — a stray tap on the log-out icon
+          shouldn't drop a player out of the live event. */}
+      <AnimatePresence>
+        {leaveConfirm && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[80] flex items-center justify-center px-6"
+          >
+            <div className="absolute inset-0 bg-black/60 backdrop-blur-[2px]" onClick={() => setLeaveConfirm(false)} />
+            <motion.div
+              initial={{ scale: 0.9, y: 12 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="relative w-full max-w-[360px] rounded-[24px] border border-line/[.12] bg-card p-6 text-center shadow-[0_24px_70px_rgba(0,0,0,.6)]"
+            >
+              <div className="mx-auto mb-3 w-12 h-12 rounded-2xl bg-danger/10 border border-danger/25 flex items-center justify-center">
+                <Icon name="log-out" size={20} className="text-danger-soft" />
+              </div>
+              <h2 className="text-[17px] font-bold text-ink">Leave the room?</h2>
+              <p className="mt-1.5 text-[13px] text-mute-2 leading-relaxed">
+                You&apos;ll be signed out of {live?.team?.name ?? participant.teamName}. You can rejoin with
+                the room code, but your team role may change.
+              </p>
+              <div className="mt-5 grid grid-cols-2 gap-2.5">
+                <Button variant="subtle" onClick={() => setLeaveConfirm(false)} className="justify-center">
+                  Stay
+                </Button>
+                <Button
+                  variant="danger"
+                  onClick={() => {
+                    setLeaveConfirm(false);
+                    leavePhone();
+                  }}
+                  className="justify-center"
+                >
+                  Leave
+                </Button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {liveProtection && (
+        <div className="fixed -inset-24 z-[45] pointer-events-none overflow-hidden opacity-[.065]" aria-hidden="true">
+          <div className="grid h-full grid-cols-2 gap-x-14 gap-y-20 -rotate-[22deg] scale-125 content-center">
+            {Array.from({ length: 18 }, (_, index) => (
+              <span key={index} className="whitespace-nowrap text-center text-[11px] font-black tracking-[.08em] text-white">
+                {participant.name} · {live?.team?.name ?? participant.teamName} · {room.roomCode}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {privacyActive && (
+        <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center gap-3 bg-[#08090d] px-8 text-center">
+          <div className="w-16 h-16 rounded-3xl border border-warn/30 bg-warn/10 text-warn flex items-center justify-center">
+            <Icon name="lock" size={25} />
+          </div>
+          <span className="text-lg font-black text-ink">Live content protected</span>
+          <span className="max-w-[300px] text-[13px] leading-relaxed text-mute-2">
+            Return to the game to reveal the current question. Live screens are watermarked with your identity.
+          </span>
+        </div>
+      )}
     </div>
+    {liveProtection && (
+      <div className="hidden print:flex min-h-screen items-center justify-center bg-white p-10 text-center text-black">
+        Live competition content cannot be printed. Participant: {participant.name} · Room: {room.roomCode}
+      </div>
+    )}
+    </>
   );
 }
 
@@ -620,6 +761,12 @@ function StatusStrip({
   const inventory = live.powers.cards.filter((c) => c.remainingUses > 0);
   const activeTypes = new Set(activeEffects.map((e) => e.effectType));
   const combo = activeTypes.has("DOUBLE_SCORE") && activeTypes.has("BLOCK_NEGATIVE");
+  const timerAccent: Record<ReturnType<typeof timerUrgency>, string | undefined> = {
+    idle: undefined,
+    safe: "#3DD68C",
+    warning: "#E8A33D",
+    critical: "#FF5A5A",
+  };
 
   return (
     <div className="mt-4 flex flex-col gap-2">
@@ -627,7 +774,11 @@ function StatusStrip({
         <Metric label="Rank" value={live.team ? `#${live.team.rank}` : "-"} />
         <Metric label="Score" numeric={live.team?.score} shake={shake} />
         <Metric label="Coins" numeric={live.team?.coins} accent="#E8C84A" />
-        <Metric label="Timer" value={seconds === null ? "--" : `${seconds}s`} />
+        <Metric
+          label="Timer"
+          value={seconds === null ? "--" : `${seconds}s`}
+          accent={timerAccent[timerUrgency(seconds, live.question?.timer ?? 30)]}
+        />
       </div>
 
       {(streak >= 2 || activeEffects.length > 0 || inventory.length > 0) && (
@@ -892,42 +1043,59 @@ function PowersSheet({
         </span>
       ) : (
         <div className="grid grid-cols-2 gap-3">
-          {inventory.map((card) => (
-            <div key={card.id} className="flex flex-col gap-1.5">
-              <div className="relative">
-                <PowerCardFace
-                  name={card.name}
-                  icon={card.icon}
-                  effectType={card.effectType}
-                  rarity={card.rarity}
-                  size="md"
-                  className={card.status === "ACTIVE" ? "ring-2 ring-success/70" : ""}
-                />
-                {/* Copies badge, deck-style. */}
-                <span className="absolute -top-1.5 -right-1.5 min-w-6 h-6 px-1 rounded-full bg-ink text-shell text-[11px] font-black flex items-center justify-center border-2 border-card shadow">
-                  ×{card.remainingUses}
-                </span>
-                {card.status === "ACTIVE" && (
-                  <span className="absolute top-1.5 left-1/2 -translate-x-1/2 rounded-full bg-success/90 text-white text-[9px] font-bold tracking-[.1em] px-2 py-0.5">
-                    ACTIVE
-                  </span>
+          {inventory.map((card) => {
+            const play = powerCardPlayability(card.effectType, livePlayContext(live));
+            const busy = card.status === "REQUESTED" || card.status === "ACTIVE";
+            return (
+              <div key={card.id} className="flex flex-col gap-1.5">
+                <div className={card.status === "ACTIVE" ? "rounded-2xl ring-2 ring-success/70" : ""}>
+                  {/* Tap the card to flip it and read what it does. */}
+                  <FlippablePowerCard
+                    name={card.name}
+                    icon={card.icon}
+                    effectType={card.effectType}
+                    rarity={card.rarity}
+                    category={card.category}
+                    description={card.description}
+                    detailLines={[`${card.remainingUses} use${card.remainingUses === 1 ? "" : "s"} left`]}
+                    hint={play.usable ? null : play.reason}
+                    size="md"
+                    frontExtras={
+                      <>
+                        {/* Copies badge, deck-style. */}
+                        <span className="absolute -top-1.5 -right-1.5 min-w-6 h-6 px-1 rounded-full bg-ink text-shell text-[11px] font-black flex items-center justify-center border-2 border-card shadow">
+                          ×{card.remainingUses}
+                        </span>
+                        {card.status === "ACTIVE" && (
+                          <span className="absolute top-1.5 left-1/2 -translate-x-1/2 rounded-full bg-success/90 text-white text-[9px] font-bold tracking-[.1em] px-2 py-0.5">
+                            ACTIVE
+                          </span>
+                        )}
+                      </>
+                    }
+                  />
+                </div>
+                {canControl ? (
+                  <>
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      disabled={pending || !requestsAllowed || busy || !play.usable}
+                      onClick={() => onRequest(card)}
+                      className="justify-center"
+                    >
+                      {card.status === "REQUESTED" ? "Pending" : card.status === "ACTIVE" ? "Active" : "Use Power"}
+                    </Button>
+                    {!play.usable && !busy && (
+                      <span className="text-center text-[9.5px] text-dim leading-snug">{play.reason}</span>
+                    )}
+                  </>
+                ) : (
+                  <span className="text-center text-[10.5px] text-dim py-1">Only captain can activate</span>
                 )}
               </div>
-              {canControl ? (
-                <Button
-                  variant="primary"
-                  size="sm"
-                  disabled={pending || !requestsAllowed || card.status === "REQUESTED" || card.status === "ACTIVE"}
-                  onClick={() => onRequest(card)}
-                  className="justify-center"
-                >
-                  {card.status === "REQUESTED" ? "Pending" : "Use Power"}
-                </Button>
-              ) : (
-                <span className="text-center text-[10.5px] text-dim py-1">Only captain can activate</span>
-              )}
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
@@ -1158,13 +1326,39 @@ function QuestionScene({
   const available = live.powers.cards.filter((card) => card.remainingUses > 0).slice(0, 3);
   const canControl = live.me?.canControl ?? false;
   const captainSubmit = live.room.answerMode === "CAPTAIN_SUBMIT";
+  const urgency = timerUrgency(seconds, live.question?.timer ?? 30);
   return (
     <div className="flex-1 flex flex-col gap-4 pt-5">
       <div className="flex items-center justify-center">
-        <div className="w-20 h-20 rounded-full border-[6px] border-accent/35 bg-line/[.04] flex items-center justify-center text-2xl font-black">
+        <div
+          className={`w-20 h-20 rounded-full border-[6px] bg-line/[.04] flex items-center justify-center text-2xl font-black transition-colors duration-500 ${TIMER_URGENCY_RING[urgency]} ${TIMER_URGENCY_TEXT[urgency]} ${
+            urgency === "critical" && seconds !== null && seconds <= 5 ? "animate-enc-pulse" : ""
+          }`}
+          style={{ boxShadow: `0 0 22px ${TIMER_URGENCY_GLOW[urgency]}` }}
+        >
           {seconds ?? live.question?.timer ?? "--"}
         </div>
       </div>
+      {live.turn.assignedTeamId && (
+        <div
+          className={`rounded-2xl border px-4 py-3 text-center ${
+            live.turn.isMyTurn
+              ? "border-success/35 bg-success/[.1]"
+              : "border-warn/35 bg-warn/[.08]"
+          }`}
+        >
+          <span className={`block text-[10px] font-black tracking-[.12em] ${live.turn.isMyTurn ? "text-success" : "text-warn"}`}>
+            {live.turn.isMyTurn ? (live.turn.stolen ? "YOU STOLE THIS TURN" : "YOUR TEAM'S TURN") : `${live.turn.assignedTeamName ?? "ANOTHER TEAM"}'S TURN`}
+          </span>
+          <span className="block mt-1 text-[12px] text-mute-2">
+            {live.turn.isMyTurn
+              ? "You may use any allowed card except Steal Chance."
+              : live.turn.stolen
+                ? "The turn has already been stolen; your cards are locked for this question."
+                : "Only Steal Chance can be played by your team right now."}
+          </span>
+        </div>
+      )}
       {live.question?.media?.url && (
         <div className="rounded-2xl overflow-hidden border border-line/[.08] bg-line/[.04]">
           {live.question.media.type === "IMAGE" && (
@@ -1220,20 +1414,29 @@ function QuestionScene({
               No powers available.
             </div>
           ) : (
-            available.map((card) => (
-              <button
-                key={card.id}
-                onClick={() => canControl && onRequest(card)}
-                disabled={pending || card.status === "REQUESTED" || !canControl}
-                className="rounded-2xl border border-line/[.08] bg-line/[.04] px-2 py-3 text-center disabled:opacity-55"
-              >
-                <span className="block text-xl">{card.icon}</span>
-                <span className="block text-[11px] font-bold text-ink mt-1 truncate">{card.name}</span>
-                <span className="block text-[10px] text-mute-2">
-                  {!canControl ? "Captain only" : card.status === "REQUESTED" ? "Pending" : `${card.remainingUses} left`}
-                </span>
-              </button>
-            ))
+            available.map((card) => {
+              const play = powerCardPlayability(card.effectType, livePlayContext(live));
+              return (
+                <button
+                  key={card.id}
+                  onClick={() => canControl && play.usable && onRequest(card)}
+                  disabled={pending || card.status === "REQUESTED" || !canControl || !play.usable}
+                  className="rounded-2xl border border-line/[.08] bg-line/[.04] px-2 py-3 text-center disabled:opacity-55"
+                >
+                  <span className="block text-xl">{card.icon}</span>
+                  <span className="block text-[11px] font-bold text-ink mt-1 truncate">{card.name}</span>
+                  <span className="block text-[10px] text-mute-2">
+                    {!canControl
+                      ? "Captain only"
+                      : card.status === "REQUESTED"
+                        ? "Pending"
+                        : !play.usable
+                          ? "Timer off"
+                          : `${card.remainingUses} left`}
+                  </span>
+                </button>
+              );
+            })
           )}
         </div>
         {!canControl && available.length > 0 && (
@@ -1631,8 +1834,10 @@ function StoreCard({
   onBuy: (card: LivePower) => void;
   onRequest: (card: LivePower) => void;
 }) {
+  const play = powerCardPlayability(card.effectType, livePlayContext(live));
   const canRequest =
     canControl &&
+    play.usable &&
     card.remainingUses > 0 &&
     card.requestable &&
     live.room.permissions?.requestLifelines !== false;
@@ -1642,12 +1847,23 @@ function StoreCard({
 
   return (
     <div className="relative flex flex-col gap-1.5">
-      <div className={`relative ${soldOut ? "opacity-45 saturate-50" : ""}`}>
-        <PowerCardFace
+      <div className={soldOut ? "opacity-45 saturate-50" : ""}>
+        {/* Tap the card to flip it and read what it does. */}
+        <FlippablePowerCard
           name={card.name}
           icon={card.icon}
           effectType={card.effectType}
           rarity={card.rarity}
+          category={card.category}
+          description={card.description}
+          detailLines={[
+            `Price: ${card.price} 🪙`,
+            ...(card.remainingUses > 0
+              ? [`${card.remainingUses} use${card.remainingUses === 1 ? "" : "s"} owned`]
+              : []),
+            ...(card.limited ? [soldOut ? "Sold out" : `${card.stock} left in stock`] : []),
+          ]}
+          hint={play.usable ? null : play.reason}
           size="md"
           footer={
             <span className="rounded-full bg-black/45 border border-white/15 px-2 py-0.5 text-[10px] font-black text-warn tabular-nums">
@@ -1657,22 +1873,26 @@ function StoreCard({
               {card.price} 🪙
             </span>
           }
+          frontExtras={
+            <>
+              {/* Status ribbons over the card art. */}
+              {card.limited && (
+                <span
+                  className={`absolute top-1.5 left-1/2 -translate-x-1/2 rounded-full px-2 py-0.5 text-[8.5px] font-bold tracking-[.08em] ${
+                    soldOut ? "bg-black/70 text-mute-2" : "bg-pink/85 text-white"
+                  }`}
+                >
+                  {soldOut ? "SOLD OUT" : `${card.stock} LEFT`}
+                </span>
+              )}
+              {card.onSale && !card.limited && (
+                <span className="absolute top-1.5 left-1/2 -translate-x-1/2 rounded-full bg-warn/90 text-black px-2 py-0.5 text-[8.5px] font-black tracking-[.08em]">
+                  SALE
+                </span>
+              )}
+            </>
+          }
         />
-        {/* Status ribbons over the card art. */}
-        {card.limited && (
-          <span
-            className={`absolute top-1.5 left-1/2 -translate-x-1/2 rounded-full px-2 py-0.5 text-[8.5px] font-bold tracking-[.08em] ${
-              soldOut ? "bg-black/70 text-mute-2" : "bg-pink/85 text-white"
-            }`}
-          >
-            {soldOut ? "SOLD OUT" : `${card.stock} LEFT`}
-          </span>
-        )}
-        {card.onSale && !card.limited && (
-          <span className="absolute top-1.5 left-1/2 -translate-x-1/2 rounded-full bg-warn/90 text-black px-2 py-0.5 text-[8.5px] font-black tracking-[.08em]">
-            SALE
-          </span>
-        )}
       </div>
       <div className="grid grid-cols-2 gap-1.5">
         <Button

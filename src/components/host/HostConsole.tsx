@@ -43,6 +43,7 @@ import {
 import { ACHIEVEMENTS, MANUAL_ACHIEVEMENTS } from "@/lib/achievements";
 import { SPIN_SEGMENTS } from "@/lib/luckySpin";
 import { ROUND_MODES } from "@/lib/roundModes";
+import { timerUrgency, TIMER_URGENCY_TEXT } from "@/lib/timerUrgency";
 import { Icon } from "@/components/ui/Icon";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
@@ -604,6 +605,7 @@ export function HostConsole({
                       <span className="w-2.5 h-2.5 rounded-full" style={{ background: assignedTeam.color ?? "#6C7BFA" }} />
                       <span className="text-sm font-black text-ink">{assignedTeam.name}</span>
                       {assignmentSource === "RANDOM_REMAINDER" && <span className="text-[10px] text-mute-2">random remainder</span>}
+                      {assignmentSource === "STEAL" && <span className="text-[10px] font-bold text-warn">turn stolen</span>}
                     </div>
                   )}
                   <div className="text-4xl font-bold text-ink leading-tight">
@@ -703,10 +705,17 @@ export function HostConsole({
               )}
             </section>
 
-            {/* TIMER */}
+            {/* TIMER — the readout shifts green -> amber -> red as it runs
+                down, same ladder as every participant phone. */}
             <section className="rounded-2xl border border-line/[.08] bg-line/[.03] p-4 flex flex-col gap-3">
               <span className="text-sm font-bold text-ink-2">Timer</span>
-              <span className="font-mono text-3xl font-black text-center text-ink tabular-nums">{timerDisplay}</span>
+              <span
+                className={`font-mono text-3xl font-black text-center tabular-nums transition-colors duration-500 ${TIMER_URGENCY_TEXT[timerUrgency(secondsLeft, Number(current?.settings?.timer ?? 30))]} ${
+                  secondsLeft !== null && secondsLeft <= 5 && timerRunning ? "animate-enc-pulse" : ""
+                }`}
+              >
+                {timerDisplay}
+              </span>
               <div className="grid grid-cols-2 gap-2">
                 <Button variant="primary" onClick={() => action(() => startTimer(room.id, Number(current?.settings?.timer ?? 30)))} disabled={pending}>
                   Start

@@ -22,7 +22,7 @@ function emptyDraft() {
     effectType: "HINT" as PowerCardEffectType,
     price: 0,
     stock: "" as number | "",
-    requiresApproval: true,
+    requiresApproval: false,
     usesPerTeam: 1,
   };
 }
