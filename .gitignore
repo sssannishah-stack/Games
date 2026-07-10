@@ -40,3 +40,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local-only assets and archives
+/Encore Hi-Fi v2.pdf
+/Live Competition Operating System-handoff.zip
+/Live Competition Operating System-handoff/
+/encore/
