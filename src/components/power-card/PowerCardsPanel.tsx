@@ -16,6 +16,7 @@ interface PowerCardsPanelProps {
   cards: PowerCardRecord[];
   economyEnabled: boolean;
   teamCount: number;
+  defaults: Array<{ powerCardId: string; uses: number }>;
 }
 
 /**
@@ -23,8 +24,10 @@ interface PowerCardsPanelProps {
  * Round Builder). In Simple Mode, the host assigns cards directly to every
  * team here; Economy Mode operational controls live in the Store panel.
  */
-export function PowerCardsPanel({ roomId, cards, economyEnabled, teamCount }: PowerCardsPanelProps) {
-  const [assignUses, setAssignUses] = useState<Record<string, number>>({});
+export function PowerCardsPanel({ roomId, cards, economyEnabled, teamCount, defaults }: PowerCardsPanelProps) {
+  const [assignUses, setAssignUses] = useState<Record<string, number>>(
+    Object.fromEntries(defaults.map((item) => [item.powerCardId, item.uses]))
+  );
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
   const router = useRouter();
@@ -61,6 +64,11 @@ export function PowerCardsPanel({ roomId, cards, economyEnabled, teamCount }: Po
         <Link href="/admin/rounds" className="ml-auto text-[11.5px] font-semibold text-accent hover:brightness-125">
           Manage catalog
         </Link>
+      </div>
+
+      <div className="rounded-xl border border-accent/20 bg-accent/[.05] px-3 py-2 text-[11.5px] text-ink-3">
+        Every team starts with Hint + Extra Time. They activate instantly when the current round allows them;
+        the host can still restrict cards per round.
       </div>
 
       {cards.length === 0 ? (
@@ -124,7 +132,7 @@ export function PowerCardsPanel({ roomId, cards, economyEnabled, teamCount }: Po
           disabled={pending}
           className="self-start disabled:opacity-60"
         >
-          {pending ? "Saving…" : "Assign to every team"}
+          {pending ? "Saving…" : "Save room default loadout"}
         </Button>
       )}
     </Card>

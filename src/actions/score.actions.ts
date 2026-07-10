@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { Types } from "mongoose";
 import { connectToDatabase } from "@/lib/database/mongodb";
-import { ScoreTransaction, Team, EventLog, Room } from "@/models";
+import { ScoreTransaction, Team, EventLog, Room, Round } from "@/models";
 import { createCoinTransaction } from "@/actions/coin.actions";
 import { detectAchievements } from "@/lib/detectAchievements";
 import { requireUser } from "@/lib/auth/getCurrentUser";
@@ -169,7 +169,13 @@ export async function giveMarks(input: {
   const user = await requireUser();
   await assertRoomOwnership(input.roomId, user.id);
   await connectToDatabase();
-  const room = await Room.findById(input.roomId).select("status").lean();
+  const room = await Room.findById(input.roomId).select("status currentRoundId").lean();
+  if (room?.currentRoundId && input.points < 0) {
+    const currentRound = await Round.findById(room.currentRoundId).select("specialMode").lean();
+    if (currentRound?.specialMode === "BONUS") {
+      throw new Error("Bonus rounds do not allow negative marks.");
+    }
+  }
   if (room?.status === "TESTING") {
     await EventLog.create({
       roomId: input.roomId,

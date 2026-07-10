@@ -379,6 +379,8 @@ export interface IRoom {
    * the final say during a live event, even over settings decided earlier.
    */
   powerCardOverrides: string[];
+  /** Inventory restored by Reset Room. Empty means the automatic starter hand. */
+  powerCardDefaults: Array<{ powerCardId: string; uses: number }>;
   currentSceneId: Types.ObjectId | null;
   currentRoundId: Types.ObjectId | null;
   currentQuestionId: Types.ObjectId | null;

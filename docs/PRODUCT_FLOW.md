@@ -56,8 +56,9 @@ The preparation phase happens before the event.
    - Members do not log in.
 
 7. Assign lifelines
-   - Host grants each team default or customized lifelines.
-   - Example defaults: Shield x1, Hint x2, Extra Time x1, Double Points x1.
+   - Every team automatically receives the starter hand: Hint x1 and Extra Time x1.
+   - Starter cards activate immediately when the current round allows them.
+   - Host may grant more cards or customize inventory; non-starter cards may require approval.
 
 8. Create rounds
    - Host creates rounds such as Antakshari, Chitra Thi Geet, or Q/A.
@@ -129,10 +130,10 @@ The live event phase happens during the physical competition.
    - A Shield or other active effect may alter the transaction.
 
 9. Lifeline request
-   - Team phone requests a lifeline.
-   - Host receives the request.
-   - Host approves, rejects, or overrides.
-   - Approved lifeline is not active until host activates it.
+   - Team phone can use only a card its team owns and the current round allows.
+   - Starter cards activate immediately; approval-required cards create a host request.
+   - Host approves, rejects, or overrides approval-required cards.
+   - An approved card is not active until host activates it.
    - Active lifeline becomes consumed only after the effect resolves.
 
 10. Hint flow
@@ -222,4 +223,3 @@ WINNER
   ↓
 ANALYTICS
 ```
-

@@ -929,6 +929,7 @@ function TeamGrid({
           cards={cards}
           economyEnabled={room.economyEnabled}
           teamCount={teams.length}
+          defaults={room.powerCardDefaults}
         />
       )}
       {teams.length > 0 && <InventoryPanel teams={teams} cards={cards} ownedCards={ownedCards} />}

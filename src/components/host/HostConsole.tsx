@@ -14,6 +14,7 @@ import {
   stepScene,
 } from "@/actions/scene.actions";
 import { sendBroadcast } from "@/actions/broadcast.actions";
+import { resetRoom } from "@/actions/room.actions";
 import {
   closeStore,
   endFlashSale,
@@ -85,6 +86,35 @@ const STATUS_LABEL: Record<RoomDetail["status"], string> = {
   LIVE: "LIVE",
   COMPLETED: "COMPLETED",
 };
+
+// Each scene type gets a distinct color world so QUESTION / ANSWER / INTRO
+// are readable at a glance in the flow list. `bar` is a bold left edge strip,
+// `label` colors the type caption — the earlier 6-8% fills were invisible on
+// the dark theme, which is why every row looked identical.
+const SCENE_VISUAL: Partial<
+  Record<SceneRecord["type"], { marker: string; row: string; badge: string; bar: string; label: string }>
+> = {
+  WELCOME: { marker: "WELCOME", row: "border-violet-400/40 bg-violet-400/[.13]", badge: "bg-violet-400/25 text-violet-100", bar: "bg-violet-400", label: "text-violet-200" },
+  ROUND_INTRO: { marker: "ROUND", row: "border-info/45 bg-info/[.14]", badge: "bg-info/25 text-info", bar: "bg-info", label: "text-info" },
+  QUESTION: { marker: "Q", row: "border-accent/50 bg-accent/[.15]", badge: "bg-accent/30 text-accent", bar: "bg-accent", label: "text-accent" },
+  DRAWING: { marker: "DRAW", row: "border-pink/50 bg-pink/[.15]", badge: "bg-pink/30 text-pink", bar: "bg-pink", label: "text-pink" },
+  HINT: { marker: "HINT", row: "border-warn/45 bg-warn/[.13]", badge: "bg-warn/25 text-warn", bar: "bg-warn", label: "text-warn" },
+  ANSWER_REVEAL: { marker: "A", row: "border-success/50 bg-success/[.15]", badge: "bg-success/30 text-success", bar: "bg-success", label: "text-success" },
+  LEADERBOARD: { marker: "RANK", row: "border-amber/50 bg-amber/[.15]", badge: "bg-amber/30 text-amber", bar: "bg-amber", label: "text-amber" },
+  BREAK: { marker: "BREAK", row: "border-line/[.14] bg-line/[.06]", badge: "bg-line/[.1] text-mute-2", bar: "bg-line/[.3]", label: "text-mute-2" },
+  BROADCAST: { marker: "SAY", row: "border-info/45 bg-info/[.14]", badge: "bg-info/25 text-info", bar: "bg-info", label: "text-info" },
+  WINNER: { marker: "WIN", row: "border-warn/55 bg-warn/[.16]", badge: "bg-warn/30 text-warn", bar: "bg-warn", label: "text-warn" },
+};
+
+function sceneVisual(type: SceneRecord["type"]) {
+  return SCENE_VISUAL[type] ?? {
+    marker: type.replace(/_/g, " "),
+    row: "border-line/[.08] bg-line/[.03]",
+    badge: "bg-line/[.07] text-mute-2",
+    bar: "bg-line/[.3]",
+    label: "text-mute-2",
+  };
+}
 
 function formatClock(seconds: number) {
   const m = Math.floor(seconds / 60);
@@ -168,6 +198,7 @@ export function HostConsole({
   const [auctionCardId, setAuctionCardId] = useState(cards[0]?.id ?? "");
   const [auctionStartBid, setAuctionStartBid] = useState(500);
   const [scoreFloat, setScoreFloat] = useState<{ id: number; points: number; team: string } | null>(null);
+  const [resetOpen, setResetOpen] = useState(false);
 
   const current = scenes.find((scene) => scene.id === room.currentSceneId) ?? scenes[0] ?? null;
   const question = current?.questionId ? questions.find((item) => item.id === current.questionId) : null;
@@ -177,6 +208,13 @@ export function HostConsole({
 
   const teamById = new Map(teams.map((t) => [t.id, t]));
   const cardById = new Map(cards.map((c) => [c.id, c]));
+  const assignedTeamId = typeof current?.settings?.assignedTeamId === "string"
+    ? current.settings.assignedTeamId
+    : null;
+  const assignedTeam = assignedTeamId ? teamById.get(assignedTeamId) ?? null : null;
+  const assignmentSource = typeof current?.settings?.assignmentSource === "string"
+    ? current.settings.assignmentSource
+    : null;
   const ownedByTeam = new Map<string, TeamPowerCardRecord[]>();
   for (const owned of ownedCards) {
     const list = ownedByTeam.get(owned.teamId) ?? [];
@@ -389,6 +427,15 @@ export function HostConsole({
           {timerDisplay}
         </span>
         <Button
+          variant="danger"
+          size="sm"
+          onClick={() => setResetOpen(true)}
+          disabled={pending}
+          className="shrink-0"
+        >
+          Reset Room
+        </Button>
+        <Button
           variant="primary"
           size="sm"
           onClick={() => action(() => startEvent(room.id))}
@@ -417,23 +464,43 @@ export function HostConsole({
                   {group.scenes.map((scene, index) => {
                     const moveUpDisabled = scene.order === 0 || index === 0;
                     const moveDownDisabled = scene.order === scenes.length - 1 || index === group.scenes.length - 1;
+                    const visual = sceneVisual(scene.type);
+                    const sceneRound = scene.roundId ? rounds.find((item) => item.id === scene.roundId) : null;
+                    const sceneQuestionIndex = sceneRound && scene.questionId
+                      ? sceneRound.questionIds.indexOf(scene.questionId) + 1
+                      : 0;
+                    const marker = sceneQuestionIndex > 0 && (scene.type === "QUESTION" || scene.type === "ANSWER_REVEAL")
+                      ? `${visual.marker}${sceneQuestionIndex}`
+                      : visual.marker;
+                    const sceneAssignedTeamId = typeof scene.settings?.assignedTeamId === "string"
+                      ? scene.settings.assignedTeamId
+                      : null;
+                    const sceneAssignedTeam = sceneAssignedTeamId ? teamById.get(sceneAssignedTeamId) : null;
                     return (
                       <div
                         key={scene.id}
-                        className={`rounded-xl border px-2 py-2 flex items-center gap-2 ${
+                        className={`relative overflow-hidden rounded-xl border pl-3 pr-2 py-2 flex items-center gap-2 ${
                         scene.id === room.currentSceneId
-                          ? "border-accent/55 bg-accent/15"
-                          : "border-line/[.08] bg-line/[.03] hover:bg-line/[.06]"
+                          ? "border-white/55 bg-white/[.11] ring-1 ring-white/15"
+                          : `${visual.row} hover:brightness-125`
                       }`}
                       >
+                        {/* Bold color strip down the left edge — the fastest "what kind of scene" cue. */}
+                        <span className={`absolute left-0 inset-y-0 w-1 ${visual.bar}`} aria-hidden />
                         <button
                           onClick={() => action(() => publishScene(room.id, scene.id).then(() => undefined))}
                           className="min-w-0 flex-1 flex items-center gap-2 text-left cursor-pointer"
                         >
-                          <span className="text-[9px] font-mono w-8 text-center shrink-0 text-mute-2">{sceneIcon(scene)}</span>
+                          <span className={`min-w-9 rounded-md px-1.5 py-1 text-[9px] font-mono font-black text-center shrink-0 ${visual.badge}`}>
+                            {marker}
+                          </span>
                           <span className="flex flex-col min-w-0">
                             <span className="text-[12.5px] font-semibold text-ink-2 truncate">{scene.title}</span>
-                            <span className="text-[10.5px] text-mute-2">{scene.type.replace(/_/g, " ")}</span>
+                            <span className="text-[10px]">
+                              <span className="text-mute-2">{sceneIcon(scene)} · </span>
+                              <span className={`font-bold ${visual.label}`}>{scene.type.replace(/_/g, " ")}</span>
+                              {sceneAssignedTeam ? <span className="text-ink-3"> · 👥 {sceneAssignedTeam.name}</span> : ""}
+                            </span>
                           </span>
                         </button>
                         {room.status !== "LIVE" && (
@@ -493,18 +560,25 @@ export function HostConsole({
             <div className="lg:hidden border-b border-line/[.07] px-3 py-2 overflow-x-auto">
               <div className="flex gap-2 min-w-max">
                 {scenes.map((scene) => (
-                  <button
-                    key={scene.id}
-                    onClick={() => action(() => publishScene(room.id, scene.id).then(() => undefined))}
-                    className={`rounded-lg border px-3 py-2 text-left min-w-[132px] ${
-                      scene.id === room.currentSceneId
-                        ? "border-accent/55 bg-accent/15"
-                        : "border-line/[.08] bg-line/[.03]"
-                    }`}
-                  >
-                    <span className="block text-[9px] font-mono text-mute-2">{sceneIcon(scene)}</span>
-                    <span className="block text-[12px] font-semibold text-ink-2 truncate">{scene.title}</span>
-                  </button>
+                  (() => {
+                    const visual = sceneVisual(scene.type);
+                    return (
+                      <button
+                        key={scene.id}
+                        onClick={() => action(() => publishScene(room.id, scene.id).then(() => undefined))}
+                        className={`rounded-lg border px-3 py-2 text-left min-w-[148px] ${
+                          scene.id === room.currentSceneId
+                            ? "border-white/55 bg-white/[.11]"
+                            : visual.row
+                        }`}
+                      >
+                        <span className={`inline-block rounded px-1.5 py-0.5 text-[9px] font-mono font-black ${visual.badge}`}>
+                          {visual.marker}
+                        </span>
+                        <span className="block mt-1 text-[12px] font-semibold text-ink-2 truncate">{scene.title}</span>
+                      </button>
+                    );
+                  })()
                 ))}
               </div>
             </div>
@@ -524,6 +598,14 @@ export function HostConsole({
                     {current?.type ?? "NO SCENE"}
                   </span>
                   {round && <span className="text-[12px] text-mute-2">{round.title}</span>}
+                  {question && assignedTeam && (
+                    <div className="flex items-center gap-2 rounded-xl border border-accent/35 bg-accent/[.1] px-4 py-2">
+                      <span className="text-[10px] font-mono font-semibold tracking-[.1em] text-accent">ASSIGNED TEAM</span>
+                      <span className="w-2.5 h-2.5 rounded-full" style={{ background: assignedTeam.color ?? "#6C7BFA" }} />
+                      <span className="text-sm font-black text-ink">{assignedTeam.name}</span>
+                      {assignmentSource === "RANDOM_REMAINDER" && <span className="text-[10px] text-mute-2">random remainder</span>}
+                    </div>
+                  )}
                   <div className="text-4xl font-bold text-ink leading-tight">
                     {question?.question || current?.title || "—"}
                   </div>
@@ -577,6 +659,13 @@ export function HostConsole({
                   <span className="text-[12px] text-mute-2">
                     {questionIndex ? `Q${questionIndex}` : "Question"} · {question.type}
                   </span>
+                  {assignedTeam && (
+                    <div className="flex items-center gap-2 rounded-lg border border-accent/30 bg-accent/[.08] px-2.5 py-2">
+                      <span className="text-[10px] font-semibold text-accent">ASSIGNED TO</span>
+                      <span className="w-2 h-2 rounded-full" style={{ background: assignedTeam.color ?? "#6C7BFA" }} />
+                      <span className="text-[12px] font-bold text-ink">{assignedTeam.name}</span>
+                    </div>
+                  )}
                   <span className="text-[12px] text-mute-2">
                     Answer: <b className="text-ink-2">{question.answer}</b>
                   </span>
@@ -1066,6 +1155,7 @@ export function HostConsole({
                   Close
                 </Button>
               </div>
+              {feedback && <span className="text-[12px] text-danger-soft">{feedback}</span>}
 
               <div className="flex flex-col gap-1.5 pt-1.5 border-t border-line/[.06]">
                 <span className="text-[11px] font-semibold tracking-[.08em] text-label">STORE EVENTS</span>
@@ -1200,7 +1290,7 @@ export function HostConsole({
         </Button>
         <Button
           variant="subtle"
-          onClick={() => openScoring(teams[0]?.id ?? "", 10)}
+          onClick={() => openScoring(assignedTeamId ?? teams[0]?.id ?? "", 10)}
           disabled={pending || teams.length === 0}
           className="shrink-0"
         >
@@ -1275,6 +1365,19 @@ export function HostConsole({
         }}
       />
 
+      <RoomResetModal
+        key={resetOpen ? "open" : "closed"}
+        open={resetOpen}
+        pending={pending}
+        onClose={() => setResetOpen(false)}
+        onReset={() =>
+          action(async () => {
+            await resetRoom(room.id, "RESET");
+            setResetOpen(false);
+          })
+        }
+      />
+
       <LuckySpinModal
         open={spinOpen}
         onClose={() => setSpinOpen(false)}
@@ -1302,6 +1405,49 @@ export function HostConsole({
         </div>
       )}
     </div>
+  );
+}
+
+function RoomResetModal({
+  open,
+  pending,
+  onClose,
+  onReset,
+}: {
+  open: boolean;
+  pending: boolean;
+  onClose: () => void;
+  onReset: () => void;
+}) {
+  const [confirmation, setConfirmation] = useState("");
+
+  return (
+    <Modal open={open} onClose={() => !pending && onClose()} className="max-w-[460px]">
+      <div className="px-6 py-5 border-b border-line/[.07]">
+        <span className="text-base font-bold text-ink">Reset this room?</span>
+        <p className="mt-2 text-[12.5px] leading-relaxed text-mute-2">
+          Scores, coins, purchases, power requests, achievements, auctions and the event timeline will be cleared.
+          Teams, rosters, rounds, questions and scenes stay. Every team&apos;s cards return to the room default loadout.
+        </p>
+      </div>
+      <div className="px-6 py-5 flex flex-col gap-3">
+        <label className="flex flex-col gap-1.5">
+          <span className="text-xs font-semibold text-ink-3">Type RESET to confirm</span>
+          <input
+            value={confirmation}
+            onChange={(event) => setConfirmation(event.target.value.toUpperCase())}
+            className="bg-line/[.04] border border-line/[.1] rounded-[11px] px-3 py-2 text-sm text-ink outline-none focus:border-danger/60"
+            autoFocus
+          />
+        </label>
+        <div className="flex justify-end gap-2">
+          <Button variant="plain" onClick={onClose} disabled={pending}>Cancel</Button>
+          <Button variant="danger" onClick={onReset} disabled={pending || confirmation !== "RESET"} loading={pending}>
+            Reset Room
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -1510,7 +1656,9 @@ function ScoringModal({
   onSubmit: (input: { teamId: string; points: number; reason: ScoreReason; participantId: string }) => void;
 }) {
   const [points, setPoints] = useState(initialValue);
-  const [reason, setReason] = useState<ScoreReason>(initialValue >= 0 ? "CORRECT" : "WRONG");
+  const [reason, setReason] = useState<ScoreReason>(
+    roundMode === "BONUS" ? "BONUS" : initialValue >= 0 ? "CORRECT" : "WRONG"
+  );
   const [participantId, setParticipantId] = useState("");
 
   const teamParticipants = participants.filter((p) => p.teamId === teamId);
@@ -1519,6 +1667,7 @@ function ScoringModal({
   const hasGamble = activeEffects.some((e) => e.effectType === "GAMBLE");
   const combo = hasDouble && hasShield;
   const modeDef = roundMode !== "NONE" ? ROUND_MODES[roundMode] : null;
+  const scoreValues = roundMode === "BONUS" ? SCORE_VALUES.filter((value) => value >= 0) : SCORE_VALUES;
 
   function submit() {
     onSubmit({ teamId, points, reason, participantId });
@@ -1622,7 +1771,7 @@ function ScoringModal({
         )}
 
         <div className="grid grid-cols-4 gap-1.5">
-          {SCORE_VALUES.map((value) => (
+          {scoreValues.map((value) => (
             <button
               key={value}
               onClick={() => setPoints(value)}
@@ -1635,8 +1784,9 @@ function ScoringModal({
           ))}
           <input
             type="number"
+            min={roundMode === "BONUS" ? 0 : undefined}
             value={points}
-            onChange={(e) => setPoints(Number(e.target.value))}
+            onChange={(e) => setPoints(roundMode === "BONUS" ? Math.max(0, Number(e.target.value)) : Number(e.target.value))}
             className="col-span-4 bg-line/[.05] border border-line/[.1] rounded-xl px-3 py-2 text-[13px] text-ink outline-none"
             placeholder="Custom"
           />

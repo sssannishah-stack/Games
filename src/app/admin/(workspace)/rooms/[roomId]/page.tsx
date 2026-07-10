@@ -13,6 +13,7 @@ import {
   getTeamPowerCardsByRoom,
 } from "@/data/queries/powerCard.queries";
 import { seedDefaultPowerCards } from "@/actions/powerCard.actions";
+import { ensureRoomDefaultPowerCardsForTeams } from "@/lib/starterPowerCards";
 
 export default async function AdminRoomSetupPage({
   params,
@@ -35,7 +36,9 @@ export default async function AdminRoomSetupPage({
   ]);
   const [questions, ownedCards] = await Promise.all([
     getQuestionsForRoomRounds(room.selectedRounds),
-    getTeamPowerCardsByRoom(teams.map((t) => t.id)),
+    ensureRoomDefaultPowerCardsForTeams(teams.map((team) => team.id), room.id, user.id).then(() =>
+      getTeamPowerCardsByRoom(teams.map((team) => team.id))
+    ),
   ]);
 
   const joinUrl = `${baseUrl}/play/${room.roomCode}`;

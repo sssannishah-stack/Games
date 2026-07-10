@@ -322,13 +322,17 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
     if (!live?.team || !participant) return;
     startTransition(async () => {
       try {
-        await requestPowerCard({
+        const result = await requestPowerCard({
           roomId: live.room.id,
           teamId: live.team!.id,
           powerCardId: card.id,
           participantId: participant.id,
         });
-        setToast(`${card.name} request sent to host.`);
+        setToast(
+          result.status === "ACTIVE"
+            ? `${card.name} activated.`
+            : `${card.name} request sent to host.`
+        );
       } catch (err) {
         setToast(err instanceof Error ? err.message : "Could not request card.");
       }
@@ -578,10 +582,10 @@ const EFFECT_ICON: Record<string, string> = {
 
 type RoundMode = "SPEED" | "RISK" | "SURVIVAL" | "BONUS";
 const ROUND_MODE_META: Record<RoundMode, { label: string; emoji: string; description: string; color: string }> = {
-  SPEED: { label: "Speed Round", emoji: "⚡", description: "Short timer, higher rewards — answer fast.", color: "#5EC9E8" },
-  RISK: { label: "Risk Round", emoji: "🎯", description: "Pick your difficulty for bigger points.", color: "#E8A33D" },
-  SURVIVAL: { label: "Survival Round", emoji: "💀", description: "Wrong answers cost a life — play safe.", color: "#FF6B6B" },
-  BONUS: { label: "Bonus Round", emoji: "🎁", description: "Rewards only — no penalties.", color: "#3DD68C" },
+  SPEED: { label: "Speed Round", emoji: "⚡", description: "Fast play with a host-awarded speed bonus.", color: "#5EC9E8" },
+  RISK: { label: "Risk Round", emoji: "🎯", description: "Difficulty decides the available reward.", color: "#E8A33D" },
+  SURVIVAL: { label: "Survival Round", emoji: "💀", description: "The host tracks lives and elimination manually.", color: "#FF6B6B" },
+  BONUS: { label: "Bonus Round", emoji: "🎁", description: "Rewards only — negative marks are blocked.", color: "#3DD68C" },
 };
 
 function RoundModeBadge({ mode }: { mode?: string }) {
@@ -746,7 +750,8 @@ function BottomBar({
 }) {
   const [open, setOpen] = useState<"LEADERBOARD" | "POWERS" | "STORE" | null>(null);
   const canControl = live.me?.canControl ?? false;
-  const storeVisible = live.powers.economyEnabled && live.powers.storeOpen;
+  const storeVisible =
+    live.powers.storeOpen && live.room.permissions?.buyPowers !== false;
   const showLeaderboard = live.room.permissions?.viewLeaderboard !== false;
   const inventory = live.powers.cards.filter((c) => c.remainingUses > 0);
 
@@ -883,7 +888,7 @@ function PowersSheet({
       )}
       {inventory.length === 0 ? (
         <span className="text-sm text-mute-2 py-4 text-center">
-          No power cards owned yet{live.powers.economyEnabled ? " — buy some when the store opens." : "."}
+          No power cards owned yet{live.powers.storeOpen ? " — buy one from the open store." : "."}
         </span>
       ) : (
         <div className="grid grid-cols-2 gap-3">
@@ -965,7 +970,6 @@ function StoreSheet({
             card={card}
             live={live}
             pending={pending}
-            economyEnabled={live.powers.economyEnabled}
             canControl={canControl}
             onBuy={onBuy}
             onRequest={onRequest}
@@ -1616,7 +1620,6 @@ function StoreCard({
   card,
   live,
   pending,
-  economyEnabled,
   canControl,
   onBuy,
   onRequest,
@@ -1624,17 +1627,17 @@ function StoreCard({
   card: LivePower;
   live: LivePayload;
   pending: boolean;
-  economyEnabled: boolean;
   canControl: boolean;
   onBuy: (card: LivePower) => void;
   onRequest: (card: LivePower) => void;
 }) {
   const canRequest =
     canControl &&
-    (card.remainingUses > 0 || card.requestable) &&
+    card.remainingUses > 0 &&
+    card.requestable &&
     live.room.permissions?.requestLifelines !== false;
   const canBuy =
-    canControl && economyEnabled && live.powers.storeOpen && live.room.permissions?.buyPowers !== false;
+    canControl && live.powers.storeOpen && live.room.permissions?.buyPowers !== false;
   const soldOut = card.limited && (card.stock ?? 0) <= 0;
 
   return (
@@ -1647,14 +1650,12 @@ function StoreCard({
           rarity={card.rarity}
           size="md"
           footer={
-            economyEnabled ? (
-              <span className="rounded-full bg-black/45 border border-white/15 px-2 py-0.5 text-[10px] font-black text-warn tabular-nums">
-                {card.onSale && card.basePrice != null && (
-                  <span className="line-through opacity-60 mr-1 font-semibold">{card.basePrice}</span>
-                )}
-                {card.price} 🪙
-              </span>
-            ) : undefined
+            <span className="rounded-full bg-black/45 border border-white/15 px-2 py-0.5 text-[10px] font-black text-warn tabular-nums">
+              {card.onSale && card.basePrice != null && (
+                <span className="line-through opacity-60 mr-1 font-semibold">{card.basePrice}</span>
+              )}
+              {card.price} 🪙
+            </span>
           }
         />
         {/* Status ribbons over the card art. */}
@@ -1673,27 +1674,35 @@ function StoreCard({
           </span>
         )}
       </div>
-      <div className={`grid gap-1.5 ${economyEnabled ? "grid-cols-2" : "grid-cols-1"}`}>
+      <div className="grid grid-cols-2 gap-1.5">
         <Button
           variant="subtle"
           size="sm"
-          disabled={pending || !canRequest || card.status === "REQUESTED"}
+          disabled={pending || !canRequest || ["REQUESTED", "APPROVED", "ACTIVE"].includes(card.status)}
           onClick={() => onRequest(card)}
           className="justify-center text-[11px] px-2"
         >
-          {card.status === "REQUESTED" ? "Sent" : card.isMystery ? "—" : "Use"}
+          {card.status === "REQUESTED"
+            ? "Sent"
+            : card.status === "APPROVED"
+              ? "Approved"
+              : card.status === "ACTIVE"
+                ? "Active"
+                : card.isMystery
+                  ? "—"
+                  : card.requiresApproval
+                    ? "Request"
+                    : "Use now"}
         </Button>
-        {economyEnabled && (
-          <Button
-            variant="primary"
-            size="sm"
-            disabled={pending || !canBuy || soldOut}
-            onClick={() => onBuy(card)}
-            className="justify-center text-[11px] px-2"
-          >
-            Buy {card.price}
-          </Button>
-        )}
+        <Button
+          variant="primary"
+          size="sm"
+          disabled={pending || !canBuy || soldOut}
+          onClick={() => onBuy(card)}
+          className="justify-center text-[11px] px-2"
+        >
+          Buy {card.price}
+        </Button>
       </div>
     </div>
   );

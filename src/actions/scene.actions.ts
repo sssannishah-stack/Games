@@ -2,10 +2,19 @@
 
 import { revalidatePath } from "next/cache";
 import { connectToDatabase } from "@/lib/database/mongodb";
-import { EventLog, Question, Room, Round, Scene } from "@/models";
+import { Competition, EventLog, Question, Room, Round, Scene, Team } from "@/models";
 import { requireUser } from "@/lib/auth/getCurrentUser";
 import { assertRoomOwnership } from "@/lib/authz";
-import { SCENE_TYPES, type IScene, type SceneType } from "@/types/db";
+import {
+  SCENE_TYPES,
+  type IScene,
+  type QuestionAssignmentMode,
+  type SceneType,
+} from "@/types/db";
+import {
+  buildQuestionTeamAssignments,
+  type EffectiveQuestionAssignmentMode,
+} from "@/lib/questionAssignment";
 
 export interface SceneInput {
   roomId: string;
@@ -28,6 +37,69 @@ async function log(roomId: string, type: "EVENT_STARTED" | "SCENE_CHANGED" | "TI
 function refreshRoom(roomId: string) {
   revalidatePath(`/admin/rooms/${roomId}`);
   revalidatePath(`/host/${roomId}`);
+}
+
+export async function applyQuestionTeamAssignments(roomId: string, competitionId: unknown): Promise<void> {
+  const [teams, scenes, competition] = await Promise.all([
+    Team.find({ roomId }).sort({ createdAt: 1 }).select("_id").lean(),
+    Scene.find({ roomId, questionId: { $ne: null } }).sort({ order: 1 }).lean<IScene[]>(),
+    Competition.findById(competitionId).select("settings.scoring.questionAssignment").lean(),
+  ]);
+  if (scenes.length === 0) return;
+
+  const roundIds = [...new Set(scenes.flatMap((scene) => (scene.roundId ? [scene.roundId.toString()] : [])))];
+  const rounds = await Round.find({ _id: { $in: roundIds } })
+    .select("questionAssignment questions")
+    .lean();
+  const roundById = new Map(rounds.map((round) => [round._id.toString(), round]));
+  const teamIds = teams.map((team) => team._id.toString());
+  const fallbackMode = (competition?.settings?.scoring?.questionAssignment ??
+    "ANY_TEAM") as EffectiveQuestionAssignmentMode;
+  const operations: Parameters<typeof Scene.bulkWrite>[0] = [];
+
+  for (const roundId of roundIds) {
+    const round = roundById.get(roundId);
+    if (!round) continue;
+    const configuredMode = round.questionAssignment as QuestionAssignmentMode;
+    const effectiveMode = (configuredMode === "DEFAULT" ? fallbackMode : configuredMode) as EffectiveQuestionAssignmentMode;
+    const assignments = buildQuestionTeamAssignments(
+      round.questions.map((questionId) => questionId.toString()),
+      teamIds,
+      effectiveMode
+    );
+    const assignmentByQuestion = new Map(assignments.map((assignment) => [assignment.questionId, assignment]));
+
+    for (const scene of scenes.filter((item) => item.roundId?.toString() === roundId)) {
+      const questionId = scene.questionId?.toString();
+      const assignment = questionId ? assignmentByQuestion.get(questionId) : null;
+      operations.push(
+        assignment
+          ? {
+              updateOne: {
+                filter: { _id: scene._id, roomId },
+                update: {
+                  $set: {
+                    "settings.assignmentMode": effectiveMode,
+                    "settings.assignedTeamId": assignment.teamId,
+                    "settings.assignmentSource": assignment.source,
+                  },
+                },
+              },
+            }
+          : {
+              updateOne: {
+                filter: { _id: scene._id, roomId },
+                update: {
+                  $set: { "settings.assignmentMode": effectiveMode },
+                  $unset: { "settings.assignedTeamId": "", "settings.assignmentSource": "" },
+                },
+              },
+            }
+      );
+    }
+  }
+
+  if (operations.length > 0) await Scene.bulkWrite(operations);
 }
 
 export async function createScene(input: SceneInput): Promise<{ id: string }> {
@@ -266,6 +338,7 @@ export async function generateScenes(roomId: string): Promise<{ count: number }>
 
   await Scene.deleteMany({ roomId });
   await Scene.insertMany(scenes);
+  await applyQuestionTeamAssignments(roomId, room.competitionId);
   if (room.status === "DRAFT") {
     await Room.findByIdAndUpdate(roomId, { $set: { status: "READY" } });
   }
@@ -310,6 +383,7 @@ export async function startEvent(roomId: string): Promise<void> {
   await connectToDatabase();
   const first = await Scene.findOne({ roomId }).sort({ order: 1 }).lean<IScene>();
   if (!first) throw new Error("Create scenes before starting the event.");
+  await applyQuestionTeamAssignments(roomId, room.competitionId);
   if (room.status !== "TESTING") {
     await Room.findByIdAndUpdate(roomId, { $set: { status: "LIVE" } });
   }

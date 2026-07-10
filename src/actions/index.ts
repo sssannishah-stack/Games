@@ -4,7 +4,7 @@
  */
 export { signupAction, loginAction, logoutAction } from "./auth.actions";
 export { createCompetition, updateCompetitionStatus } from "./competition.actions";
-export { createRoom, updateLiveState, startRoomEvent, startRoomTestMode, joinRoom, setRoomSelectedRounds } from "./room.actions";
+export { createRoom, updateLiveState, startRoomEvent, startRoomTestMode, resetRoom, joinRoom, setRoomSelectedRounds } from "./room.actions";
 export { createTeam, deleteTeam, calculateLeaderboard } from "./team.actions";
 export {
   createScene,
@@ -25,9 +25,6 @@ export {
   giveFreeCard,
   purchasePowerCard,
   requestPowerCard,
-  approvePowerCard,
-  activatePowerCard,
-  consumePowerCard,
   openStore,
   closeStore,
   toggleRoomPowerCardOverride,

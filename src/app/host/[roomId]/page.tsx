@@ -16,6 +16,7 @@ import { getScoreHistoryByRoom } from "@/data/queries/score.queries";
 import { getParticipantsByRoom } from "@/data/queries/participant.queries";
 import { getAchievementsByRoom } from "@/data/queries/achievement.queries";
 import { getActiveAuction } from "@/data/queries/auction.queries";
+import { ensureRoomDefaultPowerCardsForTeams } from "@/lib/starterPowerCards";
 
 export default async function HostRoomPage({
   params,
@@ -41,7 +42,9 @@ export default async function HostRoomPage({
       getAchievementsByRoom(roomId),
     ]);
   const [ownedCards, auction] = await Promise.all([
-    getTeamPowerCardsByRoom(teams.map((t) => t.id)),
+    ensureRoomDefaultPowerCardsForTeams(teams.map((team) => team.id), room.id, user.id).then(() =>
+      getTeamPowerCardsByRoom(teams.map((team) => team.id))
+    ),
     getActiveAuction(roomId),
   ]);
 

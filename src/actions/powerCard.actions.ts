@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { connectToDatabase } from "@/lib/database/mongodb";
-import { PowerCard, Team, PowerCardRequest, TeamPowerCard, Room, Round, EventLog } from "@/models";
+import { PowerCard, Team, PowerCardRequest, TeamPowerCard, Room, Round, EventLog, Competition } from "@/models";
 import { requireUser } from "@/lib/auth/getCurrentUser";
 import { assertRoomOwnership, assertPowerCardOwnership } from "@/lib/authz";
 import { assertTeamController } from "@/lib/teamRoles";
@@ -14,7 +14,8 @@ import {
   updatePowerCardSchema,
   type CreatePowerCardInput,
 } from "@/validators/powerCard.validator";
-import type { IPowerCardRequest } from "@/types/db";
+import type { IPowerCardRequest, PowerCardRequestStatus } from "@/types/db";
+import { STARTER_POWER_CARD_NAMES } from "@/lib/starterPowerCards";
 
 function refreshCatalogPaths() {
   revalidatePath("/admin/power-cards");
@@ -32,24 +33,32 @@ export async function seedDefaultPowerCards(): Promise<void> {
   await connectToDatabase();
 
   const hasExistingCards = await PowerCard.exists({ ownerId: user.id });
-  if (hasExistingCards) return;
+  if (!hasExistingCards) {
+    await PowerCard.insertMany(
+      DEFAULT_POWER_CARDS.map((card) => ({
+        ownerId: user.id,
+        name: card.name,
+        description: card.description,
+        icon: card.icon,
+        category: card.category,
+        rarity: card.rarity,
+        effectType: card.effectType,
+        price: card.price,
+        stock: null,
+        enabled: true,
+        requiresApproval: !STARTER_POWER_CARD_NAMES.includes(
+          card.name as (typeof STARTER_POWER_CARD_NAMES)[number]
+        ),
+        usesPerTeam: 1,
+        priceMode: "FIXED",
+      }))
+    );
+  }
 
-  await PowerCard.insertMany(
-    DEFAULT_POWER_CARDS.map((card) => ({
-      ownerId: user.id,
-      name: card.name,
-      description: card.description,
-      icon: card.icon,
-      category: card.category,
-      rarity: card.rarity,
-      effectType: card.effectType,
-      price: card.price,
-      stock: null,
-      enabled: true,
-      requiresApproval: true,
-      usesPerTeam: 1,
-      priceMode: "FIXED",
-    }))
+  // Reconcile catalogs seeded before starter cards became instant-use.
+  await PowerCard.updateMany(
+    { ownerId: user.id, name: { $in: STARTER_POWER_CARD_NAMES } },
+    { $set: { requiresApproval: false } }
   );
 }
 
@@ -71,6 +80,22 @@ async function assertPowerCardAllowedForRoom(
   const allowed =
     round.allowedPowerCards.includes(powerCardId) || room.powerCardOverrides.includes(powerCardId);
   if (!allowed) throw new Error("This power card isn't allowed in the current round.");
+}
+
+async function getEnabledPowerCardForRoom(
+  room: { competitionId: unknown },
+  powerCardId: string
+) {
+  const competition = await Competition.findById(room.competitionId).select("ownerId").lean();
+  if (!competition) throw new Error("Competition not found.");
+
+  const card = await PowerCard.findOne({
+    _id: powerCardId,
+    ownerId: competition.ownerId,
+    enabled: true,
+  }).lean();
+  if (!card) throw new Error("This power card is not available in this room.");
+  return card;
 }
 
 /** Create a power card in the host's global catalog. Card names must be unique per host (case-insensitive). */
@@ -170,7 +195,23 @@ export async function assignPowerCardsToRoom(
     }))
   );
 
-  await TeamPowerCard.bulkWrite(operations);
+  const teamIds = teams.map((team) => team._id);
+  const defaultCardIds = validAssignments.map((assignment) => assignment.powerCardId);
+  await Promise.all([
+    TeamPowerCard.deleteMany({
+      teamId: { $in: teamIds },
+      powerCardId: { $nin: defaultCardIds },
+    }),
+    TeamPowerCard.bulkWrite(operations),
+    Room.findByIdAndUpdate(roomId, {
+      $set: {
+        powerCardDefaults: validAssignments.map((assignment) => ({
+          powerCardId: assignment.powerCardId,
+          uses: assignment.uses,
+        })),
+      },
+    }),
+  ]);
   revalidatePath(`/rooms/${roomId}`);
 }
 
@@ -221,16 +262,17 @@ export async function purchasePowerCard(
   const room = await Room.findById(roomId).lean();
   if (!room) throw new Error("Room not found.");
   if (room.liveState.storeStatus !== "OPEN") throw new Error("The store is closed right now.");
+  if (room.settings?.permissions?.buyPowers === false) {
+    throw new Error("Power Store purchases are disabled for participants.");
+  }
   await assertPowerCardAllowedForRoom(room, powerCardId);
 
-  const card = await PowerCard.findById(powerCardId).lean();
-  if (!card) throw new Error("Power card not found.");
-  if (!card.enabled) throw new Error("This card is not available.");
+  const card = await getEnabledPowerCardForRoom(room, powerCardId);
 
   // Charge the live price — a flash sale discounts what the team actually pays.
   const price = effectivePrice(card.price, room.liveState);
-  const team = await Team.findById(teamId).lean();
-  if (!team) throw new Error("Team not found.");
+  const team = await Team.findOne({ _id: teamId, roomId }).lean();
+  if (!team) throw new Error("Team does not belong to this room.");
   if (team.coins < price) throw new Error("Not enough coins for this card.");
 
   // Atomic stock guard: only decrements if stock is still > 0 (or unlimited).
@@ -339,41 +381,40 @@ export interface RequestPowerCardInput {
  */
 export async function requestPowerCard(
   input: RequestPowerCardInput
-): Promise<IPowerCardRequest> {
+): Promise<{ id: string; status: PowerCardRequestStatus }> {
   await connectToDatabase();
 
   await assertTeamController(input.teamId, input.participantId);
 
   const room = await Room.findById(input.roomId).lean();
   if (!room) throw new Error("Room not found.");
+  if (room.settings?.permissions?.requestLifelines === false) {
+    throw new Error("Power card use is disabled for participants.");
+  }
+  const team = await Team.exists({ _id: input.teamId, roomId: input.roomId });
+  if (!team) throw new Error("Team does not belong to this room.");
+  if (input.targetTeamId) {
+    const target = await Team.exists({ _id: input.targetTeamId, roomId: input.roomId });
+    if (!target) throw new Error("Target team does not belong to this room.");
+  }
   await assertPowerCardAllowedForRoom(room, input.powerCardId);
 
-  let owned = await TeamPowerCard.findOne({
-    teamId: input.teamId,
-    powerCardId: input.powerCardId,
-    status: "AVAILABLE",
-    remainingUses: { $gt: 0 },
-  });
-
-  const card = await PowerCard.findById(input.powerCardId).lean();
-  if (!card) throw new Error("Power card not found.");
+  const card = await getEnabledPowerCardForRoom(room, input.powerCardId);
 
   const skipApproval = !card.requiresApproval;
+  const owned = await TeamPowerCard.findOneAndUpdate(
+    {
+      teamId: input.teamId,
+      powerCardId: input.powerCardId,
+      status: "AVAILABLE",
+      remainingUses: { $gt: 0 },
+    },
+    { $set: { status: skipApproval ? "ACTIVE" : "REQUESTED" } },
+    { new: true }
+  );
   if (!owned) {
-    owned = await TeamPowerCard.findOneAndUpdate(
-      { teamId: input.teamId, powerCardId: input.powerCardId },
-      {
-        $set: {
-          remainingUses: 1,
-          status: skipApproval ? "ACTIVE" : "REQUESTED",
-        },
-      },
-      { upsert: true, new: true }
-    );
+    throw new Error("Your team does not own an available copy of this card.");
   }
-  if (!owned) throw new Error("Could not prepare this card request.");
-  owned.status = skipApproval ? "ACTIVE" : "REQUESTED";
-  await owned.save();
 
   const request = await PowerCardRequest.create({
     roomId: input.roomId,
@@ -395,14 +436,14 @@ export async function requestPowerCard(
   });
 
   revalidatePath(`/rooms/${input.roomId}`);
-  return request.toObject() as IPowerCardRequest;
+  return { id: request._id.toString(), status: request.status };
 }
 
 /**
  * Host approves (or rejects) a pending request. Approval does not activate
  * the effect yet; the host controls that transition separately.
  */
-export async function approvePowerCard(
+async function approvePowerCard(
   requestId: string,
   approvedBy: string,
   approve = true
@@ -459,7 +500,7 @@ export async function resolvePowerCardRequest(
 }
 
 /** Host activates an approved card when the effect should actually begin. */
-export async function activatePowerCard(requestId: string): Promise<IPowerCardRequest> {
+async function activatePowerCard(requestId: string): Promise<IPowerCardRequest> {
   await connectToDatabase();
 
   const request = await PowerCardRequest.findById(requestId);
@@ -522,7 +563,7 @@ export async function hostForceActivatePowerCard(requestId: string): Promise<IPo
 }
 
 /** Host marks an active card consumed after the effect has resolved. */
-export async function consumePowerCard(requestId: string): Promise<IPowerCardRequest> {
+async function consumePowerCard(requestId: string): Promise<IPowerCardRequest> {
   await connectToDatabase();
 
   const request = await PowerCardRequest.findById(requestId);
@@ -564,6 +605,11 @@ export async function openStore(roomId: string): Promise<void> {
   const user = await requireUser();
   await assertRoomOwnership(roomId, user.id);
   await connectToDatabase();
+
+  const room = await Room.findById(roomId).select("settings.permissions.buyPowers").lean();
+  if (room?.settings?.permissions?.buyPowers === false) {
+    throw new Error('Enable "Use store" in Room Settings before opening the Power Store.');
+  }
 
   await Room.findByIdAndUpdate(roomId, { $set: { "liveState.storeStatus": "OPEN" } });
   await EventLog.create({ roomId, type: "STORE_OPENED", metadata: {} });

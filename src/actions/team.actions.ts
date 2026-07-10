@@ -3,10 +3,24 @@
 import { Types } from "mongoose";
 import { revalidatePath } from "next/cache";
 import { connectToDatabase } from "@/lib/database/mongodb";
-import { Team, ScoreTransaction, TeamPowerCard, Participant, EventLog } from "@/models";
+import { Team, ScoreTransaction, TeamPowerCard, Participant, EventLog, Room } from "@/models";
 import { requireUser } from "@/lib/auth/getCurrentUser";
 import { assertRoomOwnership } from "@/lib/authz";
 import type { ITeam, ParticipantRole } from "@/types/db";
+import { ensureRoomDefaultPowerCardsForTeams } from "@/lib/starterPowerCards";
+import { applyQuestionTeamAssignments } from "@/actions/scene.actions";
+
+/**
+ * Re-stamp fixed/random team assignments onto the room's question scenes.
+ * The team roster is part of the input to that assignment (T1→Q1, T2→Q2…),
+ * so it must re-run whenever a team is added or removed — otherwise a round
+ * set to Fixed/Random Team order keeps stale (or empty) assignments and the
+ * host sees no team name on the question. No-op if scenes aren't generated.
+ */
+async function reapplyTeamAssignments(roomId: string): Promise<void> {
+  const room = await Room.findById(roomId).select("competitionId").lean();
+  if (room) await applyQuestionTeamAssignments(roomId, room.competitionId);
+}
 
 export interface CreateTeamArgs {
   roomId: string;
@@ -43,6 +57,9 @@ export async function createTeam(input: CreateTeamArgs): Promise<{ id: string }>
     stats: { correctAnswers: 0, wrongAnswers: 0, bonusPoints: 0 },
   });
 
+  await ensureRoomDefaultPowerCardsForTeams([team._id.toString()], input.roomId, user.id);
+  await reapplyTeamAssignments(input.roomId);
+
   revalidatePath(`/rooms/${input.roomId}`);
   revalidatePath(`/admin/rooms/${input.roomId}`);
   return { id: team._id.toString() };
@@ -56,6 +73,7 @@ export async function deleteTeam(teamId: string, roomId: string): Promise<void> 
   await Team.findOneAndDelete({ _id: teamId, roomId });
   await TeamPowerCard.deleteMany({ teamId });
   await Participant.deleteMany({ teamId, roomId });
+  await reapplyTeamAssignments(roomId);
 
   revalidatePath(`/rooms/${roomId}`);
   revalidatePath(`/admin/rooms/${roomId}`);
@@ -110,6 +128,8 @@ export async function duplicateTeam(teamId: string, roomId: string): Promise<{ i
     coins: source.coins,
     stats: { correctAnswers: 0, wrongAnswers: 0, bonusPoints: 0 },
   });
+
+  await ensureRoomDefaultPowerCardsForTeams([copy._id.toString()], roomId, user.id);
 
   revalidatePath(`/admin/rooms/${roomId}`);
   revalidatePath(`/rooms/${roomId}`);

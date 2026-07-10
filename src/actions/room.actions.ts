@@ -14,6 +14,9 @@ import {
   CoinTransaction,
   ScoreTransaction,
   EventLog,
+  TeamAchievement,
+  Auction,
+  AuctionBid,
 } from "@/models";
 import { requireUser } from "@/lib/auth/getCurrentUser";
 import { assertCompetitionOwnership, assertRoomOwnership } from "@/lib/authz";
@@ -29,6 +32,10 @@ import {
 } from "@/validators/room.validator";
 import type { AnswerMode, IRoom, ParticipantRole } from "@/types/db";
 import { assertTeamController } from "@/lib/teamRoles";
+import {
+  ensureRoomDefaultPowerCardsForTeams,
+  resetRoomPowerCardsToDefaults,
+} from "@/lib/starterPowerCards";
 
 export interface CreateRoomArgs {
   competitionId: string;
@@ -135,6 +142,7 @@ export async function duplicateRoom(roomId: string): Promise<{ id: string }> {
         status: "DRAFT",
         settings: room.settings,
         selectedRounds: room.selectedRounds,
+        powerCardDefaults: room.powerCardDefaults ?? [],
         liveState: {
           timerStartedAt: null,
           timerEndsAt: null,
@@ -247,6 +255,12 @@ export async function startRoomEvent(roomId: string): Promise<void> {
   if (teams.length === 0) throw new Error("Add at least one team before starting the event.");
   if (sceneCount === 0) throw new Error("Generate the scene flow before starting the event.");
 
+  await ensureRoomDefaultPowerCardsForTeams(
+    teams.map((team) => team._id.toString()),
+    roomId,
+    user.id
+  );
+
   // Economy Mode: fund every team's wallet and open the store up front if
   // the host configured it to always be open. Guarded so restarting an
   // already-live room never grants a second starting bonus.
@@ -297,6 +311,80 @@ export async function startRoomTestMode(roomId: string): Promise<void> {
       "liveState.showAnswer": false,
     },
   });
+
+  revalidatePath(`/admin/rooms/${roomId}`);
+  revalidatePath(`/host/${roomId}`);
+  revalidatePath(`/admin/competitions/${room.competitionId.toString()}`);
+}
+
+/**
+ * Clears one live run while preserving room setup: teams/rosters, selected
+ * rounds, questions, generated scenes, and the room's default card loadout.
+ */
+export async function resetRoom(roomId: string, confirmation: string): Promise<void> {
+  if (confirmation !== "RESET") throw new Error("Type RESET to confirm.");
+
+  const user = await requireUser();
+  const room = await assertRoomOwnership(roomId, user.id);
+  await connectToDatabase();
+
+  const [teams, sceneCount] = await Promise.all([
+    Team.find({ roomId }).select("_id").lean(),
+    Scene.countDocuments({ roomId }),
+  ]);
+  const teamIds = teams.map((team) => team._id.toString());
+
+  await Promise.all([
+    ScoreTransaction.deleteMany({ roomId }),
+    CoinTransaction.deleteMany({ roomId }),
+    PowerCardRequest.deleteMany({ roomId }),
+    EventLog.deleteMany({ roomId }),
+    TeamAchievement.deleteMany({ roomId }),
+    AuctionBid.deleteMany({ roomId }),
+    Auction.deleteMany({ roomId }),
+    Team.updateMany(
+      { roomId },
+      {
+        $set: {
+          score: 0,
+          rank: 0,
+          previousRank: 0,
+          coins: 0,
+          stats: {
+            correctAnswers: 0,
+            wrongAnswers: 0,
+            bonusPoints: 0,
+            streak: 0,
+            bestStreak: 0,
+          },
+        },
+      }
+    ),
+    Scene.updateMany(
+      { roomId },
+      { $set: { status: "UPCOMING", isActive: false } }
+    ),
+    Room.findByIdAndUpdate(roomId, {
+      $set: {
+        status: sceneCount > 0 ? "READY" : "DRAFT",
+        currentSceneId: null,
+        currentRoundId: null,
+        currentQuestionId: null,
+        powerCardOverrides: [],
+        onlineDevices: 0,
+        "liveState.timerStartedAt": null,
+        "liveState.timerEndsAt": null,
+        "liveState.timerPaused": false,
+        "liveState.showAnswer": false,
+        "liveState.storeStatus": "CLOSED",
+        "liveState.flashSaleActive": false,
+        "liveState.flashSalePercent": 0,
+        "liveState.flashSaleEndsAt": null,
+      },
+    }),
+  ]);
+
+  await resetRoomPowerCardsToDefaults(teamIds, roomId, user.id);
 
   revalidatePath(`/admin/rooms/${roomId}`);
   revalidatePath(`/host/${roomId}`);

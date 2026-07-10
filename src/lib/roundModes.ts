@@ -24,13 +24,13 @@ export const ROUND_MODES: Record<SpecialRoundMode, RoundModeDef> = {
   SPEED: {
     label: "Speed Round",
     emoji: "⚡",
-    description: "Short timer, higher rewards — answer fast.",
+    description: "Uses the configured timer; host scoring offers a one-click ×1.5 speed bonus.",
     color: "#5EC9E8",
   },
   RISK: {
     label: "Risk Round",
     emoji: "🎯",
-    description: "Teams pick a difficulty for bigger points.",
+    description: "Host scoring offers Easy +10, Medium +25 and Hard +50 choices.",
     color: "#E8A33D",
     riskTiers: [
       { label: "Easy", points: 10 },
@@ -41,13 +41,13 @@ export const ROUND_MODES: Record<SpecialRoundMode, RoundModeDef> = {
   SURVIVAL: {
     label: "Survival Round",
     emoji: "💀",
-    description: "Wrong answers cost a life — play it safe.",
+    description: "Visual mode only for now; lives and elimination are not yet automated.",
     color: "#FF6B6B",
   },
   BONUS: {
     label: "Bonus Round",
     emoji: "🎁",
-    description: "Rewards only — no penalties this round.",
+    description: "Rewards only: the server blocks negative marks in this round.",
     color: "#3DD68C",
   },
 };

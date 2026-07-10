@@ -433,6 +433,10 @@ export async function GET(
         cards: visibleCards.map((card) => {
           const owned = inventoryByCard.get(id(card._id));
           const request = requestByCard.get(id(card._id));
+          const liveRequest =
+            request && ["REQUESTED", "APPROVED", "ACTIVE"].includes(request.status)
+              ? request
+              : null;
           const price = effectivePrice(card.price, room.liveState);
           return {
             id: id(card._id),
@@ -450,9 +454,11 @@ export async function GET(
             stock: card.stock,
             requiresApproval: card.requiresApproval,
             remainingUses: owned?.remainingUses ?? 0,
-            requestable: true,
-            status: request?.status ?? owned?.status ?? "AVAILABLE",
-            requestId: request ? id(request._id) : null,
+            requestable:
+              Boolean(owned && owned.remainingUses > 0 && owned.status === "AVAILABLE") &&
+              !liveRequest,
+            status: liveRequest?.status ?? owned?.status ?? "AVAILABLE",
+            requestId: liveRequest ? id(liveRequest._id) : null,
           };
         }),
       },

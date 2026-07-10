@@ -192,7 +192,7 @@ function RoundSettingsForm({ round, roomUsageCount }: { round: RoundRecord; room
       </label>
 
       <div className="flex flex-col gap-[7px]">
-        <span className="text-xs font-semibold text-ink-3">Special mode</span>
+        <span className="text-xs font-semibold text-ink-3">Special mode (host-assisted)</span>
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
           {SPECIAL_ROUND_MODES.map((mode) => {
             const def = ROUND_MODES[mode];
@@ -242,11 +242,23 @@ function RoundSettingsForm({ round, roomUsageCount }: { round: RoundRecord; room
           onChange={(event) => setQuestionAssignment(event.target.value as QuestionAssignmentMode)}
           className="bg-line/[.04] border border-line/[.1] rounded-[11px] px-3 py-2 text-sm text-ink outline-none"
         >
+          <option value="DEFAULT">Use competition default</option>
           <option value="ANY_TEAM">Any team answers</option>
           <option value="FIXED_ORDER">Fixed team order</option>
           <option value="HOST_CHOOSES">Host selects team</option>
           <option value="RANDOM_TEAM">Random team</option>
         </select>
+        <span className="text-[11.5px] text-mute-2">
+          {questionAssignment === "FIXED_ORDER"
+            ? "Complete cycles follow team creation order; leftover questions go to randomly shuffled teams."
+            : questionAssignment === "RANDOM_TEAM"
+              ? "Questions use shuffled team cycles, keeping random order balanced across teams."
+              : questionAssignment === "HOST_CHOOSES"
+                ? "No team is pre-assigned; the host selects the team while scoring."
+                : questionAssignment === "ANY_TEAM"
+                  ? "No team is pre-assigned; any team may answer."
+                  : "Uses the competition-level team assignment rule."}
+        </span>
       </label>
 
       <ErrorText error={error} />

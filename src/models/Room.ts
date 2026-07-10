@@ -41,6 +41,18 @@ const RoomSchema = new Schema<IRoom>(
     },
     selectedRounds: { type: [Schema.Types.ObjectId], ref: "Round", default: [] },
     powerCardOverrides: { type: [String], default: [] },
+    powerCardDefaults: {
+      type: [
+        new Schema(
+          {
+            powerCardId: { type: String, required: true },
+            uses: { type: Number, required: true, min: 1 },
+          },
+          { _id: false }
+        ),
+      ],
+      default: [],
+    },
     currentSceneId: { type: Schema.Types.ObjectId, ref: "Scene", default: null },
     currentRoundId: { type: Schema.Types.ObjectId, ref: "Round", default: null },
     currentQuestionId: { type: Schema.Types.ObjectId, ref: "Question", default: null },
