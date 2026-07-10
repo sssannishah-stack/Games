@@ -13,7 +13,8 @@ import { PublishPanel } from "@/components/room/PublishPanel";
 import { InventoryPanel } from "@/components/power-card/InventoryPanel";
 import { PowerCardsPanel } from "@/components/power-card/PowerCardsPanel";
 import { startRoomEvent, startRoomTestMode, setRoomSelectedRounds, updateRoom } from "@/actions/room.actions";
-import { setRoomEconomyMode } from "@/actions/competition.actions";
+import { setRoomEconomyMode, setStartingCoins } from "@/actions/competition.actions";
+import { sceneVisual } from "@/lib/sceneVisual";
 import { openStore, closeStore } from "@/actions/powerCard.actions";
 import {
   generateScenes,
@@ -1079,7 +1080,7 @@ function RoundPicker({
                   </span>
                 </div>
                 <div className="ml-auto flex gap-1 shrink-0">
-                  <Link href={`/admin/rounds/${round.id}`}>
+                  <Link href={`/admin/rounds/${round.id}?roomId=${room.id}`}>
                     <Button variant="plain" size="sm">
                       Edit
                     </Button>
@@ -1113,12 +1114,15 @@ function SceneBuilder({
   rounds,
   questions,
   scenes,
+  teams,
 }: {
   room: RoomDetail;
   rounds: RoundRecord[];
   questions: QuestionRecord[];
   scenes: SceneRecord[];
+  teams: TeamRecord[];
 }) {
+  const teamNameById = useMemo(() => new Map(teams.map((team) => [team.id, team.name])), [teams]);
   const [selectedId, setSelectedId] = useState(scenes[0]?.id ?? "");
   const selected = scenes.find((scene) => scene.id === selectedId) ?? scenes[0] ?? null;
   const [pending, startTransition] = useTransition();
@@ -1165,31 +1169,54 @@ function SceneBuilder({
           </div>
         ) : (
           <div className="flex flex-col gap-2 overflow-y-auto">
-            {scenes.map((scene, index) => (
-              <div
-                key={scene.id}
-                className={`rounded-xl border p-3 flex flex-col gap-2 cursor-pointer ${
-                  selected?.id === scene.id
-                    ? "border-accent/55 bg-accent/10"
-                    : "border-line/[.08] bg-line/[.03]"
-                }`}
-                onClick={() => setSelectedId(scene.id)}
-              >
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-[11px] text-dim">{index + 1}</span>
-                  <span className="text-[12.5px] font-semibold text-ink-2 truncate">{scene.title}</span>
-                  <span className="ml-auto text-[10px] text-mute-2">{scene.status}</span>
+            {scenes.map((scene, index) => {
+              const visual = sceneVisual(scene.type);
+              const isSelected = selected?.id === scene.id;
+              return (
+                <div
+                  key={scene.id}
+                  className={`relative overflow-hidden rounded-xl border p-3 pl-4 flex flex-col gap-2 cursor-pointer transition ${
+                    isSelected ? `${visual.row} ring-1 ring-accent/50` : visual.row
+                  }`}
+                  onClick={() => setSelectedId(scene.id)}
+                >
+                  <span className={`absolute left-0 inset-y-0 w-[5px] ${visual.bar}`} />
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-[11px] text-dim">{index + 1}</span>
+                    <span
+                      className={`text-[9px] font-bold tracking-[.08em] rounded px-1.5 py-0.5 ${visual.badge}`}
+                    >
+                      {visual.marker}
+                    </span>
+                    <span className="text-[12.5px] font-semibold text-ink-2 truncate">{scene.title}</span>
+                    <span className="ml-auto text-[10px] text-mute-2 shrink-0">{scene.status}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className={`text-[10px] font-semibold ${visual.label}`}>
+                      {scene.type.replace(/_/g, " ")}
+                    </span>
+                    {(() => {
+                      const assignedTeamId = scene.settings?.assignedTeamId as string | undefined;
+                      const teamName = assignedTeamId ? teamNameById.get(assignedTeamId) : null;
+                      if (!teamName) return null;
+                      return (
+                        <span className="text-[10px] text-mute-2 truncate">
+                          👥 {teamName}
+                        </span>
+                      );
+                    })()}
+                    <div className="ml-auto flex gap-1">
+                      <Button variant="plain" size="sm" onClick={(event) => { event.stopPropagation(); move(index, -1); }} disabled={index === 0 || pending}>
+                        Up
+                      </Button>
+                      <Button variant="plain" size="sm" onClick={(event) => { event.stopPropagation(); move(index, 1); }} disabled={index === scenes.length - 1 || pending}>
+                        Down
+                      </Button>
+                    </div>
+                  </div>
                 </div>
-                <div className="flex gap-1">
-                  <Button variant="plain" size="sm" onClick={(event) => { event.stopPropagation(); move(index, -1); }} disabled={index === 0 || pending}>
-                    Up
-                  </Button>
-                  <Button variant="plain" size="sm" onClick={(event) => { event.stopPropagation(); move(index, 1); }} disabled={index === scenes.length - 1 || pending}>
-                    Down
-                  </Button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </Card>
@@ -1214,6 +1241,8 @@ function ScenePreview({
   questions: QuestionRecord[];
 }) {
   const question = scene?.questionId ? questions.find((item) => item.id === scene.questionId) : null;
+  const visual = scene ? sceneVisual(scene.type) : null;
+  const typeLabel = scene?.type?.replace(/_/g, " ") ?? "NO STEP";
   return (
     <Card className="rounded-2xl p-5 flex flex-col gap-4">
       <div className="flex items-center justify-between">
@@ -1221,19 +1250,33 @@ function ScenePreview({
         <span className="text-[11px] text-mute-2">Mobile / Desktop</span>
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-[280px_minmax(0,1fr)] gap-4 flex-1">
-        <div className="rounded-[28px] border-[6px] border-[#232634] bg-[#11131d] p-4 min-h-[460px] flex flex-col">
-          <span className="self-center text-[10px] text-accent bg-accent/15 rounded-full px-3 py-1">
-            {scene?.type?.replace(/_/g, " ") ?? "NO STEP"}
+        <div className="relative overflow-hidden rounded-[28px] border-[6px] border-[#232634] bg-[#11131d] p-4 min-h-[460px] flex flex-col">
+          {visual && <span className={`absolute inset-x-0 top-0 h-1.5 ${visual.bar}`} />}
+          <span
+            className={`self-center text-[10px] font-bold tracking-[.08em] rounded-full px-3 py-1 ${
+              visual ? visual.badge : "text-accent bg-accent/15"
+            }`}
+          >
+            {typeLabel}
           </span>
           <div className="flex-1 flex flex-col items-center justify-center text-center gap-3">
             <div className="text-2xl font-bold text-ink">{question?.question || scene?.title || "Create your event flow"}</div>
             {question?.media?.url && <div className="text-sm text-mute-2">{question.media.type}: {question.media.name}</div>}
           </div>
         </div>
-        <div className="rounded-2xl border border-line/[.08] bg-line/[.03] p-6 flex flex-col justify-center gap-3">
-          <span className="text-[11px] font-mono text-label">DESKTOP PREVIEW</span>
+        <div
+          className={`relative overflow-hidden rounded-2xl border p-6 flex flex-col justify-center gap-3 ${
+            visual ? visual.row : "border-line/[.08] bg-line/[.03]"
+          }`}
+        >
+          {visual && <span className={`absolute left-0 inset-y-0 w-1.5 ${visual.bar}`} />}
+          <span className={`text-[11px] font-mono font-semibold tracking-[.1em] ${visual ? visual.label : "text-label"}`}>
+            {typeLabel}
+          </span>
           <div className="text-3xl font-bold text-ink">{question?.question || scene?.title || "No scene selected"}</div>
-          <div className="text-sm text-mute-2">{scene?.type?.replace(/_/g, " ") ?? "Generate event flow from rounds."}</div>
+          <div className="text-sm text-mute-2">
+            {scene ? `Step type: ${typeLabel}` : "Generate event flow from rounds."}
+          </div>
         </div>
       </div>
     </Card>
@@ -1333,6 +1376,7 @@ function RoomSettings({
   const [answerMode, setAnswerMode] = useState(room.settings.answerMode ?? "VERBAL");
   const [permissions, setPermissions] = useState(room.settings.permissions);
   const [storeStatus, setStoreStatus] = useState(room.storeStatus);
+  const [startingCoins, setStartingCoinsLocal] = useState(room.startingCoins);
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
   const router = useRouter();
@@ -1363,6 +1407,9 @@ function RoomSettings({
         if (storeStatus !== room.storeStatus) {
           if (storeStatus === "OPEN") await openStore(room.id);
           else await closeStore(room.id);
+        }
+        if (room.economyEnabled && startingCoins !== room.startingCoins) {
+          await setStartingCoins(room.id, startingCoins);
         }
         router.refresh();
       } catch (err) {
@@ -1470,9 +1517,15 @@ function RoomSettings({
         <label className="flex flex-col gap-[7px]">
           <span className="text-xs font-semibold text-ink-3">Starting coins</span>
           <input
-            value={room.economyEnabled ? room.startingCoins : 0}
-            readOnly
-            className="bg-line/[.03] border border-line/[.08] rounded-[11px] px-3.5 py-[11px] text-sm text-mute-2 outline-none"
+            type="number"
+            value={room.economyEnabled ? startingCoins : 0}
+            onChange={(event) => setStartingCoinsLocal(Math.max(0, parseInt(event.target.value, 10) || 0))}
+            disabled={!room.economyEnabled}
+            className={`rounded-[11px] px-3.5 py-[11px] text-sm outline-none transition ${
+              room.economyEnabled
+                ? "bg-line/[.04] border border-line/[.1] text-ink cursor-text"
+                : "bg-line/[.03] border border-line/[.08] text-mute-2 cursor-not-allowed"
+            }`}
           />
         </label>
         <label className="flex flex-col gap-[7px]">
@@ -1596,7 +1649,7 @@ export function RoomSetupDashboard({
       return <RoundPicker room={room} libraryRounds={libraryRounds} />;
     }
     if (section === "Event Flow") {
-      return <SceneBuilder room={room} rounds={rounds} questions={questions} scenes={scenes} />;
+      return <SceneBuilder room={room} rounds={rounds} questions={questions} scenes={scenes} teams={teams} />;
     }
     return <RoomSettings room={room} />;
   }, [

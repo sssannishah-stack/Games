@@ -44,6 +44,7 @@ import { ACHIEVEMENTS, MANUAL_ACHIEVEMENTS } from "@/lib/achievements";
 import { SPIN_SEGMENTS } from "@/lib/luckySpin";
 import { ROUND_MODES } from "@/lib/roundModes";
 import { timerUrgency, TIMER_URGENCY_TEXT } from "@/lib/timerUrgency";
+import { sceneVisual } from "@/lib/sceneVisual";
 import { Icon } from "@/components/ui/Icon";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
@@ -87,35 +88,6 @@ const STATUS_LABEL: Record<RoomDetail["status"], string> = {
   LIVE: "LIVE",
   COMPLETED: "COMPLETED",
 };
-
-// Each scene type gets a distinct color world so QUESTION / ANSWER / INTRO
-// are readable at a glance in the flow list. `bar` is a bold left edge strip,
-// `label` colors the type caption — the earlier 6-8% fills were invisible on
-// the dark theme, which is why every row looked identical.
-const SCENE_VISUAL: Partial<
-  Record<SceneRecord["type"], { marker: string; row: string; badge: string; bar: string; label: string }>
-> = {
-  WELCOME: { marker: "WELCOME", row: "border-violet-400/40 bg-violet-400/[.13]", badge: "bg-violet-400/25 text-violet-100", bar: "bg-violet-400", label: "text-violet-200" },
-  ROUND_INTRO: { marker: "ROUND", row: "border-info/45 bg-info/[.14]", badge: "bg-info/25 text-info", bar: "bg-info", label: "text-info" },
-  QUESTION: { marker: "Q", row: "border-accent/50 bg-accent/[.15]", badge: "bg-accent/30 text-accent", bar: "bg-accent", label: "text-accent" },
-  DRAWING: { marker: "DRAW", row: "border-pink/50 bg-pink/[.15]", badge: "bg-pink/30 text-pink", bar: "bg-pink", label: "text-pink" },
-  HINT: { marker: "HINT", row: "border-warn/45 bg-warn/[.13]", badge: "bg-warn/25 text-warn", bar: "bg-warn", label: "text-warn" },
-  ANSWER_REVEAL: { marker: "A", row: "border-success/50 bg-success/[.15]", badge: "bg-success/30 text-success", bar: "bg-success", label: "text-success" },
-  LEADERBOARD: { marker: "RANK", row: "border-amber/50 bg-amber/[.15]", badge: "bg-amber/30 text-amber", bar: "bg-amber", label: "text-amber" },
-  BREAK: { marker: "BREAK", row: "border-line/[.14] bg-line/[.06]", badge: "bg-line/[.1] text-mute-2", bar: "bg-line/[.3]", label: "text-mute-2" },
-  BROADCAST: { marker: "SAY", row: "border-info/45 bg-info/[.14]", badge: "bg-info/25 text-info", bar: "bg-info", label: "text-info" },
-  WINNER: { marker: "WIN", row: "border-warn/55 bg-warn/[.16]", badge: "bg-warn/30 text-warn", bar: "bg-warn", label: "text-warn" },
-};
-
-function sceneVisual(type: SceneRecord["type"]) {
-  return SCENE_VISUAL[type] ?? {
-    marker: type.replace(/_/g, " "),
-    row: "border-line/[.08] bg-line/[.03]",
-    badge: "bg-line/[.07] text-mute-2",
-    bar: "bg-line/[.3]",
-    label: "text-mute-2",
-  };
-}
 
 function formatClock(seconds: number) {
   const m = Math.floor(seconds / 60);

@@ -152,6 +152,26 @@ export async function setRoomEconomyMode(roomId: string, enabled: boolean): Prom
   revalidatePath(`/admin/competitions/${room.competitionId.toString()}`);
 }
 
+export async function setStartingCoins(roomId: string, amount: number): Promise<void> {
+  const user = await requireUser();
+  const room = await assertRoomOwnership(roomId, user.id);
+  await connectToDatabase();
+
+  const competition = await Competition.findById(room.competitionId).lean();
+  if (!competition) throw new Error("Competition not found.");
+  if (!competition.settings?.economy?.enabled) throw new Error("Economy mode is not enabled.");
+
+  await Competition.findByIdAndUpdate(room.competitionId, {
+    $set: {
+      "settings.economy.startingCoins": Math.max(0, Math.floor(amount)),
+    },
+  });
+
+  revalidatePath(`/admin/rooms/${roomId}`);
+  revalidatePath(`/host/${roomId}`);
+  revalidatePath(`/admin/competitions/${room.competitionId.toString()}`);
+}
+
 export async function duplicateCompetition(competitionId: string): Promise<{ id: string }> {
   const user = await requireUser();
   const competition = await assertCompetitionOwnership(competitionId, user.id);

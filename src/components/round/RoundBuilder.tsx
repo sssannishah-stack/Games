@@ -42,9 +42,13 @@ interface RoundBuilderProps {
   powerCards: PowerCardRecord[];
   allRounds: RoundRecord[];
   roomUsageCount: number;
+  /** Real teams of the room this round was opened from (via ?roomId=), in the
+   * same creation-order used by the server's actual assignment logic — lets
+   * the Questions tab preview true team names instead of generic "Team N". */
+  roomTeams?: { id: string; name: string }[];
 }
 
-export function RoundBuilder({ round, questions, libraryQuestions, powerCards, allRounds, roomUsageCount }: RoundBuilderProps) {
+export function RoundBuilder({ round, questions, libraryQuestions, powerCards, allRounds, roomUsageCount, roomTeams }: RoundBuilderProps) {
   const [section, setSection] = useState<Section>("Settings");
 
   return (
@@ -85,7 +89,13 @@ export function RoundBuilder({ round, questions, libraryQuestions, powerCards, a
       {section === "Settings" && <RoundSettingsForm round={round} roomUsageCount={roomUsageCount} />}
       {section === "Power Cards" && <RoundPowerCardsTab round={round} powerCards={powerCards} roomUsageCount={roomUsageCount} />}
       {section === "Questions" && (
-        <RoundQuestionsTab round={round} questions={questions} libraryQuestions={libraryQuestions} allRounds={allRounds} />
+        <RoundQuestionsTab
+          round={round}
+          questions={questions}
+          libraryQuestions={libraryQuestions}
+          allRounds={allRounds}
+          roomTeams={roomTeams}
+        />
       )}
     </div>
   );
@@ -414,20 +424,66 @@ function ConfirmSharedRoundModal({
   );
 }
 
+const TEAM_PREVIEW_COLORS = [
+  { badge: "bg-accent/20 text-accent border-accent/35" },
+  { badge: "bg-success/20 text-success border-success/35" },
+  { badge: "bg-warn/20 text-warn border-warn/35" },
+  { badge: "bg-pink/20 text-pink border-pink/35" },
+  { badge: "bg-info/20 text-info border-info/35" },
+  { badge: "bg-amber/20 text-amber border-amber/35" },
+];
+
+interface AssignmentPreviewEntry {
+  teamIndex: number | null; // null => decided randomly when the room generates its Event Flow
+}
+
+// Only the FIXED_ORDER complete-cycle portion is deterministic — it always
+// follows team creation order, so it's shown as a real assignment. Leftover
+// questions (FIXED_ORDER remainder) and all of RANDOM_TEAM are genuinely
+// re-shuffled with Math.random() every time the room's Event Flow is
+// (re)generated, so we mark them "Random" rather than faking a specific team.
+function useAssignmentPreview(round: RoundRecord, questionIds: string[], teamCount: number) {
+  return useMemo(() => {
+    const mode = round.questionAssignment as QuestionAssignmentMode;
+    if (mode !== "FIXED_ORDER" && mode !== "RANDOM_TEAM") return null;
+    if (teamCount <= 0) return null;
+    const byQuestion = new Map<string, AssignmentPreviewEntry>();
+    if (mode === "FIXED_ORDER") {
+      const completeCycleCount = Math.floor(questionIds.length / teamCount) * teamCount;
+      questionIds.forEach((questionId, index) => {
+        byQuestion.set(questionId, {
+          teamIndex: index < completeCycleCount ? index % teamCount : null,
+        });
+      });
+    } else {
+      questionIds.forEach((questionId) => byQuestion.set(questionId, { teamIndex: null }));
+    }
+    return byQuestion;
+  }, [round.questionAssignment, questionIds, teamCount]);
+}
+
 function RoundQuestionsTab({
   round,
   questions,
   libraryQuestions,
   allRounds,
+  roomTeams,
 }: {
   round: RoundRecord;
   questions: QuestionRecord[];
   libraryQuestions: QuestionRecord[];
   allRounds: RoundRecord[];
+  roomTeams?: { id: string; name: string }[];
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [genericTeamCount, setGenericTeamCount] = useState(4);
   const [pending, startTransition] = useTransition();
   const router = useRouter();
+
+  const hasRoomTeams = Boolean(roomTeams && roomTeams.length > 0);
+  const teamCount = hasRoomTeams ? roomTeams!.length : genericTeamCount;
+  const questionIds = useMemo(() => questions.map((q) => q.id), [questions]);
+  const preview = useAssignmentPreview(round, questionIds, teamCount);
 
   function move(index: number, direction: -1 | 1) {
     const target = index + direction;
@@ -457,6 +513,37 @@ function RoundQuestionsTab({
         </Button>
       </div>
 
+      {preview && questions.length > 0 && (
+        <div className="rounded-xl border border-line/[.08] bg-line/[.03] p-3 flex items-center gap-3 flex-wrap">
+          {hasRoomTeams ? (
+            <span className="text-[11.5px] text-mute-2">
+              Team assignment for this round&apos;s &quot;
+              {round.questionAssignment === "FIXED_ORDER" ? "Fixed team order" : "Random team"}&quot; setting,
+              using this room&apos;s {roomTeams!.length} real teams.
+            </span>
+          ) : (
+            <>
+              <span className="text-[11.5px] text-mute-2">
+                Preview team assignment for this round&apos;s &quot;
+                {round.questionAssignment === "FIXED_ORDER" ? "Fixed team order" : "Random team"}&quot; setting with
+              </span>
+              <select
+                value={genericTeamCount}
+                onChange={(event) => setGenericTeamCount(Number(event.target.value))}
+                className="bg-line/[.06] border border-line/[.12] rounded-lg px-2 py-1 text-[12px] text-ink outline-none"
+              >
+                {[2, 3, 4, 5, 6].map((n) => (
+                  <option key={n} value={n}>{n} teams</option>
+                ))}
+              </select>
+              <span className="text-[11px] text-dim">
+                Open this round from a room (via its Rounds tab) to see the real teams.
+              </span>
+            </>
+          )}
+        </div>
+      )}
+
       {questions.length === 0 ? (
         <Card className="rounded-2xl p-10 flex flex-col items-center justify-center gap-3 text-center">
           <span className="text-[15px] font-bold text-ink">No questions attached yet</span>
@@ -466,33 +553,53 @@ function RoundQuestionsTab({
         </Card>
       ) : (
         <div className="flex flex-col gap-2">
-          {questions.map((question, index) => (
-            <Card key={question.id} className="rounded-xl p-3 flex items-center gap-3">
-              <span className="font-mono text-[11px] font-bold text-accent bg-accent/10 border border-accent/25 rounded-lg px-2 py-1">
-                {index + 1}
-              </span>
-              <QuestionTypeBadge type={question.type} />
-              <span className="text-[13px] text-ink-2 truncate flex-1">
-                {question.question || question.media?.name || "Untitled"}
-              </span>
-              <div className="flex gap-1 shrink-0">
-                <Button variant="plain" size="sm" onClick={() => move(index, -1)} disabled={index === 0 || pending}>
-                  Up
-                </Button>
-                <Button
-                  variant="plain"
-                  size="sm"
-                  onClick={() => move(index, 1)}
-                  disabled={index === questions.length - 1 || pending}
-                >
-                  Down
-                </Button>
-                <Button variant="danger" size="sm" onClick={() => remove(question.id)} disabled={pending}>
-                  Remove
-                </Button>
-              </div>
-            </Card>
-          ))}
+          {questions.map((question, index) => {
+            const entry = preview?.get(question.id);
+            const color = entry && entry.teamIndex !== null ? TEAM_PREVIEW_COLORS[entry.teamIndex % TEAM_PREVIEW_COLORS.length] : null;
+            const teamName = entry && entry.teamIndex !== null
+              ? (hasRoomTeams ? roomTeams![entry.teamIndex].name : `Team ${entry.teamIndex + 1}`)
+              : null;
+            return (
+              <Card key={question.id} className="rounded-xl p-3 flex items-center gap-3">
+                <span className="font-mono text-[11px] font-bold text-accent bg-accent/10 border border-accent/25 rounded-lg px-2 py-1">
+                  {index + 1}
+                </span>
+                <QuestionTypeBadge type={question.type} />
+                <span className="text-[13px] text-ink-2 truncate flex-1">
+                  {question.question || question.media?.name || "Untitled"}
+                </span>
+                {entry && teamName && color && (
+                  <span className={`text-[10.5px] font-semibold rounded-full px-2.5 py-1 border shrink-0 ${color.badge}`}>
+                    👥 {teamName}
+                  </span>
+                )}
+                {entry && entry.teamIndex === null && (
+                  <span
+                    className="text-[10.5px] font-semibold rounded-full px-2.5 py-1 border border-line/[.14] bg-line/[.06] text-mute-2 shrink-0"
+                    title="Assigned to a random team each time this room's Event Flow is generated"
+                  >
+                    🎲 Random
+                  </span>
+                )}
+                <div className="flex gap-1 shrink-0">
+                  <Button variant="plain" size="sm" onClick={() => move(index, -1)} disabled={index === 0 || pending}>
+                    Up
+                  </Button>
+                  <Button
+                    variant="plain"
+                    size="sm"
+                    onClick={() => move(index, 1)}
+                    disabled={index === questions.length - 1 || pending}
+                  >
+                    Down
+                  </Button>
+                  <Button variant="danger" size="sm" onClick={() => remove(question.id)} disabled={pending}>
+                    Remove
+                  </Button>
+                </div>
+              </Card>
+            );
+          })}
         </div>
       )}
 
