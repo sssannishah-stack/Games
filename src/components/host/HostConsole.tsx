@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   generateScenes,
@@ -164,6 +164,9 @@ export function HostConsole({
   const [scoringOpen, setScoringOpen] = useState(false);
   const [scoringTeamId, setScoringTeamId] = useState(teams[0]?.id ?? "");
   const [scoringSeed, setScoringSeed] = useState(10);
+  // Coins awarded for a CORRECT answer via the quick Mark Answer buttons.
+  // Seeded from the live round's coin reward, editable per round by the host.
+  const [answerCoins, setAnswerCoins] = useState(0);
   const [manualAchTeamId, setManualAchTeamId] = useState(teams[0]?.id ?? "");
   const [manualAchType, setManualAchType] = useState<AchievementType>(MANUAL_ACHIEVEMENTS[0]);
   const [spinOpen, setSpinOpen] = useState(false);
@@ -175,6 +178,17 @@ export function HostConsole({
   const [auctionStartBid, setAuctionStartBid] = useState(500);
   const [scoreFloat, setScoreFloat] = useState<{ id: number; points: number; team: string } | null>(null);
   const [resetOpen, setResetOpen] = useState(false);
+  // Auto-start the timer whenever a question scene goes live, so the host
+  // doesn't have to hit Start on every question. Persisted so it survives the
+  // router.refresh() that follows each action.
+  const [autoStartTimer, setAutoStartTimer] = useState(false);
+  useEffect(() => {
+    setAutoStartTimer(window.localStorage.getItem("enc-host-autostart-timer") === "1");
+  }, []);
+  function toggleAutoStart(next: boolean) {
+    setAutoStartTimer(next);
+    window.localStorage.setItem("enc-host-autostart-timer", next ? "1" : "0");
+  }
 
   const current = scenes.find((scene) => scene.id === room.currentSceneId) ?? scenes[0] ?? null;
   const question = current?.questionId ? questions.find((item) => item.id === current.questionId) : null;
@@ -206,7 +220,7 @@ export function HostConsole({
 
   useEffect(() => {
     if (!scoreFloat) return;
-    const t = window.setTimeout(() => setScoreFloat(null), 1300);
+    const t = window.setTimeout(() => setScoreFloat(null), 1500);
     return () => window.clearTimeout(t);
   }, [scoreFloat]);
 
@@ -224,6 +238,33 @@ export function HostConsole({
     : timerRunning
       ? "TIMER_RUNNING"
       : "WAITING";
+
+  // When the live round changes, reseed the quick-mark coin amount from that
+  // round's configured coin reward (host can still override per question).
+  useEffect(() => {
+    setAnswerCoins(round?.coinReward ?? 0);
+  }, [round?.id, round?.coinReward]);
+
+  // Auto-start: the moment a fresh question/drawing scene becomes live (and
+  // the option is on), kick off its timer. Tracked per-scene so it fires once
+  // per scene — the host can still Pause without it immediately restarting.
+  const autoStartedSceneRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!autoStartTimer || !current) {
+      if (!current) autoStartedSceneRef.current = null;
+      return;
+    }
+    const timed = current.type === "QUESTION" || current.type === "DRAWING";
+    if (!timed) return;
+    if (autoStartedSceneRef.current === current.id) return;
+    autoStartedSceneRef.current = current.id;
+    if (!timerRunning) {
+      action(() => startTimer(room.id, Number(current.settings?.timer ?? 30)).then(() => undefined));
+    }
+    // room.currentSceneId drives `current`; re-run only when the live scene
+    // changes or the option is toggled — not on every timer tick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [room.currentSceneId, autoStartTimer]);
 
   const questionIndex = round && question ? round.questionIds.indexOf(question.id) + 1 : null;
   const connectedCount = room.onlineDevices || participants.length;
@@ -358,16 +399,20 @@ export function HostConsole({
     if (points !== 0) {
       setScoreFloat({ id: Date.now(), points, team: teamById.get(teamId)?.name ?? "Team" });
     }
-    action(() =>
-      giveMarks({
+    action(async () => {
+      await giveMarks({
         roomId: room.id,
         teamId,
         points,
         reason: correct ? "CORRECT" : "WRONG",
         participantId: null,
         questionId: question?.id ?? null,
-      })
-    );
+      });
+      // Economy Mode: a correct answer also pays out coins (wrong pays 0).
+      if (correct && room.economyEnabled && answerCoins > 0) {
+        await giveCoins(room.id, teamId, answerCoins, "Correct answer");
+      }
+    });
   }
 
   function toggleTimer() {
@@ -675,13 +720,55 @@ export function HostConsole({
                       )}
                     </div>
                   )}
-                  <span
-                    className={`font-mono text-3xl font-black tabular-nums transition-colors duration-500 ${
-                      TIMER_URGENCY_TEXT[timerUrgency(secondsLeft, Number(current?.settings?.timer ?? 30))]
-                    }`}
-                  >
-                    {timerDisplay}
-                  </span>
+                  {current?.type !== "LEADERBOARD" && current?.type !== "WINNER" && (() => {
+                    const urg = timerUrgency(secondsLeft, Number(current?.settings?.timer ?? 30));
+                    // Breathe while running; beat faster as it runs down.
+                    const breath =
+                      !timerRunning || urg === "idle"
+                        ? ""
+                        : urg === "critical"
+                          ? "animate-[encBreath_0.6s_ease-in-out_infinite]"
+                          : urg === "warning"
+                            ? "animate-[encBreath_0.95s_ease-in-out_infinite]"
+                            : "animate-[encBreath_1.6s_ease-in-out_infinite]";
+                    return (
+                      <span
+                        className={`inline-block font-mono text-3xl font-black tabular-nums transition-colors duration-500 ${TIMER_URGENCY_TEXT[urg]} ${breath}`}
+                      >
+                        {timerDisplay}
+                      </span>
+                    );
+                  })()}
+
+                  {/* Leaderboard / winner scenes have no question — mirror what
+                      participants see so the host isn't looking at a blank card. */}
+                  {(current?.type === "LEADERBOARD" || current?.type === "WINNER") && teams.length > 0 && (
+                    <div className="w-full max-w-[460px] flex flex-col gap-2 mt-1">
+                      {[...teams]
+                        .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))
+                        .map((team, index) => {
+                          const isWinner = index === 0;
+                          const medal = index === 0 ? "🥇" : index === 1 ? "🥈" : index === 2 ? "🥉" : null;
+                          return (
+                            <div
+                              key={team.id}
+                              className={`flex items-center gap-3 rounded-xl border px-4 py-3 ${
+                                isWinner && current?.type === "WINNER"
+                                  ? "border-warn/45 bg-warn/[.1]"
+                                  : "border-line/[.08] bg-line/[.03]"
+                              }`}
+                            >
+                              <span className="w-7 text-center font-mono text-[15px] font-black text-ink-3">
+                                {medal ?? index + 1}
+                              </span>
+                              <span className="w-3 h-3 rounded-full shrink-0" style={{ background: team.color ?? "#6C7BFA" }} />
+                              <span className="text-[15px] font-bold text-ink truncate flex-1 text-left">{team.name}</span>
+                              <span className="font-mono text-[18px] font-black text-ink tabular-nums">{team.score}</span>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  )}
                 </div>
 
                 {question && (
@@ -735,6 +822,19 @@ export function HostConsole({
                     <span className="text-[10px] font-semibold tracking-[.1em] text-label">
                       MARK ANSWER{assignedTeam ? ` · ${assignedTeam.name}` : ""}
                     </span>
+                    {room.economyEnabled && (
+                      <label className="flex items-center gap-2 text-[11px] text-ink-3">
+                        <Icon name="coins" size={12} className="text-warn shrink-0" />
+                        <span className="shrink-0">Coins if correct</span>
+                        <input
+                          type="number"
+                          min={0}
+                          value={answerCoins}
+                          onChange={(e) => setAnswerCoins(Math.max(0, Number(e.target.value) || 0))}
+                          className="ml-auto w-24 bg-line/[.05] border border-line/[.1] rounded-lg px-2 py-1 text-[12px] text-ink outline-none focus:border-warn/50"
+                        />
+                      </label>
+                    )}
                     <div className="grid grid-cols-2 gap-2">
                       <Button
                         variant="success"
@@ -748,6 +848,7 @@ export function HostConsole({
                         className="justify-center"
                       >
                         ✓ Correct +{Math.abs(round?.positiveMarks ?? 10)}
+                        {room.economyEnabled && answerCoins > 0 ? ` · ${answerCoins}🪙` : ""}
                       </Button>
                       <Button
                         variant="danger"
@@ -848,6 +949,15 @@ export function HostConsole({
                   +10 sec
                 </Button>
               </div>
+              <label className="flex items-center gap-2 pt-1 text-[12px] text-ink-3 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={autoStartTimer}
+                  onChange={(e) => toggleAutoStart(e.target.checked)}
+                  className="accent-[var(--color-accent)]"
+                />
+                Auto-start timer on each question
+              </label>
             </section>
 
             {/* TEAMS */}
@@ -1289,16 +1399,47 @@ export function HostConsole({
 
             {/* POWER STORE CONTROL */}
             <section className="rounded-2xl border border-line/[.08] bg-line/[.03] p-4 flex flex-col gap-2.5">
-              <span className="text-sm font-bold text-ink-2">Power Store Control</span>
-              <span className="text-[12px] text-mute-2">Power Store is {room.storeStatus.toLowerCase()}.</span>
-              <div className="grid grid-cols-2 gap-2">
-                <Button variant="subtle" onClick={() => action(() => openStore(room.id))} disabled={pending}>
-                  Open
-                </Button>
-                <Button variant="subtle" onClick={() => action(() => closeStore(room.id))} disabled={pending}>
-                  Close
-                </Button>
-              </div>
+              {(() => {
+                const storeOpen = room.storeStatus === "OPEN";
+                return (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-bold text-ink-2">Power Store</span>
+                      <span
+                        className={`ml-auto flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-bold tracking-[.08em] ${
+                          storeOpen
+                            ? "bg-success/15 text-success border border-success/30"
+                            : "bg-line/[.06] text-mute-2 border border-line/[.1]"
+                        }`}
+                      >
+                        <span className={`w-1.5 h-1.5 rounded-full ${storeOpen ? "bg-success animate-enc-pulse" : "bg-mute-2"}`} />
+                        {storeOpen ? "OPEN" : "CLOSED"}
+                      </span>
+                    </div>
+                    <span className="text-[12px] text-mute-2">
+                      {storeOpen
+                        ? "Teams can buy power cards with coins right now."
+                        : "Teams cannot buy power cards until you open the store."}
+                    </span>
+                    <div className="grid grid-cols-2 gap-2">
+                      <Button
+                        variant={storeOpen ? "success" : "subtle"}
+                        onClick={() => action(() => openStore(room.id))}
+                        disabled={pending || storeOpen}
+                      >
+                        {storeOpen ? "● Open" : "Open Store"}
+                      </Button>
+                      <Button
+                        variant={storeOpen ? "subtle" : "danger"}
+                        onClick={() => action(() => closeStore(room.id))}
+                        disabled={pending || !storeOpen}
+                      >
+                        {storeOpen ? "Close Store" : "● Closed"}
+                      </Button>
+                    </div>
+                  </>
+                );
+              })()}
               {feedback && <span className="text-[12px] text-danger-soft">{feedback}</span>}
 
               <div className="flex flex-col gap-1.5 pt-1.5 border-t border-line/[.06]">
@@ -1450,12 +1591,19 @@ export function HostConsole({
           Leaderboard
         </Button>
         <Button
-          variant="subtle"
+          variant={room.storeStatus === "OPEN" ? "success" : "subtle"}
           onClick={() => action(() => (room.storeStatus === "OPEN" ? closeStore(room.id) : openStore(room.id)))}
           disabled={pending}
           className="shrink-0"
         >
-          {room.storeStatus === "OPEN" ? "Close Store" : "Power Store"}
+          {room.storeStatus === "OPEN" ? (
+            <>
+              <span className="w-1.5 h-1.5 rounded-full bg-white animate-enc-pulse" />
+              Store Open · Close
+            </>
+          ) : (
+            "Open Store"
+          )}
         </Button>
         <Button variant="subtle" onClick={sendCurrentBroadcast} disabled={pending || !broadcast.trim()} className="shrink-0">
           Broadcast
@@ -1534,22 +1682,45 @@ export function HostConsole({
         onDone={() => router.refresh()}
       />
 
-      {/* Floating score feedback — the applied delta drifts up and fades. */}
-      {scoreFloat && (
-        <div
-          key={scoreFloat.id}
-          className="pointer-events-none fixed left-1/2 top-1/2 z-[80] -translate-x-1/2 flex flex-col items-center animate-[encFloatUp_1.3s_ease-out_forwards]"
-        >
-          <span
-            className={`font-mono font-black text-4xl ${
-              scoreFloat.points >= 0 ? "text-success" : "text-danger-soft"
-            }`}
-          >
-            {scoreFloat.points >= 0 ? `+${scoreFloat.points}` : scoreFloat.points}
-          </span>
-          <span className="text-[12px] font-semibold text-ink-2">{scoreFloat.team}</span>
-        </div>
-      )}
+      {/* Correct / Wrong burst — mirrors what the marked team sees on their
+          phone, so the host screen reacts to the call too. */}
+      {scoreFloat && (() => {
+        const positive = scoreFloat.points >= 0;
+        const color = positive ? "var(--color-success)" : "var(--color-danger-soft)";
+        return (
+          <div key={scoreFloat.id} className="pointer-events-none fixed inset-0 z-[80] flex items-center justify-center">
+            <span
+              aria-hidden
+              className="absolute inset-0 animate-[encEdgeFlash_1s_ease-out_forwards]"
+              style={{ boxShadow: `inset 0 0 140px 30px color-mix(in oklab, ${color} 45%, transparent)` }}
+            />
+            <div
+              className={`flex flex-col items-center gap-1.5 animate-[encBurst_1.4s_ease-out_forwards] ${
+                positive ? "" : "animate-[encShake_0.5s_ease]"
+              }`}
+            >
+              <span
+                className="flex items-center justify-center w-20 h-20 rounded-full border-4 text-4xl font-black"
+                style={{
+                  color,
+                  borderColor: color,
+                  background: `color-mix(in oklab, ${color} 15%, transparent)`,
+                  boxShadow: `0 0 50px color-mix(in oklab, ${color} 50%, transparent)`,
+                }}
+              >
+                {positive ? "✓" : "✗"}
+              </span>
+              <span className="text-[13px] font-black tracking-[.18em]" style={{ color }}>
+                {positive ? "CORRECT" : "WRONG"}
+              </span>
+              <span className="font-mono font-black text-3xl" style={{ color }}>
+                {positive ? `+${scoreFloat.points}` : scoreFloat.points}
+              </span>
+              <span className="text-[12px] font-semibold text-ink-2">{scoreFloat.team}</span>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

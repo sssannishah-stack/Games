@@ -265,6 +265,8 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
   const seededNotable = useRef(false);
   const [celebrate, setCelebrate] = useState(false);
   const [scoreShake, setScoreShake] = useState(false);
+  // A one-shot CORRECT/WRONG feedback burst driven by our own score changing.
+  const [answerFx, setAnswerFx] = useState<{ id: number; delta: number } | null>(null);
   const prevScoreRef = useRef<number | null>(null);
   const { enabled: motionEnabled } = useMotionEnabled();
   const [pending, startTransition] = useTransition();
@@ -477,14 +479,21 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
     const prev = prevScoreRef.current;
     prevScoreRef.current = score;
     if (prev == null || score === prev) return;
+    setAnswerFx({ id: Date.now(), delta: score - prev });
     if (score > prev) {
       setCelebrate(true);
       if (motionEnabled && typeof navigator !== "undefined") navigator.vibrate?.(35);
     } else {
       setScoreShake(true);
-      if (motionEnabled && typeof navigator !== "undefined") navigator.vibrate?.(70);
+      if (motionEnabled && typeof navigator !== "undefined") navigator.vibrate?.([40, 40, 70]);
     }
   }, [live?.team?.score, motionEnabled]);
+
+  useEffect(() => {
+    if (!answerFx) return;
+    const t = window.setTimeout(() => setAnswerFx(null), 1600);
+    return () => window.clearTimeout(t);
+  }, [answerFx]);
 
   useEffect(() => {
     if (!celebrate) return;
@@ -612,6 +621,9 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
       </div>
 
       {celebrate && <Confetti count={80} />}
+      <AnimatePresence>
+        {answerFx && <AnswerFeedbackOverlay key={answerFx.id} delta={answerFx.delta} />}
+      </AnimatePresence>
       <AnimatePresence>
         {moment && <MomentOverlay key={moment.id} moment={moment} />}
       </AnimatePresence>
@@ -1373,11 +1385,27 @@ function QuestionScene({
   return (
     <div className="flex-1 flex flex-col gap-4 pt-5">
       <div className="flex items-center justify-center">
-        <div
-          className={`relative w-[94px] h-[94px] ${
-            urgency === "critical" && seconds !== null && seconds <= 5 ? "animate-enc-pulse" : ""
-          }`}
+        {/* Breathing timer ring — the heartbeat speeds up (and the pulse
+            grows) as the clock runs down: calm in the green, urgent in red. */}
+        <motion.div
+          className="relative w-[94px] h-[94px]"
+          animate={
+            seconds === null || urgency === "idle"
+              ? { scale: 1 }
+              : { scale: urgency === "critical" ? [1, 1.09, 1] : urgency === "warning" ? [1, 1.05, 1] : [1, 1.03, 1] }
+          }
+          transition={{
+            duration: urgency === "critical" ? 0.6 : urgency === "warning" ? 0.95 : 1.6,
+            repeat: seconds === null ? 0 : Infinity,
+            ease: "easeInOut",
+          }}
         >
+          {/* Soft glow halo behind the ring, tinted by urgency. */}
+          <span
+            aria-hidden
+            className="absolute inset-1 rounded-full transition-[background] duration-500"
+            style={{ background: `radial-gradient(circle, ${TIMER_URGENCY_GLOW[urgency]}, transparent 70%)` }}
+          />
           <svg viewBox="0 0 94 94" className="absolute inset-0 -rotate-90">
             <circle
               cx="47"
@@ -1407,7 +1435,7 @@ function QuestionScene({
             </span>
             <span className="mt-0.5 text-[8.5px] font-bold tracking-[.22em] text-mute-2">SEC</span>
           </div>
-        </div>
+        </motion.div>
       </div>
       {live.turn.assignedTeamId && (
         <div
@@ -2109,6 +2137,68 @@ function MomentOverlay({ moment }: { moment: LiveFeedItem }) {
           {style.label}
         </span>
         <span className="text-xl font-bold text-ink">{moment.text}</span>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+/**
+ * CORRECT / WRONG feedback burst the moment our own team's score changes.
+ * Green stamp + rising points on a gain, red stamp + shake on a loss. Brief
+ * and pointer-events-none so it never blocks the game.
+ */
+function AnswerFeedbackOverlay({ delta }: { delta: number }) {
+  const positive = delta > 0;
+  const color = positive ? "#3DD68C" : "#FF5A5A";
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.15 }}
+      className="fixed inset-0 z-[65] flex items-center justify-center pointer-events-none"
+    >
+      {/* Edge flash — a colored vignette pulses in from the screen borders. */}
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: [0, 0.9, 0] }}
+        transition={{ duration: 1.1, times: [0, 0.2, 1] }}
+        className="absolute inset-0"
+        style={{ boxShadow: `inset 0 0 140px 30px color-mix(in oklab, ${color} 55%, transparent)` }}
+      />
+      <motion.div
+        initial={{ scale: 0.4, rotate: positive ? -12 : 0, opacity: 0 }}
+        animate={
+          positive
+            ? { scale: [0.4, 1.15, 1], rotate: [-12, 4, 0], opacity: 1 }
+            : { scale: [0.4, 1.1, 1], x: [0, -14, 12, -8, 6, 0], opacity: 1 }
+        }
+        exit={{ scale: 0.7, opacity: 0, y: -20 }}
+        transition={{ duration: positive ? 0.5 : 0.55, ease: [0.2, 0.9, 0.3, 1] }}
+        className="relative flex flex-col items-center gap-2"
+      >
+        <span
+          className="flex items-center justify-center w-24 h-24 rounded-full border-4 text-5xl"
+          style={{
+            color,
+            borderColor: color,
+            background: `color-mix(in oklab, ${color} 16%, transparent)`,
+            boxShadow: `0 0 60px color-mix(in oklab, ${color} 55%, transparent)`,
+          }}
+        >
+          {positive ? "✓" : "✗"}
+        </span>
+        <span className="text-[15px] font-black tracking-[.18em]" style={{ color }}>
+          {positive ? "CORRECT" : "WRONG"}
+        </span>
+        <motion.span
+          initial={{ y: 6, opacity: 0 }}
+          animate={{ y: -6, opacity: 1 }}
+          className="font-mono text-[26px] font-black tabular-nums"
+          style={{ color }}
+        >
+          {positive ? `+${delta}` : delta}
+        </motion.span>
       </motion.div>
     </motion.div>
   );

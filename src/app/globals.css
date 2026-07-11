@@ -153,6 +153,50 @@
       transform: rotate(360deg);
     }
   }
+  /* Correct/Wrong burst — badge springs in, holds, then fades up. */
+  @keyframes encBurst {
+    0% {
+      transform: scale(0.4);
+      opacity: 0;
+    }
+    35% {
+      transform: scale(1.12);
+      opacity: 1;
+    }
+    55% {
+      transform: scale(1);
+    }
+    80% {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+    100% {
+      opacity: 0;
+      transform: translateY(-24px) scale(0.95);
+    }
+  }
+  /* Colored screen-edge flash for score feedback. */
+  @keyframes encEdgeFlash {
+    0% {
+      opacity: 0;
+    }
+    20% {
+      opacity: 0.85;
+    }
+    100% {
+      opacity: 0;
+    }
+  }
+  /* Gentle scale breathing for a running timer. */
+  @keyframes encBreath {
+    0%,
+    100% {
+      transform: scale(1);
+    }
+    50% {
+      transform: scale(1.05);
+    }
+  }
 }
 
 /* ─── Bright theme — swaps the whole surface/text/line ramp for a light,
