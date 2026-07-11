@@ -318,10 +318,16 @@ export async function startRoomTestMode(roomId: string): Promise<void> {
 }
 
 /**
- * Clears one live run while preserving room setup: teams/rosters, selected
- * rounds, questions, generated scenes, and the room's default card loadout.
+ * Clears one live run while preserving room setup: selected rounds,
+ * questions, and generated scenes. With `removeTeams`, also deletes every
+ * team and their rosters entirely — for handing the room to a brand new
+ * group rather than replaying the same teams from zero.
  */
-export async function resetRoom(roomId: string, confirmation: string): Promise<void> {
+export async function resetRoom(
+  roomId: string,
+  confirmation: string,
+  removeTeams = false
+): Promise<void> {
   if (confirmation !== "RESET") throw new Error("Type RESET to confirm.");
 
   const user = await requireUser();
@@ -342,24 +348,30 @@ export async function resetRoom(roomId: string, confirmation: string): Promise<v
     TeamAchievement.deleteMany({ roomId }),
     AuctionBid.deleteMany({ roomId }),
     Auction.deleteMany({ roomId }),
-    Team.updateMany(
-      { roomId },
-      {
-        $set: {
-          score: 0,
-          rank: 0,
-          previousRank: 0,
-          coins: 0,
-          stats: {
-            correctAnswers: 0,
-            wrongAnswers: 0,
-            bonusPoints: 0,
-            streak: 0,
-            bestStreak: 0,
-          },
-        },
-      }
-    ),
+    removeTeams
+      ? Promise.all([
+          TeamPowerCard.deleteMany({ teamId: { $in: teamIds } }),
+          Participant.deleteMany({ roomId }),
+          Team.deleteMany({ roomId }),
+        ])
+      : Team.updateMany(
+          { roomId },
+          {
+            $set: {
+              score: 0,
+              rank: 0,
+              previousRank: 0,
+              coins: 0,
+              stats: {
+                correctAnswers: 0,
+                wrongAnswers: 0,
+                bonusPoints: 0,
+                streak: 0,
+                bestStreak: 0,
+              },
+            },
+          }
+        ),
     Scene.updateMany(
       { roomId },
       { $set: { status: "UPCOMING", isActive: false } }
@@ -371,6 +383,7 @@ export async function resetRoom(roomId: string, confirmation: string): Promise<v
         currentRoundId: null,
         currentQuestionId: null,
         powerCardOverrides: [],
+        powerCardExclusions: [],
         onlineDevices: 0,
         "liveState.timerStartedAt": null,
         "liveState.timerEndsAt": null,
@@ -384,7 +397,11 @@ export async function resetRoom(roomId: string, confirmation: string): Promise<v
     }),
   ]);
 
-  await resetRoomPowerCardsToDefaults(teamIds, roomId, user.id);
+  // A fresh group creates their own teams and gets starter cards as they
+  // join — nothing to restore to defaults yet.
+  if (!removeTeams) {
+    await resetRoomPowerCardsToDefaults(teamIds, roomId, user.id);
+  }
 
   revalidatePath(`/admin/rooms/${roomId}`);
   revalidatePath(`/host/${roomId}`);

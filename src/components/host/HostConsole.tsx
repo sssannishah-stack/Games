@@ -15,6 +15,7 @@ import {
 } from "@/actions/scene.actions";
 import { sendBroadcast } from "@/actions/broadcast.actions";
 import { resetRoom } from "@/actions/room.actions";
+import { RoomResetModal } from "@/components/room/RoomResetModal";
 import {
   closeStore,
   endFlashSale,
@@ -1367,9 +1368,9 @@ export function HostConsole({
         open={resetOpen}
         pending={pending}
         onClose={() => setResetOpen(false)}
-        onReset={() =>
+        onReset={(removeTeams) =>
           action(async () => {
-            await resetRoom(room.id, "RESET");
+            await resetRoom(room.id, "RESET", removeTeams);
             setResetOpen(false);
           })
         }
@@ -1402,49 +1403,6 @@ export function HostConsole({
         </div>
       )}
     </div>
-  );
-}
-
-function RoomResetModal({
-  open,
-  pending,
-  onClose,
-  onReset,
-}: {
-  open: boolean;
-  pending: boolean;
-  onClose: () => void;
-  onReset: () => void;
-}) {
-  const [confirmation, setConfirmation] = useState("");
-
-  return (
-    <Modal open={open} onClose={() => !pending && onClose()} className="max-w-[460px]">
-      <div className="px-6 py-5 border-b border-line/[.07]">
-        <span className="text-base font-bold text-ink">Reset this room?</span>
-        <p className="mt-2 text-[12.5px] leading-relaxed text-mute-2">
-          Scores, coins, purchases, power requests, achievements, auctions and the event timeline will be cleared.
-          Teams, rosters, rounds, questions and scenes stay. Every team&apos;s cards return to the room default loadout.
-        </p>
-      </div>
-      <div className="px-6 py-5 flex flex-col gap-3">
-        <label className="flex flex-col gap-1.5">
-          <span className="text-xs font-semibold text-ink-3">Type RESET to confirm</span>
-          <input
-            value={confirmation}
-            onChange={(event) => setConfirmation(event.target.value.toUpperCase())}
-            className="bg-line/[.04] border border-line/[.1] rounded-[11px] px-3 py-2 text-sm text-ink outline-none focus:border-danger/60"
-            autoFocus
-          />
-        </label>
-        <div className="flex justify-end gap-2">
-          <Button variant="plain" onClick={onClose} disabled={pending}>Cancel</Button>
-          <Button variant="danger" onClick={onReset} disabled={pending || confirmation !== "RESET"} loading={pending}>
-            Reset Room
-          </Button>
-        </div>
-      </div>
-    </Modal>
   );
 }
 

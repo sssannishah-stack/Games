@@ -12,7 +12,8 @@ import { Modal } from "@/components/ui/Modal";
 import { PublishPanel } from "@/components/room/PublishPanel";
 import { InventoryPanel } from "@/components/power-card/InventoryPanel";
 import { PowerCardsPanel } from "@/components/power-card/PowerCardsPanel";
-import { startRoomEvent, startRoomTestMode, setRoomSelectedRounds, updateRoom } from "@/actions/room.actions";
+import { startRoomEvent, startRoomTestMode, setRoomSelectedRounds, updateRoom, resetRoom } from "@/actions/room.actions";
+import { RoomResetModal } from "@/components/room/RoomResetModal";
 import { setRoomEconomyMode, setStartingCoins } from "@/actions/competition.actions";
 import { sceneVisual } from "@/lib/sceneVisual";
 import { openStore, closeStore } from "@/actions/powerCard.actions";
@@ -1576,6 +1577,49 @@ function RoomSettings({
   );
 }
 
+function RoomDangerZone({ room }: { room: RoomDetail }) {
+  const [resetOpen, setResetOpen] = useState(false);
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  const router = useRouter();
+
+  function reset(removeTeams: boolean) {
+    setError(null);
+    startTransition(async () => {
+      try {
+        await resetRoom(room.id, "RESET", removeTeams);
+        setResetOpen(false);
+        router.refresh();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not reset room.");
+      }
+    });
+  }
+
+  return (
+    <Card className="rounded-2xl p-5 flex flex-col gap-3 max-w-[760px] border-danger/20">
+      <div className="flex flex-col gap-1">
+        <span className="text-[15px] font-bold text-ink-2">Danger Zone</span>
+        <span className="text-[12px] text-mute-2">
+          Played this room with one group and want to run it again with another? Reset it here — no need to rebuild
+          rounds or the event flow.
+        </span>
+      </div>
+      <ErrorText error={error} />
+      <Button variant="danger" onClick={() => setResetOpen(true)} className="self-start">
+        Reset Room
+      </Button>
+      <RoomResetModal
+        key={resetOpen ? "open" : "closed"}
+        open={resetOpen}
+        pending={pending}
+        onClose={() => setResetOpen(false)}
+        onReset={reset}
+      />
+    </Card>
+  );
+}
+
 export function RoomSetupDashboard({
   room,
   teams,
@@ -1636,7 +1680,12 @@ export function RoomSetupDashboard({
     if (section === "Event Flow") {
       return <SceneBuilder room={room} rounds={rounds} questions={questions} scenes={scenes} teams={teams} />;
     }
-    return <RoomSettings room={room} />;
+    return (
+      <div className="flex flex-col gap-4">
+        <RoomSettings room={room} />
+        <RoomDangerZone room={room} />
+      </div>
+    );
   }, [
     cards,
     joinUrl,
