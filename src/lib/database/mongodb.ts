@@ -45,6 +45,14 @@ export async function connectToDatabase(): Promise<typeof mongoose> {
         bufferCommands: false,
         // Fail fast instead of hanging when Atlas is unreachable.
         serverSelectionTimeoutMS: 10_000,
+        // Serverless tuning: each warm function instance keeps a small pool it
+        // reuses across invocations (the global cache below), so we don't need
+        // 100 connections per instance — that just pressures a shared Atlas
+        // tier. A tiny pool that stays warm is what we want.
+        maxPoolSize: 10,
+        minPoolSize: 0,
+        // Don't spend time probing IPv6 first when Atlas is reachable on IPv4.
+        family: 4,
       })
       .then((m) => m);
   }
