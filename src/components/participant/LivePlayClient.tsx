@@ -542,12 +542,16 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
             {(live?.team?.name ?? participant.teamName).charAt(0).toUpperCase()}
           </div>
           <div className="flex flex-col min-w-0">
-            <span className="text-[13px] font-bold text-ink truncate">{live?.competition.title ?? room.name}</span>
-            <span className="flex items-center gap-1.5 text-[11px] text-mute-2 truncate">
-              <span className="truncate">
-                {participant.name} - {live?.team?.name ?? participant.teamName}
+            {/* Team name is the primary identity — keep it prominent and never
+                let the long competition title crowd it out on small screens. */}
+            <span className="flex items-center gap-1.5 min-w-0">
+              <span className="text-[14px] font-bold text-ink truncate">
+                {live?.team?.name ?? participant.teamName}
               </span>
               {live?.me && <RoleBadge role={live.me.role} acting={live.me.isActingCaptain} />}
+            </span>
+            <span className="text-[11px] text-mute-2 truncate">
+              {participant.name} · {live?.competition.title ?? room.name}
             </span>
           </div>
           <div className="ml-auto flex items-center gap-2">
@@ -762,7 +766,6 @@ function StatusStrip({
 }) {
   const streak = live.team?.streak ?? 0;
   const activeEffects = live.powers.cards.filter((c) => c.status === "ACTIVE");
-  const inventory = live.powers.cards.filter((c) => c.remainingUses > 0);
   const activeTypes = new Set(activeEffects.map((e) => e.effectType));
   const combo = activeTypes.has("DOUBLE_SCORE") && activeTypes.has("BLOCK_NEGATIVE");
   const timerAccent: Record<ReturnType<typeof timerUrgency>, string | undefined> = {
@@ -787,7 +790,9 @@ function StatusStrip({
         />
       </div>
 
-      {(streak >= 2 || activeEffects.length > 0 || inventory.length > 0) && (
+      {/* Streak + currently-active effects only. Owned cards live in the
+          question's "Available Powers" grid — no need to repeat them here. */}
+      {(streak >= 2 || activeEffects.length > 0) && (
         <div className="flex items-center gap-1.5 flex-wrap">
           {combo && (
             <span className="flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-bold bg-[linear-gradient(90deg,rgba(108,123,250,.25),rgba(61,214,140,.25))] border border-accent/40 text-ink">
@@ -813,17 +818,6 @@ function StatusStrip({
               {EFFECT_ICON[effect.effectType ?? ""] ?? effect.icon} {effect.name} active
             </span>
           ))}
-          {inventory
-            .filter((c) => c.status !== "ACTIVE")
-            .map((card) => (
-              <span
-                key={`inv-${card.id}`}
-                className="flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium bg-line/[.05] border border-line/[.1] text-mute-2"
-              >
-                {EFFECT_ICON[card.effectType ?? ""] ?? card.icon} {card.name}
-                {card.remainingUses > 1 && <span className="font-mono text-dim-2">×{card.remainingUses}</span>}
-              </span>
-            ))}
         </div>
       )}
     </div>
