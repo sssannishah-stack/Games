@@ -377,6 +377,13 @@ export async function publishScene(roomId: string, sceneId: string): Promise<ISc
       currentRoundId: scene.roundId ?? null,
       currentQuestionId: scene.questionId ?? null,
       "liveState.showAnswer": false,
+      // Every scene starts with a fresh clock. Without this the previous
+      // scene's timer state carried over — the countdown looked stuck/expired
+      // and, because it still read as "running", the host's auto-start (and a
+      // clean manual Start) were suppressed on the new question.
+      "liveState.timerStartedAt": null,
+      "liveState.timerEndsAt": null,
+      "liveState.timerPaused": false,
     },
   });
   await log(roomId, "SCENE_CHANGED", { sceneId, sceneType: scene.type, title: scene.title });
