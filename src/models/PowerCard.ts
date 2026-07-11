@@ -42,6 +42,12 @@ const PowerCardSchema = new Schema<IPowerCard>(
   { timestamps: true }
 );
 
+// Card names are unique per host (the create/update actions already enforce
+// this in app code). The DB-level constraint is what actually makes the
+// seed race-safe: concurrent page loads that each try to seed the defaults
+// can no longer each insert a full duplicate set.
+PowerCardSchema.index({ ownerId: 1, name: 1 }, { unique: true });
+
 export const PowerCard: Model<IPowerCard> =
   models.PowerCard || model<IPowerCard>("PowerCard", PowerCardSchema);
 export default PowerCard;

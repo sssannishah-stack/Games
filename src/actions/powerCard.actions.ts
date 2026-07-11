@@ -40,33 +40,51 @@ export async function seedDefaultPowerCards(): Promise<void> {
     ownerId: user.id,
     name: { $in: DEFAULT_POWER_CARDS.map((card) => card.name) },
   })
-    .select("requiresApproval")
+    .select("name requiresApproval")
     .lean();
 
   if (existingDefaults.length === 0) {
     const hasExistingCards = await PowerCard.exists({ ownerId: user.id });
     if (hasExistingCards) return; // host kept only custom cards on purpose
+  }
 
-    await PowerCard.insertMany(
-      DEFAULT_POWER_CARDS.map((card) => ({
-        ownerId: user.id,
-        name: card.name,
-        description: card.description,
-        icon: card.icon,
-        category: card.category,
-        rarity: card.rarity,
-        effectType: card.effectType,
-        price: card.price,
-        stock: null,
-        enabled: true,
-        // Instant use: pressing "Use Power" activates the card immediately —
-        // no host approval step. Hosts can re-enable approval per card.
-        requiresApproval: false,
-        usesPerTeam: 1,
-        priceMode: "FIXED",
-      }))
+  // Upsert one card per (owner, name) rather than a blanket insertMany.
+  // insertMany was racy: two concurrent page loads could each see an empty
+  // catalog and both insert the whole set — the exact bug that produced 4x
+  // duplicate cards. Upsert keyed on the unique (ownerId, name) index is
+  // idempotent, so concurrent seeds converge on a single copy per card and
+  // this also backfills any cards a host deleted individually.
+  const existingNames = new Set(existingDefaults.map((card) => card.name));
+  const missing = DEFAULT_POWER_CARDS.filter((card) => !existingNames.has(card.name));
+  if (missing.length > 0) {
+    await PowerCard.bulkWrite(
+      missing.map((card) => ({
+        updateOne: {
+          // ownerId + name come from the filter on insert — no need to
+          // repeat them in $setOnInsert (and doing so mistypes ownerId).
+          filter: { ownerId: user.id, name: card.name },
+          update: {
+            $setOnInsert: {
+              description: card.description,
+              icon: card.icon,
+              category: card.category,
+              rarity: card.rarity,
+              effectType: card.effectType,
+              price: card.price,
+              stock: null,
+              enabled: true,
+              // Instant use: "Use Power" activates immediately — no approval
+              // step. Hosts can re-enable approval per card.
+              requiresApproval: false,
+              usesPerTeam: 1,
+              priceMode: "FIXED",
+            },
+          },
+          upsert: true,
+        },
+      })),
+      { ordered: false }
     );
-    return;
   }
 
   // Reconcile catalogs seeded back when defaults still required host
