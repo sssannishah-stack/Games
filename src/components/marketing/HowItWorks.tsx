@@ -50,11 +50,14 @@ export function HowItWorks() {
               className="flex flex-row md:flex-col items-center text-left md:text-center gap-3 relative bg-card/60 border border-line/[.06] md:border-0 md:bg-transparent rounded-xl p-3 md:p-0"
             >
               {i < STEPS.length - 1 && (
-                <span className="hidden md:block absolute top-6 left-[calc(50%+34px)] w-[calc(100%-40px)] h-px bg-line/10" />
+                <span
+                  className="hidden md:block absolute top-6 left-[calc(50%+34px)] w-[calc(100%-40px)] h-px"
+                  style={{ background: "linear-gradient(90deg, rgba(108,123,250,.4), rgba(108,123,250,.06))" }}
+                />
               )}
-              <div className="relative w-11 h-11 md:w-12 md:h-12 rounded-full bg-card border border-accent/30 flex items-center justify-center z-10 shrink-0">
+              <div className="relative w-11 h-11 md:w-12 md:h-12 rounded-full bg-card border border-accent/30 flex items-center justify-center z-10 shrink-0 shadow-[0_0_24px_rgba(108,123,250,.15)]">
                 <Icon name={step.icon} size={18} className="text-accent" />
-                <span className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-accent text-white text-[10px] font-bold flex items-center justify-center">
+                <span className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-[linear-gradient(135deg,#6C7BFA,#4E96D8)] text-white text-[10px] font-bold flex items-center justify-center shadow-[0_2px_8px_rgba(108,123,250,.5)]">
                   {i + 1}
                 </span>
               </div>

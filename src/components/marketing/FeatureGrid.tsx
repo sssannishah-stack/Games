@@ -1,42 +1,41 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { Icon } from "@/components/ui/Icon";
 
 const FEATURES = [
   {
     emoji: "🎮",
-    icon: "radio",
+    tone: "#6C7BFA",
     title: "Host Controlled Events",
     body: "The host controls every screen in real time — nothing advances until they say so.",
   },
   {
     emoji: "🃏",
-    icon: "sparkles",
+    tone: "#C99AF0",
     title: "Power Card Economy",
     body: "Teams earn coins, buy Shield, Hint, Freeze or Double Points cards, and manage resources like real strategists.",
   },
   {
     emoji: "🏆",
-    icon: "crown",
+    tone: "#E8C84A",
     title: "Live Leaderboards",
     body: "Animated ranking updates the instant marks are given, visible on every phone in the room.",
   },
   {
     emoji: "⚡",
-    icon: "clapperboard",
+    tone: "#E8A33D",
     title: "Scene Based Flow",
     body: "Run events like a presentation — waiting room, rules, questions, reveal, winner.",
   },
   {
     emoji: "📱",
-    icon: "smartphone",
+    tone: "#3DD68C",
     title: "Phone Participation",
     body: "Participants join using a QR code or room code — no app to install.",
   },
   {
     emoji: "🎨",
-    icon: "pencil",
+    tone: "#F06A96",
     title: "Drawing Challenges",
     body: "Live drawing rounds sync to every phone in under 50ms, with one-tap scoring.",
   },
@@ -73,15 +72,29 @@ export function FeatureGrid() {
               whileInView="show"
               viewport={{ once: true, margin: "-60px" }}
               custom={i}
-              className="bg-card border border-line/[.07] rounded-xl md:rounded-2xl p-4 md:p-6 flex flex-col gap-3 hover:border-line/[.14] transition-colors"
+              className="group relative overflow-hidden bg-card border border-line/[.07] rounded-xl md:rounded-2xl p-4 md:p-6 flex flex-col gap-3 transition-all duration-300 hover:border-line/[.16] hover:-translate-y-1 hover:shadow-[0_18px_50px_rgba(0,0,0,.25)]"
             >
-              <div className="w-10 h-10 md:w-11 md:h-11 rounded-[12px] bg-accent/10 border border-accent/20 flex items-center justify-center text-lg">
+              {/* Per-feature accent hairline, revealed on hover. */}
+              <span
+                aria-hidden
+                className="absolute inset-x-6 top-0 h-px opacity-0 group-hover:opacity-100 transition-opacity duration-300"
+                style={{ background: `linear-gradient(90deg, transparent, ${f.tone}, transparent)` }}
+              />
+              <span
+                aria-hidden
+                className="absolute inset-x-0 top-0 h-20 opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none"
+                style={{ background: `radial-gradient(60% 100% at 50% 0%, color-mix(in oklab, ${f.tone} 10%, transparent), transparent)` }}
+              />
+              <div
+                className="w-10 h-10 md:w-11 md:h-11 rounded-[12px] border flex items-center justify-center text-lg transition-transform duration-300 group-hover:scale-110"
+                style={{
+                  background: `color-mix(in oklab, ${f.tone} 12%, transparent)`,
+                  borderColor: `color-mix(in oklab, ${f.tone} 28%, transparent)`,
+                }}
+              >
                 {f.emoji}
               </div>
-              <span className="text-[15px] font-bold text-ink flex items-center gap-2">
-                <Icon name={f.icon} size={15} className="text-accent" />
-                {f.title}
-              </span>
+              <span className="text-[15px] font-bold text-ink">{f.title}</span>
               <span className="text-[13px] text-mute-2 leading-relaxed">{f.body}</span>
             </motion.div>
           ))}

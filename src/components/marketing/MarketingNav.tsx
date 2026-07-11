@@ -26,7 +26,22 @@ export function MarketingNav() {
           </a>
         </nav>
 
-        <ThemeToggle className="ml-auto w-9 h-9" />
+        <div className="ml-auto flex items-center gap-2.5">
+          <ThemeToggle className="w-9 h-9" />
+          <Link
+            href="/join"
+            className="hidden sm:flex items-center gap-1.5 text-[13px] font-semibold text-ink-3 hover:text-ink px-3 py-2 rounded-[10px] transition-colors"
+          >
+            Join a room
+          </Link>
+          <Link
+            href="/admin"
+            className="flex items-center gap-1.5 bg-accent text-white text-[13px] font-bold rounded-[10px] px-3.5 py-2 shadow-[0_6px_20px_rgba(108,123,250,.35)] hover:brightness-110 transition"
+          >
+            <Icon name="radio" size={13} />
+            Start Hosting
+          </Link>
+        </div>
       </div>
     </header>
   );

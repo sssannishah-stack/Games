@@ -16,7 +16,29 @@ const fadeUp = {
 export function HeroSection() {
   return (
     <section className="relative overflow-hidden pt-14 pb-16 md:pt-28 md:pb-36 px-4 md:px-5">
-      <div className="absolute inset-0 -z-10 bg-[radial-gradient(900px_500px_at_50%_-10%,rgba(108,123,250,.16),transparent_65%)]" />
+      {/* Layered backdrop: main glow + two soft drifting color orbs + a faint grid. */}
+      <div className="absolute inset-0 -z-10 bg-[radial-gradient(900px_500px_at_50%_-10%,rgba(108,123,250,.18),transparent_65%)]" />
+      <div
+        aria-hidden
+        className="absolute inset-0 -z-10 opacity-[.35]"
+        style={{
+          backgroundImage:
+            "linear-gradient(color-mix(in oklab, var(--color-ink) 4%, transparent) 1px, transparent 1px), linear-gradient(90deg, color-mix(in oklab, var(--color-ink) 4%, transparent) 1px, transparent 1px)",
+          backgroundSize: "56px 56px",
+          maskImage: "radial-gradient(720px 420px at 50% 8%, black, transparent 75%)",
+          WebkitMaskImage: "radial-gradient(720px 420px at 50% 8%, black, transparent 75%)",
+        }}
+      />
+      <div
+        aria-hidden
+        className="absolute -z-10 top-24 left-[8%] w-56 h-56 rounded-full blur-[90px] animate-enc-float"
+        style={{ background: "rgba(108,123,250,.2)" }}
+      />
+      <div
+        aria-hidden
+        className="absolute -z-10 top-40 right-[10%] w-48 h-48 rounded-full blur-[90px] animate-enc-float"
+        style={{ background: "rgba(61,214,140,.14)", animationDelay: "1.2s" }}
+      />
 
       <div className="max-w-[860px] mx-auto flex flex-col items-center text-center gap-5 md:gap-6">
         <motion.span
@@ -24,8 +46,9 @@ export function HeroSection() {
           initial="hidden"
           animate="show"
           custom={0}
-          className="text-[10px] md:text-[11.5px] font-semibold tracking-[.14em] text-accent bg-accent/10 border border-accent/25 rounded-full px-3 py-1.5 md:px-3.5"
+          className="flex items-center gap-1.5 text-[10px] md:text-[11.5px] font-semibold tracking-[.14em] text-accent bg-accent/10 border border-accent/25 rounded-full px-3 py-1.5 md:px-3.5"
         >
+          <span className="w-1.5 h-1.5 rounded-full bg-accent animate-enc-pulse" />
           LIVE COMPETITION OPERATING SYSTEM
         </motion.span>
 
@@ -38,7 +61,9 @@ export function HeroSection() {
         >
           Run unforgettable
           <br />
-          live competitions
+          <span className="bg-clip-text text-transparent bg-[linear-gradient(100deg,#6C7BFA,#9BA6FF_45%,#4E96D8)]">
+            live competitions
+          </span>
         </motion.h1>
 
         <motion.p
@@ -73,6 +98,29 @@ export function HeroSection() {
             <Icon name="qr-code" size={16} />
             Join Event
           </Link>
+        </motion.div>
+
+        <motion.div
+          variants={fadeUp}
+          initial="hidden"
+          animate="show"
+          custom={4}
+          className="flex flex-wrap items-center justify-center gap-x-5 gap-y-2 mt-3 text-[12px] text-mute-2"
+        >
+          <span className="flex items-center gap-1.5">
+            <Icon name="smartphone" size={13} className="text-accent" />
+            No app to install
+          </span>
+          <span className="hidden sm:inline text-dim">·</span>
+          <span className="flex items-center gap-1.5">
+            <Icon name="zap" size={13} className="text-warn" />
+            Real-time on every phone
+          </span>
+          <span className="hidden sm:inline text-dim">·</span>
+          <span className="flex items-center gap-1.5">
+            <Icon name="crown" size={13} className="text-success" />
+            Host controls everything
+          </span>
         </motion.div>
       </div>
     </section>
