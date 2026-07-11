@@ -26,6 +26,10 @@ const TeamSchema = new Schema<ITeam>(
       streak: { type: Number, default: 0 },
       bestStreak: { type: Number, default: 0 },
     },
+    // Questions this team is protected from negative marks on — set when an
+    // Insurance card is activated, covering the question it was used on plus
+    // the next two (by the room's flow order).
+    insuredQuestionIds: { type: [String], default: [] },
   },
   { timestamps: true }
 );

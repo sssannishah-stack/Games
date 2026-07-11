@@ -29,6 +29,7 @@ const EFFECT_THEMES: Record<string, EffectTheme> = {
   HINT: { deep: "#4a3505", accent: "#F5C64D", glyph: "💡", tag: "REVEAL A CLUE" },
   EXTRA_TIME: { deep: "#053e3a", accent: "#3DD6C8", glyph: "⏱", tag: "MORE SECONDS" },
   BLOCK_NEGATIVE: { deep: "#1d3050", accent: "#9BC0EF", glyph: "🛡", tag: "NO MINUS" },
+  INSURANCE: { deep: "#123a44", accent: "#6FD3C6", glyph: "🩹", tag: "3-QUESTION COVER" },
   DOUBLE_SCORE: { deep: "#4a1505", accent: "#FF9A3D", glyph: "2×", tag: "DOUBLE POINTS", typographic: true },
   SECOND_CHANCE: { deep: "#0b3d26", accent: "#3DD68C", glyph: "↩", tag: "TRY AGAIN", typographic: true },
   MYSTERY: { deep: "#31174f", accent: "#C99AF0", glyph: "?", tag: "RANDOM REWARD", typographic: true },

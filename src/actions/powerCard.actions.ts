@@ -184,12 +184,44 @@ async function applyStealChance(roomId: string, stealingTeamId: string): Promise
   });
 }
 
+/**
+ * Insurance grants negative-mark immunity for the next three questions — the
+ * one live when it is used plus the next two, by the room's flow order. We
+ * store the covered question ids on the team; giveMarks reads them to
+ * auto-void penalties.
+ */
+async function applyInsuranceCoverage(roomId: string, teamId: string): Promise<void> {
+  const room = await Room.findById(roomId).select("currentQuestionId").lean();
+  if (!room) return;
+
+  // Distinct question ids in flow order across the room's QUESTION scenes.
+  const questionScenes = await Scene.find({ roomId, type: "QUESTION", questionId: { $ne: null } })
+    .sort({ order: 1 })
+    .select("questionId")
+    .lean();
+  const order: string[] = [];
+  for (const scene of questionScenes) {
+    const qid = scene.questionId?.toString();
+    if (qid && !order.includes(qid)) order.push(qid);
+  }
+  if (order.length === 0) return;
+
+  // Start at the live question; if none is active yet, cover from the first.
+  const startId = room.currentQuestionId ? room.currentQuestionId.toString() : order[0];
+  const startIndex = order.indexOf(startId);
+  const window = startIndex >= 0 ? order.slice(startIndex, startIndex + 3) : order.slice(0, 3);
+  if (window.length === 0) return;
+
+  await Team.findByIdAndUpdate(teamId, { $addToSet: { insuredQuestionIds: { $each: window } } });
+}
+
 async function applyImmediatePowerEffect(
   roomId: string,
   teamId: string,
   effectType: string
 ): Promise<void> {
   if (effectType === "STEAL") await applyStealChance(roomId, teamId);
+  if (effectType === "INSURANCE") await applyInsuranceCoverage(roomId, teamId);
 }
 
 /** Create a power card in the host's global catalog. Card names must be unique per host (case-insensitive). */

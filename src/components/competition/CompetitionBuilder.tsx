@@ -13,7 +13,8 @@ import {
   duplicateCompetition,
   updateCompetition,
 } from "@/actions/competition.actions";
-import { createRoom, deleteRoom, startRoomEvent, startRoomTestMode } from "@/actions/room.actions";
+import { createRoom, deleteRoom, resetRoom, startRoomEvent, startRoomTestMode } from "@/actions/room.actions";
+import { RoomResetModal } from "@/components/room/RoomResetModal";
 import type { CompetitionRecord } from "@/data/queries/competition.queries";
 import type { RoomSummary } from "@/data/queries/room.queries";
 import type { BadgeProps } from "@/components/ui/Badge";
@@ -603,6 +604,7 @@ function RoomCard({ room }: { room: RoomSummary }) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [resetOpen, setResetOpen] = useState(false);
   const router = useRouter();
   const teamsDone = room.teamCount > 0;
   const roundsDone = room.roundCount > 0;
@@ -642,6 +644,19 @@ function RoomCard({ room }: { room: RoomSummary }) {
         router.push(`/host/${room.id}`);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Could not go live.");
+      }
+    });
+  }
+
+  function reset(removeTeams: boolean) {
+    setError(null);
+    startTransition(async () => {
+      try {
+        await resetRoom(room.id, "RESET", removeTeams);
+        setResetOpen(false);
+        router.refresh();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not reset room.");
       }
     });
   }
@@ -702,12 +717,25 @@ function RoomCard({ room }: { room: RoomSummary }) {
         >
           Go Live
         </Button>
+        {teamsDone && (
+          <Button
+            variant="subtle"
+            size="md"
+            onClick={() => setResetOpen(true)}
+            disabled={pending}
+            className="ml-auto"
+            aria-label={`Reset room ${room.name}`}
+          >
+            <Icon name="rotate-ccw" size={14} />
+            Reset
+          </Button>
+        )}
         <Button
           variant="danger"
           size="md"
           onClick={() => setDeleteOpen(true)}
           disabled={pending}
-          className="ml-auto"
+          className={teamsDone ? "" : "ml-auto"}
           aria-label={`Delete room ${room.name}`}
         >
           <Icon name="trash-2" size={14} />
@@ -716,6 +744,13 @@ function RoomCard({ room }: { room: RoomSummary }) {
       </div>
       <ErrorText error={error} />
       <DeleteRoomModal room={room} open={deleteOpen} onClose={() => setDeleteOpen(false)} />
+      <RoomResetModal
+        key={resetOpen ? "open" : "closed"}
+        open={resetOpen}
+        pending={pending}
+        onClose={() => setResetOpen(false)}
+        onReset={reset}
+      />
     </Card>
   );
 }

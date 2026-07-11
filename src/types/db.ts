@@ -162,10 +162,14 @@ export type PowerCardRarity = (typeof POWER_CARD_RARITIES)[number];
 // Base set is what the spec named explicitly (HINT/EXTRA_TIME/BLOCK_NEGATIVE/
 // DOUBLE_SCORE/SECOND_CHANCE/MYSTERY); GAMBLE/FREEZE/STEAL are added so every
 // named example card (Gamble, Freeze, Steal Chance) maps to a real effect.
+// INSURANCE is a stronger sibling of BLOCK_NEGATIVE: Shield (BLOCK_NEGATIVE)
+// voids a negative on the current question only; Insurance (INSURANCE) shields
+// a team from all negatives across three rounds.
 export const POWER_CARD_EFFECT_TYPES = [
   "HINT",
   "EXTRA_TIME",
   "BLOCK_NEGATIVE",
+  "INSURANCE",
   "DOUBLE_SCORE",
   "SECOND_CHANCE",
   "MYSTERY",
@@ -410,6 +414,8 @@ export interface ITeam {
   /** The team's rank before the most recent recalculation — powers comeback detection. */
   previousRank: number;
   stats: TeamStats;
+  /** Question ids this team is shielded from negative marks on (Insurance card). */
+  insuredQuestionIds: string[];
   createdAt: Date;
   updatedAt: Date;
 }

@@ -12,6 +12,8 @@ export interface TeamRecord {
   score: number;
   rank: number;
   coins: number;
+  /** Question ids this team is insured against negative marks on. */
+  insuredQuestionIds: string[];
 }
 
 export async function getTeamsByRoom(roomId: string): Promise<TeamRecord[]> {
@@ -27,6 +29,7 @@ export async function getTeamsByRoom(roomId: string): Promise<TeamRecord[]> {
       score: t.score,
       rank: t.rank,
       coins: t.coins,
+      insuredQuestionIds: t.insuredQuestionIds ?? [],
     })
   );
 }

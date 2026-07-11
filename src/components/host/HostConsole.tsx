@@ -228,6 +228,9 @@ export function HostConsole({
   const questionIndex = round && question ? round.questionIds.indexOf(question.id) + 1 : null;
   const connectedCount = room.onlineDevices || participants.length;
   const revealedHints = question ? (revealedHintsByQuestion[question.id] ?? 0) : 0;
+  // Where the host is in the flow — 112 steps is too many to track by memory.
+  const stepIndex = current ? scenes.findIndex((scene) => scene.id === current.id) + 1 : 0;
+  const stepFraction = scenes.length > 0 && stepIndex > 0 ? stepIndex / scenes.length : 0;
 
   const setupChecklist = [
     { label: "Teams", ready: teams.length > 0 },
@@ -341,6 +344,32 @@ export function HostConsole({
     setScoringOpen(true);
   }
 
+  // One-tap correct/wrong for the current question. Awards the round's
+  // marks to the given team (the assigned team by default) with the right
+  // reason, and floats the delta — same path as the Give Marks panel, just
+  // without the modal. Negative marks on an insured team are voided
+  // server-side (see giveMarks).
+  function quickMark(teamId: string, correct: boolean) {
+    if (!teamId) return;
+    const magnitude = correct
+      ? Math.abs(round?.positiveMarks ?? 10)
+      : Math.abs(round?.negativeMarks ?? 5);
+    const points = correct ? magnitude : -magnitude;
+    if (points !== 0) {
+      setScoreFloat({ id: Date.now(), points, team: teamById.get(teamId)?.name ?? "Team" });
+    }
+    action(() =>
+      giveMarks({
+        roomId: room.id,
+        teamId,
+        points,
+        reason: correct ? "CORRECT" : "WRONG",
+        participantId: null,
+        questionId: question?.id ?? null,
+      })
+    );
+  }
+
   function toggleTimer() {
     action(() =>
       timerRunning ? pauseTimer(room.id) : startTimer(room.id, Number(current?.settings?.timer ?? 30))
@@ -382,7 +411,15 @@ export function HostConsole({
     // (its surfaces/text tokens assume a dark backdrop). See globals.css.
     <div data-theme="dark" className="h-screen bg-shell text-ink-2 flex flex-col overflow-hidden">
       {/* TOP BAR */}
-      <div className="min-h-16 border-b border-line/[.07] px-3 sm:px-4 py-2 flex items-center gap-2 sm:gap-3 flex-wrap shrink-0">
+      <div className="relative min-h-16 border-b border-line/[.07] px-3 sm:px-4 py-2 flex items-center gap-2 sm:gap-3 flex-wrap shrink-0">
+        {/* Flow progress — a thin fill along the bottom edge of the bar. */}
+        {scenes.length > 0 && (
+          <span
+            aria-hidden
+            className="absolute left-0 bottom-0 h-[2px] bg-accent/70 transition-[width] duration-500"
+            style={{ width: `${stepFraction * 100}%` }}
+          />
+        )}
         <div className="flex flex-col min-w-0">
           <span className="text-[10px] font-mono text-mute-2 tracking-[.1em] truncate">
             {room.competitionTitle}
@@ -400,7 +437,16 @@ export function HostConsole({
           <Icon name="users" size={13} />
           {connectedCount} Connected
         </span>
-        <span className="ml-auto font-mono text-lg sm:text-xl font-black text-ink tabular-nums shrink-0">
+        {stepIndex > 0 && (
+          <span className="ml-auto hidden md:inline font-mono text-[11px] text-mute-2 bg-line/[.05] border border-line/[.08] rounded-md px-2 py-1 shrink-0">
+            STEP {stepIndex}/{scenes.length}
+          </span>
+        )}
+        <span
+          className={`${stepIndex > 0 ? "" : "ml-auto "}font-mono text-lg sm:text-xl font-black tabular-nums shrink-0 transition-colors duration-500 ${
+            TIMER_URGENCY_TEXT[timerUrgency(secondsLeft, Number(current?.settings?.timer ?? 30))]
+          }`}
+        >
           {timerDisplay}
         </span>
         <Button
@@ -412,22 +458,39 @@ export function HostConsole({
         >
           Reset Room
         </Button>
-        <Button
-          variant="primary"
-          size="sm"
-          onClick={() => action(() => startEvent(room.id))}
-          disabled={pending || scenes.length === 0 || room.status === "LIVE"}
-          className="shrink-0"
-        >
-          {room.status === "LIVE" ? "Live" : room.status === "TESTING" ? "Start Test" : "Start Event"}
-        </Button>
+        {/* Once the room is LIVE the button used to linger as a dead, disabled
+            "Live" pill — the status badge already says LIVE, so just hide it. */}
+        {room.status !== "LIVE" && (
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => action(() => startEvent(room.id))}
+            disabled={pending || scenes.length === 0}
+            className="shrink-0"
+          >
+            {room.status === "TESTING" ? "Start Test" : "Start Event"}
+          </Button>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[260px_minmax(0,1fr)] xl:grid-cols-[260px_minmax(0,1fr)_360px] flex-1 min-h-0 overflow-y-auto xl:overflow-hidden">
         {/* LEFT PANEL — EVENT FLOW */}
         <aside className="hidden lg:flex flex-col border-r border-line/[.07] min-h-0">
-          <div className="px-4 py-3 text-[11px] font-mono font-semibold tracking-[.12em] text-label">
+          <div className="px-4 py-3 flex items-center gap-2 text-[11px] font-mono font-semibold tracking-[.12em] text-label">
             EVENT FLOW
+            {scenes.length > 0 && <span className="text-dim-2">· {scenes.length}</span>}
+            {room.currentSceneId && (
+              <button
+                onClick={() =>
+                  document
+                    .getElementById("host-live-scene")
+                    ?.scrollIntoView({ behavior: "smooth", block: "center" })
+                }
+                className="ml-auto rounded-md border border-line/[.1] bg-line/[.05] px-2 py-1 text-[9.5px] font-sans font-bold tracking-[.04em] text-ink-3 hover:text-ink cursor-pointer"
+              >
+                ⦿ LIVE
+              </button>
+            )}
           </div>
           <div className="flex-1 overflow-y-auto px-3 pb-3 flex flex-col gap-3">
             {flowGroups.length === 0 ? (
@@ -456,6 +519,7 @@ export function HostConsole({
                     return (
                       <div
                         key={scene.id}
+                        id={scene.id === room.currentSceneId ? "host-live-scene" : undefined}
                         className={`relative overflow-hidden rounded-xl border pl-3 pr-2 py-2 flex items-center gap-2 ${
                         scene.id === room.currentSceneId
                           ? "border-white/55 bg-white/[.11] ring-1 ring-white/15"
@@ -529,7 +593,7 @@ export function HostConsole({
                   ? "Answer Revealed"
                   : liveStatus === "TIMER_RUNNING"
                     ? "Timer Running"
-                    : "Waiting"}
+                    : "Timer Idle"}
               </span>
             )}
           </div>
@@ -570,10 +634,22 @@ export function HostConsole({
               />
             ) : (
               <>
-                <div className="w-full max-w-[720px] rounded-[28px] border border-line/[.09] bg-[rgba(18,20,27,.82)] p-8 flex flex-col items-center text-center gap-4">
-                  <span className="text-[11px] font-semibold text-accent bg-accent/15 rounded-full px-3 py-1">
-                    {current?.type ?? "NO SCENE"}
-                  </span>
+                <div className="relative overflow-hidden w-full max-w-[720px] rounded-[28px] border border-line/[.09] bg-[rgba(18,20,27,.82)] p-8 flex flex-col items-center text-center gap-4">
+                  <span
+                    aria-hidden
+                    className="absolute inset-x-10 top-0 h-px"
+                    style={{ background: "linear-gradient(90deg, transparent, rgba(108,123,250,.6), transparent)" }}
+                  />
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] font-semibold text-accent bg-accent/15 rounded-full px-3 py-1">
+                      {current?.type ?? "NO SCENE"}
+                    </span>
+                    {stepIndex > 0 && (
+                      <span className="text-[10px] font-mono text-mute-2 bg-line/[.05] border border-line/[.08] rounded-full px-2.5 py-1">
+                        {stepIndex} / {scenes.length}
+                      </span>
+                    )}
+                  </div>
                   {round && <span className="text-[12px] text-mute-2">{round.title}</span>}
                   {question && assignedTeam && (
                     <div className="flex items-center gap-2 rounded-xl border border-accent/35 bg-accent/[.1] px-4 py-2">
@@ -599,7 +675,13 @@ export function HostConsole({
                       )}
                     </div>
                   )}
-                  <span className="font-mono text-3xl font-black text-ink tabular-nums">{timerDisplay}</span>
+                  <span
+                    className={`font-mono text-3xl font-black tabular-nums transition-colors duration-500 ${
+                      TIMER_URGENCY_TEXT[timerUrgency(secondsLeft, Number(current?.settings?.timer ?? 30))]
+                    }`}
+                  >
+                    {timerDisplay}
+                  </span>
                 </div>
 
                 {question && (
@@ -647,6 +729,47 @@ export function HostConsole({
                   <span className="text-[12px] text-mute-2">
                     Answer: <b className="text-ink-2">{question.answer}</b>
                   </span>
+
+                  {/* One-tap scoring for this question's team. */}
+                  <div className="flex flex-col gap-1.5 rounded-xl border border-line/[.1] bg-line/[.03] p-2.5 mt-0.5">
+                    <span className="text-[10px] font-semibold tracking-[.1em] text-label">
+                      MARK ANSWER{assignedTeam ? ` · ${assignedTeam.name}` : ""}
+                    </span>
+                    <div className="grid grid-cols-2 gap-2">
+                      <Button
+                        variant="success"
+                        size="sm"
+                        disabled={pending || teams.length === 0}
+                        onClick={() =>
+                          assignedTeamId
+                            ? quickMark(assignedTeamId, true)
+                            : openScoring(teams[0]?.id ?? "", Math.abs(round?.positiveMarks ?? 10))
+                        }
+                        className="justify-center"
+                      >
+                        ✓ Correct +{Math.abs(round?.positiveMarks ?? 10)}
+                      </Button>
+                      <Button
+                        variant="danger"
+                        size="sm"
+                        disabled={pending || teams.length === 0 || round?.specialMode === "BONUS"}
+                        onClick={() =>
+                          assignedTeamId
+                            ? quickMark(assignedTeamId, false)
+                            : openScoring(teams[0]?.id ?? "", -Math.abs(round?.negativeMarks ?? 5))
+                        }
+                        className="justify-center"
+                      >
+                        ✗ Wrong −{Math.abs(round?.negativeMarks ?? 5)}
+                      </Button>
+                    </div>
+                    {!assignedTeam && (
+                      <span className="text-[10.5px] text-mute-2">
+                        No team assigned — you&apos;ll pick the team next.
+                      </span>
+                    )}
+                  </div>
+
                   {revealedHints > 0 && (
                     <div className="flex flex-col gap-1 mt-1">
                       {question.hints.slice(0, revealedHints).map((hint, i) => (
@@ -692,6 +815,25 @@ export function HostConsole({
               >
                 {timerDisplay}
               </span>
+              {(() => {
+                const total = Number(current?.settings?.timer ?? 30) || 30;
+                const fraction = secondsLeft === null ? 0 : Math.max(0, Math.min(1, secondsLeft / total));
+                const urgency = timerUrgency(secondsLeft, total);
+                const barColor: Record<typeof urgency, string> = {
+                  idle: "var(--color-accent)",
+                  safe: "#3DD68C",
+                  warning: "#E8A33D",
+                  critical: "#FF5A5A",
+                };
+                return (
+                  <div className="h-1.5 rounded-full bg-line/[.08] overflow-hidden">
+                    <div
+                      className="h-full rounded-full transition-[width,background-color] duration-500 ease-linear"
+                      style={{ width: `${fraction * 100}%`, background: barColor[urgency] }}
+                    />
+                  </div>
+                );
+              })()}
               <div className="grid grid-cols-2 gap-2">
                 <Button variant="primary" onClick={() => action(() => startTimer(room.id, Number(current?.settings?.timer ?? 30)))} disabled={pending}>
                   Start
@@ -714,6 +856,8 @@ export function HostConsole({
               {teams.map((team) => {
                 const owned = ownedByTeam.get(team.id) ?? [];
                 const expanded = expandedTeamId === team.id;
+                const maxScore = Math.max(...teams.map((t) => t.score));
+                const isLeader = maxScore > 0 && team.score === maxScore;
                 return (
                   <div key={team.id} className="rounded-xl border border-line/[.07] bg-elev overflow-hidden">
                     <button
@@ -721,7 +865,10 @@ export function HostConsole({
                       className="w-full flex items-center gap-2 px-3 py-2 text-left cursor-pointer"
                     >
                       <span className="w-2 h-2 rounded-full shrink-0" style={{ background: team.color ?? "#6C7BFA" }} />
-                      <span className="text-[12.5px] font-semibold text-ink-2 truncate">{team.name}</span>
+                      <span className="text-[12.5px] font-semibold text-ink-2 truncate">
+                        {team.name}
+                        {isLeader && <span className="ml-1" title="Current leader">👑</span>}
+                      </span>
                       <span className="ml-auto flex items-center gap-2 text-[11px] font-mono shrink-0">
                         <span className="flex items-center gap-1 text-warn">
                           <Icon name="coins" size={11} />
@@ -1340,6 +1487,7 @@ export function HostConsole({
           .filter((c): c is PowerCardRecord => Boolean(c))
           .map((c) => ({ name: c.name, icon: c.icon, effectType: c.effectType }))}
         roundMode={round?.specialMode ?? "NONE"}
+        insured={Boolean(question?.id && teamById.get(scoringTeamId)?.insuredQuestionIds?.includes(question.id))}
         initialValue={scoringSeed}
         pending={pending}
         onSubmit={(input) => {
@@ -1577,6 +1725,7 @@ const EFFECT_LABEL: Record<PowerCardEffectType, string> = {
   HINT: "Hint unlocked",
   EXTRA_TIME: "Extra time",
   BLOCK_NEGATIVE: "Shield — blocks one negative",
+  INSURANCE: "Insurance — no negatives for 3 questions",
   DOUBLE_SCORE: "Double Points — next correct counts 2×",
   SECOND_CHANCE: "Second Chance — may answer again",
   MYSTERY: "Mystery effect",
@@ -1594,6 +1743,7 @@ function ScoringModal({
   participants,
   activeEffects,
   roundMode,
+  insured,
   initialValue,
   pending,
   onSubmit,
@@ -1606,6 +1756,7 @@ function ScoringModal({
   participants: ParticipantRecord[];
   activeEffects: ActiveEffect[];
   roundMode: SpecialRoundMode;
+  insured: boolean;
   initialValue: number;
   pending: boolean;
   onSubmit: (input: { teamId: string; points: number; reason: ScoreReason; participantId: string }) => void;
@@ -1722,6 +1873,12 @@ function ScoringModal({
         {combo && (
           <div className="rounded-xl border border-accent/40 bg-[linear-gradient(90deg,rgba(108,123,250,.16),rgba(61,214,140,.16))] px-3 py-2 text-[12px] font-semibold text-ink">
             🔥 COMBO · Safe Double Attack — this team is doubled and protected.
+          </div>
+        )}
+
+        {insured && (
+          <div className="rounded-xl border border-info/40 bg-info/[.1] px-3 py-2 text-[12px] font-semibold text-info">
+            🩹 Insurance active — negative marks are auto-blocked for this team on this question.
           </div>
         )}
 

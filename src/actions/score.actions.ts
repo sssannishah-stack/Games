@@ -169,11 +169,36 @@ export async function giveMarks(input: {
   const user = await requireUser();
   await assertRoomOwnership(input.roomId, user.id);
   await connectToDatabase();
-  const room = await Room.findById(input.roomId).select("status currentRoundId").lean();
-  if (room?.currentRoundId && input.points < 0) {
-    const currentRound = await Round.findById(room.currentRoundId).select("specialMode").lean();
-    if (currentRound?.specialMode === "BONUS") {
-      throw new Error("Bonus rounds do not allow negative marks.");
+  const room = await Room.findById(input.roomId).select("status currentRoundId currentQuestionId").lean();
+  if (input.points < 0) {
+    if (room?.currentRoundId) {
+      const currentRound = await Round.findById(room.currentRoundId).select("specialMode").lean();
+      if (currentRound?.specialMode === "BONUS") {
+        throw new Error("Bonus rounds do not allow negative marks.");
+      }
+    }
+
+    // Insurance: a covered team takes no negative marks on an insured
+    // question. Enforced server-side so the penalty is voided regardless of
+    // what the host enters, then logged so the block is visible in the timeline.
+    const questionId = room?.currentQuestionId?.toString();
+    if (questionId) {
+      const team = await Team.findById(input.teamId).select("insuredQuestionIds").lean();
+      if (team?.insuredQuestionIds?.includes(questionId)) {
+        await EventLog.create({
+          roomId: input.roomId,
+          type: "POWER_CARD_USED",
+          metadata: {
+            teamId: input.teamId,
+            source: "INSURANCE_BLOCK",
+            blockedPoints: input.points,
+            text: "Insurance blocked a negative mark",
+          },
+        });
+        revalidatePath(`/host/${input.roomId}`);
+        revalidatePath(`/admin/rooms/${input.roomId}`);
+        return;
+      }
     }
   }
   if (room?.status === "TESTING") {

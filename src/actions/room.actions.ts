@@ -36,6 +36,7 @@ import {
   ensureRoomDefaultPowerCardsForTeams,
   resetRoomPowerCardsToDefaults,
 } from "@/lib/starterPowerCards";
+import { applyQuestionTeamAssignments } from "@/actions/scene.actions";
 
 export interface CreateRoomArgs {
   competitionId: string;
@@ -261,16 +262,25 @@ export async function startRoomEvent(roomId: string): Promise<void> {
     user.id
   );
 
+  // Re-stamp question→team assignments from the current rounds + roster, so a
+  // Fixed/Random Team order set after the flow was generated still takes hold.
+  await applyQuestionTeamAssignments(roomId, room.competitionId);
+
   // Economy Mode: fund every team's wallet and open the store up front if
-  // the host configured it to always be open. Guarded so restarting an
-  // already-live room never grants a second starting bonus.
+  // the host configured it to always be open. Guard on whether a starting
+  // bonus was already granted (not just room status) so neither restarting
+  // a live room nor going live right after a reset — which re-grants the
+  // opening wallet itself — hands out a second bonus.
   const economy = competition?.settings?.economy;
-  if (economy?.enabled && room.status !== "LIVE") {
-    await grantStartingCoins(
-      roomId,
-      teams.map((t) => t._id.toString()),
-      economy.startingCoins
-    );
+  if (economy?.enabled) {
+    const alreadyFunded = await CoinTransaction.exists({ roomId, type: "STARTING_BONUS" });
+    if (!alreadyFunded) {
+      await grantStartingCoins(
+        roomId,
+        teams.map((t) => t._id.toString()),
+        economy.startingCoins
+      );
+    }
   }
 
   await Room.findByIdAndUpdate(roomId, {
@@ -286,20 +296,36 @@ export async function startRoomEvent(roomId: string): Promise<void> {
 }
 
 /**
- * Host test-runs the room flow without funding wallets or writing real score
- * transactions. The host console still works for scenes/timers/broadcasts.
+ * Host test-runs the room flow. Scores stay in test scope, but Economy Mode
+ * wallets ARE funded — otherwise the store/power-card economy can't be
+ * exercised in a test at all (teams sit at 0 coins).
  */
 export async function startRoomTestMode(roomId: string): Promise<void> {
   const user = await requireUser();
   const room = await assertRoomOwnership(roomId, user.id);
   await connectToDatabase();
 
-  const [teams, sceneCount] = await Promise.all([
+  const [teams, sceneCount, competition] = await Promise.all([
     Team.find({ roomId }).select("_id").lean(),
     Scene.countDocuments({ roomId }),
+    Competition.findById(room.competitionId).select("settings.economy").lean(),
   ]);
   if (teams.length === 0) throw new Error("Add at least one team before testing the event.");
   if (sceneCount === 0) throw new Error("Generate the scene flow before testing the event.");
+
+  // Re-stamp question→team assignments so a Fixed/Random Team order set after
+  // the flow was generated shows up when testing too.
+  await applyQuestionTeamAssignments(roomId, room.competitionId);
+
+  // Fund the opening wallet once (same idempotent guard as Go Live) so a
+  // test can actually reach the store; a reset clears it before a re-run.
+  const economy = competition?.settings?.economy;
+  if (economy?.enabled) {
+    const alreadyFunded = await CoinTransaction.exists({ roomId, type: "STARTING_BONUS" });
+    if (!alreadyFunded) {
+      await grantStartingCoins(roomId, teams.map((t) => t._id.toString()), economy.startingCoins);
+    }
+  }
 
   await Room.findByIdAndUpdate(roomId, {
     $set: {
@@ -362,6 +388,7 @@ export async function resetRoom(
               rank: 0,
               previousRank: 0,
               coins: 0,
+              insuredQuestionIds: [],
               stats: {
                 correctAnswers: 0,
                 wrongAnswers: 0,
@@ -401,6 +428,18 @@ export async function resetRoom(
   // join — nothing to restore to defaults yet.
   if (!removeTeams) {
     await resetRoomPowerCardsToDefaults(teamIds, roomId, user.id);
+
+    // Economy Mode: reset means "back to the starting state", and the
+    // starting state includes each team's opening wallet — otherwise a
+    // reset room shows 0 coins and the store is unusable until Go Live.
+    // (The coin ledger was just wiped above, so this is the only balance.)
+    const competition = await Competition.findById(room.competitionId)
+      .select("settings.economy")
+      .lean();
+    const economy = competition?.settings?.economy;
+    if (economy?.enabled && teamIds.length > 0) {
+      await grantStartingCoins(roomId, teamIds, economy.startingCoins);
+    }
   }
 
   revalidatePath(`/admin/rooms/${roomId}`);

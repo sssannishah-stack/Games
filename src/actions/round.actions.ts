@@ -5,6 +5,7 @@ import { connectToDatabase } from "@/lib/database/mongodb";
 import { Round, Question, Room } from "@/models";
 import { requireUser } from "@/lib/auth/getCurrentUser";
 import { assertRoundOwnership } from "@/lib/authz";
+import { applyQuestionTeamAssignments } from "@/actions/scene.actions";
 import {
   createRoundSchema,
   updateRoundSchema,
@@ -36,6 +37,17 @@ export async function updateRound(roundId: string, input: UpdateRoundInput): Pro
 
   await connectToDatabase();
   await Round.findByIdAndUpdate(roundId, { $set: data });
+
+  // Question→team assignment is derived from the round's questionAssignment
+  // mode. If it changed, re-stamp every room running this round so a
+  // Fixed/Random Team order actually shows up on the question scenes instead
+  // of the host seeing no team.
+  if (data.questionAssignment !== undefined) {
+    const rooms = await Room.find({ selectedRounds: roundId }).select("_id competitionId").lean();
+    await Promise.all(
+      rooms.map((room) => applyQuestionTeamAssignments(room._id.toString(), room.competitionId))
+    );
+  }
 
   refreshRoundPaths(roundId);
 }

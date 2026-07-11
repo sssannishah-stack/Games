@@ -15,7 +15,7 @@ import { NumberTicker } from "@/components/motion/NumberTicker";
 import { PowerCardFace } from "@/components/power-card/PowerCardFace";
 import { FlippablePowerCard } from "@/components/power-card/FlippablePowerCard";
 import { powerCardPlayability, type PowerPlayContext } from "@/lib/powerCardPlay";
-import { timerUrgency, TIMER_URGENCY_RING, TIMER_URGENCY_TEXT, TIMER_URGENCY_GLOW } from "@/lib/timerUrgency";
+import { timerUrgency, TIMER_URGENCY_TEXT, TIMER_URGENCY_GLOW } from "@/lib/timerUrgency";
 import { useMotionEnabled } from "@/components/motion/useMotionEnabled";
 import type { PublicRoomInfo } from "@/data/queries/room.queries";
 import type { TeamRecord } from "@/data/queries/team.queries";
@@ -524,8 +524,11 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
       <div className="max-w-[520px] mx-auto min-h-[100dvh] flex flex-col px-4 pt-4 pb-5">
         <header className="flex items-center gap-3 shrink-0">
           <div
-            className="w-10 h-10 rounded-2xl flex items-center justify-center text-sm font-bold text-white"
-            style={{ background: live?.team?.color ?? "#6C7BFA" }}
+            className="w-10 h-10 rounded-2xl flex items-center justify-center text-sm font-black text-white"
+            style={{
+              background: `linear-gradient(135deg, ${live?.team?.color ?? "#6C7BFA"}, color-mix(in oklab, ${live?.team?.color ?? "#6C7BFA"} 70%, black))`,
+              boxShadow: `0 0 0 2px color-mix(in oklab, ${live?.team?.color ?? "#6C7BFA"} 30%, transparent), 0 6px 16px color-mix(in oklab, ${live?.team?.color ?? "#6C7BFA"} 25%, transparent)`,
+            }}
           >
             {(live?.team?.name ?? participant.teamName).charAt(0).toUpperCase()}
           </div>
@@ -701,6 +704,7 @@ const EFFECT_ICON: Record<string, string> = {
   HINT: "💡",
   EXTRA_TIME: "⏱",
   BLOCK_NEGATIVE: "🛡",
+  INSURANCE: "🩹",
   DOUBLE_SCORE: "⚡",
   SECOND_CHANCE: "↩",
   MYSTERY: "🎁",
@@ -759,11 +763,13 @@ function StatusStrip({
   return (
     <div className="mt-4 flex flex-col gap-2">
       <div className="grid grid-cols-4 gap-2">
-        <Metric label="Rank" value={live.team ? `#${live.team.rank}` : "-"} />
-        <Metric label="Score" numeric={live.team?.score} shake={shake} />
-        <Metric label="Coins" numeric={live.team?.coins} accent="#E8C84A" />
+        <Metric label="Rank" icon="medal" tone="#6C7BFA" value={live.team ? `#${live.team.rank}` : "-"} />
+        <Metric label="Score" icon="zap" tone="#3DD68C" numeric={live.team?.score} shake={shake} />
+        <Metric label="Coins" icon="coins" tone="#E8C84A" numeric={live.team?.coins} accent="#E8C84A" />
         <Metric
           label="Timer"
+          icon="timer"
+          tone={timerAccent[timerUrgency(seconds, live.question?.timer ?? 30)] ?? "#8EA0B8"}
           value={seconds === null ? "--" : `${seconds}s`}
           accent={timerAccent[timerUrgency(seconds, live.question?.timer ?? 30)]}
         />
@@ -817,22 +823,40 @@ function Metric({
   value,
   numeric,
   accent,
+  tone,
+  icon,
   shake,
 }: {
   label: string;
   value?: string;
   numeric?: number;
   accent?: string;
+  /** Color for the tile's hairline + label icon (independent of the value color). */
+  tone?: string;
+  icon?: string;
   shake?: boolean;
 }) {
+  const edge = tone ?? "var(--color-accent)";
   return (
     <div
-      className={`rounded-2xl border border-line/[.08] bg-line/[.04] px-3 py-3 ${
+      className={`relative overflow-hidden rounded-2xl border border-line/[.09] bg-gradient-to-b from-line/[.07] to-line/[.02] px-3 py-2.5 ${
         shake ? "animate-[encShake_0.5s_ease]" : ""
       }`}
     >
-      <span className="block text-[10px] text-mute-2 font-semibold tracking-[.12em]">{label}</span>
-      <span className="block text-lg font-bold mt-1" style={{ color: accent ?? "var(--color-ink)" }}>
+      {/* Per-stat accent hairline along the top edge — quiet color coding. */}
+      <span
+        aria-hidden
+        className="absolute inset-x-2.5 top-0 h-px"
+        style={{ background: `linear-gradient(90deg, transparent, color-mix(in oklab, ${edge} 60%, transparent), transparent)` }}
+      />
+      <span className="flex items-center gap-1 text-[9.5px] text-mute-2 font-bold tracking-[.14em]">
+        {icon && <Icon name={icon} size={10} style={{ color: `color-mix(in oklab, ${edge} 80%, var(--color-ink))` }} />}
+        {label}
+      </span>
+      <span
+        className="block text-[19px] font-black mt-0.5 tabular-nums tracking-[-.02em]"
+        style={{ color: accent ?? "var(--color-ink)" }}
+      >
         {numeric != null ? <NumberTicker value={numeric} duration={0.7} /> : value}
       </span>
     </div>
@@ -905,23 +929,32 @@ function BottomBar({
         {showLeaderboard && (
           <button
             onClick={() => setOpen("LEADERBOARD")}
-            className="rounded-2xl border border-line/[.09] bg-line/[.04] px-3 py-3 text-[12.5px] font-bold text-ink-2 cursor-pointer"
+            className="group rounded-2xl border border-line/[.09] bg-gradient-to-b from-line/[.06] to-line/[.02] px-3 py-2.5 cursor-pointer transition active:scale-[.97]"
           >
-            🏆 Leaderboard
+            <span className="block text-base leading-none">🏆</span>
+            <span className="block mt-1 text-[11px] font-bold text-ink-2">Leaderboard</span>
           </button>
         )}
         <button
           onClick={() => setOpen("POWERS")}
-          className="rounded-2xl border border-line/[.09] bg-line/[.04] px-3 py-3 text-[12.5px] font-bold text-ink-2 cursor-pointer"
+          className="group relative rounded-2xl border border-accent/25 bg-gradient-to-b from-accent/[.1] to-accent/[.02] px-3 py-2.5 cursor-pointer transition active:scale-[.97]"
         >
-          ⚡ Powers{inventory.length > 0 ? ` · ${inventory.length}` : ""}
+          <span className="block text-base leading-none">⚡</span>
+          <span className="block mt-1 text-[11px] font-bold text-ink-2">Powers</span>
+          {inventory.length > 0 && (
+            <span className="absolute top-1.5 right-1.5 min-w-[18px] h-[18px] rounded-full bg-accent text-white text-[10px] font-black flex items-center justify-center px-1">
+              {inventory.length}
+            </span>
+          )}
         </button>
         {storeVisible && (
           <button
             onClick={() => setOpen("STORE")}
-            className="rounded-2xl border border-warn/35 bg-warn/[.1] px-3 py-3 text-[12.5px] font-bold text-warn cursor-pointer"
+            className="relative overflow-hidden rounded-2xl border border-warn/40 bg-gradient-to-b from-warn/[.16] to-warn/[.04] px-3 py-2.5 cursor-pointer transition active:scale-[.97] shadow-[0_4px_18px_rgba(232,163,61,.15)]"
           >
-            🛒 Store
+            <span className="block text-base leading-none">🛒</span>
+            <span className="block mt-1 text-[11px] font-bold text-warn">Store</span>
+            <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-warn animate-enc-pulse" />
           </button>
         )}
       </nav>
@@ -1160,9 +1193,20 @@ function SceneScreen({
       initial={{ opacity: 0, y: 16, scale: 0.98 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       transition={{ duration: 0.25 }}
-      className="h-full min-h-[430px] rounded-[28px] border border-line/[.09] bg-card/90 shadow-[0_22px_70px_rgba(0,0,0,.44)] p-5 flex flex-col overflow-hidden"
+      className="relative h-full min-h-[430px] rounded-[28px] border border-line/[.09] bg-card/90 shadow-[0_22px_70px_rgba(0,0,0,.44)] p-5 flex flex-col overflow-hidden"
       style={{ boxShadow: `0 20px 80px color-mix(in oklab, ${accent} 18%, transparent)` }}
     >
+      {/* Scene-accent hairline + soft top glow — gives the card a lit, premium edge. */}
+      <span
+        aria-hidden
+        className="absolute inset-x-8 top-0 h-px"
+        style={{ background: `linear-gradient(90deg, transparent, color-mix(in oklab, ${accent} 65%, transparent), transparent)` }}
+      />
+      <span
+        aria-hidden
+        className="absolute inset-x-0 top-0 h-24 pointer-events-none"
+        style={{ background: `radial-gradient(60% 100% at 50% 0%, color-mix(in oklab, ${accent} 8%, transparent), transparent)` }}
+      />
       <div className="flex items-center gap-2">
         <span
           className="text-[10px] font-bold tracking-[.16em] rounded-full px-3 py-1 border"
@@ -1314,28 +1358,74 @@ function QuestionScene({
   const available = live.powers.cards.filter((card) => card.remainingUses > 0).slice(0, 3);
   const canControl = live.me?.canControl ?? false;
   const captainSubmit = live.room.answerMode === "CAPTAIN_SUBMIT";
-  const urgency = timerUrgency(seconds, live.question?.timer ?? 30);
+  const totalTimer = live.question?.timer && live.question.timer > 0 ? live.question.timer : 30;
+  const urgency = timerUrgency(seconds, totalTimer);
+  // Progress ring: full at the start, depleting clockwise as time runs out.
+  const RING_R = 36;
+  const RING_C = 2 * Math.PI * RING_R;
+  const fraction = seconds === null ? 1 : Math.max(0, Math.min(1, seconds / totalTimer));
+  const ringStroke: Record<typeof urgency, string> = {
+    idle: "var(--color-accent)",
+    safe: "#3DD68C",
+    warning: "#E8A33D",
+    critical: "#FF5A5A",
+  };
   return (
     <div className="flex-1 flex flex-col gap-4 pt-5">
       <div className="flex items-center justify-center">
         <div
-          className={`w-20 h-20 rounded-full border-[6px] bg-line/[.04] flex items-center justify-center text-2xl font-black transition-colors duration-500 ${TIMER_URGENCY_RING[urgency]} ${TIMER_URGENCY_TEXT[urgency]} ${
+          className={`relative w-[94px] h-[94px] ${
             urgency === "critical" && seconds !== null && seconds <= 5 ? "animate-enc-pulse" : ""
           }`}
-          style={{ boxShadow: `0 0 22px ${TIMER_URGENCY_GLOW[urgency]}` }}
         >
-          {seconds ?? live.question?.timer ?? "--"}
+          <svg viewBox="0 0 94 94" className="absolute inset-0 -rotate-90">
+            <circle
+              cx="47"
+              cy="47"
+              r={RING_R}
+              fill="none"
+              strokeWidth="6"
+              stroke="color-mix(in oklab, var(--color-ink) 12%, transparent)"
+            />
+            <circle
+              cx="47"
+              cy="47"
+              r={RING_R}
+              fill="none"
+              strokeWidth="6"
+              strokeLinecap="round"
+              stroke={ringStroke[urgency]}
+              strokeDasharray={RING_C}
+              strokeDashoffset={RING_C * (1 - fraction)}
+              className="transition-[stroke-dashoffset,stroke] duration-500 ease-linear"
+              style={{ filter: `drop-shadow(0 0 8px ${TIMER_URGENCY_GLOW[urgency]})` }}
+            />
+          </svg>
+          <div className="absolute inset-0 flex flex-col items-center justify-center">
+            <span className={`text-[26px] leading-none font-black tabular-nums ${TIMER_URGENCY_TEXT[urgency]}`}>
+              {seconds ?? live.question?.timer ?? "--"}
+            </span>
+            <span className="mt-0.5 text-[8.5px] font-bold tracking-[.22em] text-mute-2">SEC</span>
+          </div>
         </div>
       </div>
       {live.turn.assignedTeamId && (
         <div
-          className={`rounded-2xl border px-4 py-3 text-center ${
+          className={`relative overflow-hidden rounded-2xl border px-4 py-3 text-center ${
             live.turn.isMyTurn
-              ? "border-success/35 bg-success/[.1]"
-              : "border-warn/35 bg-warn/[.08]"
+              ? "border-success/35 bg-[linear-gradient(135deg,color-mix(in_oklab,#3DD68C_14%,transparent),color-mix(in_oklab,#3DD68C_5%,transparent))]"
+              : "border-warn/35 bg-[linear-gradient(135deg,color-mix(in_oklab,#E8A33D_12%,transparent),color-mix(in_oklab,#E8A33D_4%,transparent))]"
           }`}
         >
-          <span className={`block text-[10px] font-black tracking-[.12em] ${live.turn.isMyTurn ? "text-success" : "text-warn"}`}>
+          <span
+            aria-hidden
+            className="absolute inset-x-6 top-0 h-px"
+            style={{
+              background: `linear-gradient(90deg, transparent, ${live.turn.isMyTurn ? "rgba(61,214,140,.55)" : "rgba(232,163,61,.55)"}, transparent)`,
+            }}
+          />
+          <span className={`inline-flex items-center gap-1.5 text-[10px] font-black tracking-[.14em] ${live.turn.isMyTurn ? "text-success" : "text-warn"}`}>
+            <span className="text-[12px]">{live.turn.isMyTurn ? (live.turn.stolen ? "🥷" : "🎯") : "⏳"}</span>
             {live.turn.isMyTurn ? (live.turn.stolen ? "YOU STOLE THIS TURN" : "YOUR TEAM'S TURN") : `${live.turn.assignedTeamName ?? "ANOTHER TEAM"}'S TURN`}
           </span>
           <span className="block mt-1 text-[12px] text-mute-2">
@@ -1362,10 +1452,15 @@ function QuestionScene({
         </div>
       )}
       <div className="text-center">
-        <h1 className="text-[28px] leading-[1.08] font-black tracking-[-.03em]">
+        <h1 className="text-[28px] leading-[1.12] font-black tracking-[-.03em]">
           {live.question?.question || live.currentScene.title}
         </h1>
-        <p className="text-sm text-mute-2 mt-3">
+        <span
+          aria-hidden
+          className="mx-auto mt-3.5 block h-[3px] w-14 rounded-full"
+          style={{ background: "linear-gradient(90deg, #6C7BFA, #9BA6FF)" }}
+        />
+        <p className="text-[13px] text-mute-2 mt-3">
           {captainSubmit
             ? canControl
               ? "Discuss with your team, then submit the team's answer below."
@@ -1395,32 +1490,50 @@ function QuestionScene({
       )}
       {captainSubmit && <CaptainAnswerBox live={live} canControl={canControl} pending={pending} onSubmit={onSubmitAnswer} />}
       <div className="mt-auto">
-        <span className="text-[10px] font-semibold tracking-[.12em] text-label">AVAILABLE POWERS</span>
+        <span className="flex items-center gap-1.5 text-[10px] font-semibold tracking-[.12em] text-label">
+          <Icon name="zap" size={10} className="text-accent" />
+          AVAILABLE POWERS
+        </span>
         <div className="grid grid-cols-3 gap-2 mt-2">
           {available.length === 0 ? (
-            <div className="col-span-3 rounded-2xl border border-line/[.08] bg-line/[.03] px-3 py-3 text-center text-[12px] text-mute-2">
+            <div className="col-span-3 rounded-2xl border border-dashed border-line/[.12] bg-line/[.02] px-3 py-3.5 text-center text-[12px] text-mute-2">
               No powers available.
             </div>
           ) : (
             available.map((card) => {
               const play = powerCardPlayability(card.effectType, livePlayContext(live));
+              const usable = canControl && play.usable && card.status !== "REQUESTED";
               return (
                 <button
                   key={card.id}
-                  onClick={() => canControl && play.usable && onRequest(card)}
-                  disabled={pending || card.status === "REQUESTED" || !canControl || !play.usable}
-                  className="rounded-2xl border border-line/[.08] bg-line/[.04] px-2 py-3 text-center disabled:opacity-55"
+                  onClick={() => usable && onRequest(card)}
+                  disabled={pending || !usable}
+                  className={`group relative overflow-hidden rounded-2xl border px-2 pt-3 pb-2.5 text-center transition active:scale-[.97] ${
+                    usable
+                      ? "border-accent/25 bg-gradient-to-b from-accent/[.1] to-accent/[.02] cursor-pointer"
+                      : "border-line/[.08] bg-line/[.03] opacity-60"
+                  }`}
                 >
-                  <span className="block text-xl">{card.icon}</span>
-                  <span className="block text-[11px] font-bold text-ink mt-1 truncate">{card.name}</span>
-                  <span className="block text-[10px] text-mute-2">
+                  <span
+                    className={`mx-auto flex w-9 h-9 items-center justify-center rounded-xl text-lg border ${
+                      usable ? "border-accent/25 bg-accent/[.12]" : "border-line/[.1] bg-line/[.05]"
+                    }`}
+                  >
+                    {card.icon}
+                  </span>
+                  <span className="block text-[11px] font-bold text-ink mt-1.5 truncate">{card.name}</span>
+                  <span
+                    className={`mt-1 inline-block rounded-full px-2 py-0.5 text-[9px] font-bold tracking-[.06em] ${
+                      usable ? "bg-accent/15 text-accent" : "bg-line/[.07] text-mute-2"
+                    }`}
+                  >
                     {!canControl
-                      ? "Captain only"
+                      ? "CAPTAIN ONLY"
                       : card.status === "REQUESTED"
-                        ? "Pending"
+                        ? "PENDING"
                         : !play.usable
-                          ? "Timer off"
-                          : `${card.remainingUses} left`}
+                          ? "LOCKED"
+                          : `${card.remainingUses} LEFT`}
                   </span>
                 </button>
               );
