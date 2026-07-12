@@ -459,6 +459,27 @@ export async function revealAnswer(roomId: string): Promise<void> {
   const user = await requireUser();
   await assertRoomOwnership(roomId, user.id);
   await connectToDatabase();
+
+  const room = await Room.findById(roomId).select("currentQuestionId liveState").lean();
+  const timerRunning =
+    Boolean(room?.liveState?.timerEndsAt) &&
+    !room?.liveState?.timerPaused &&
+    new Date(room?.liveState?.timerEndsAt as unknown as Date).getTime() > Date.now();
+  if (timerRunning) {
+    throw new Error("Stop the timer before revealing the answer.");
+  }
+
+  // Jump straight to this question's Answer Reveal scene (generated right
+  // after it during scene setup) instead of just flipping a flag while
+  // staying put — one click both moves the room there and shows the answer,
+  // instead of Next (blank placeholder) + a second Reveal tap.
+  const answerScene = room?.currentQuestionId
+    ? await Scene.findOne({ roomId, type: "ANSWER_REVEAL", questionId: room.currentQuestionId }).lean<IScene>()
+    : null;
+  if (answerScene) {
+    await publishScene(roomId, answerScene._id.toString());
+  }
+
   await Room.findByIdAndUpdate(roomId, { $set: { "liveState.showAnswer": true } });
   await log(roomId, "ANSWER_REVEALED");
   refreshRoom(roomId);

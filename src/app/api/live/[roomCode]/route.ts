@@ -127,6 +127,27 @@ export async function GET(
       : null,
   ]);
 
+  // My team's MCQ answer state for the live question — finalized pick + result,
+  // or a Double Guess retry in progress (with the wrong first pick to lock out).
+  const [mcqGraded, mcqRetry] = await Promise.all([
+    selectedTeam && room.currentQuestionId
+      ? EventLog.findOne({
+          roomId: room._id,
+          type: "MCQ_GRADED",
+          "metadata.teamId": id(selectedTeam._id),
+          "metadata.questionId": id(room.currentQuestionId),
+        }).lean<IEventLog>()
+      : null,
+    selectedTeam && room.currentQuestionId
+      ? EventLog.findOne({
+          roomId: room._id,
+          type: "MCQ_RETRY",
+          "metadata.teamId": id(selectedTeam._id),
+          "metadata.questionId": id(room.currentQuestionId),
+        }).lean<IEventLog>()
+      : null,
+  ]);
+
   // Team device roles: who controls this team right now. The captain while
   // connected; otherwise the connected vice captain acts as temporary captain.
   const nowMs = Date.now();
@@ -356,6 +377,45 @@ export async function GET(
             createdAt: myAnswerLog.createdAt,
           }
         : null,
+      // My team's MCQ selection state for the live question.
+      myMcq: (() => {
+        const isMCQ = Boolean(question?.isMCQ) && currentScene?.type === "QUESTION";
+        if (!selectedTeam || !isMCQ) return null;
+        const graded = mcqGraded
+          ? {
+              optionIndex: Number(mcqGraded.metadata?.optionIndex ?? -1),
+              correct: Boolean(mcqGraded.metadata?.correct),
+              points: Number(mcqGraded.metadata?.points ?? 0),
+            }
+          : null;
+        const retryFirstPick = mcqRetry ? Number(mcqRetry.metadata?.firstPick ?? -1) : null;
+        // Answerable only when it's this team's turn (assigned rounds) and the
+        // question isn't graded yet or revealed.
+        const myTurn = !assignedTeamId || assignedTeamId === id(selectedTeam._id);
+        const canAnswer = !graded && !room.liveState?.showAnswer && myTurn;
+        return { graded, retryFirstPick, canAnswer };
+      })(),
+      // The host's most recent Correct/Wrong call on my team — a dedicated
+      // signal (not inferred from the score number moving) so the phone can
+      // show a reliable result even when the delta is 0 (Insurance/Shield
+      // voided it, or a 0-point bonus mark).
+      judgment: (() => {
+        if (!selectedTeam) return null;
+        const mySelectedId = id(selectedTeam._id);
+        const latest = recentEvents.find(
+          (log) =>
+            (log.type === "SCORE_CHANGED" || (log.type === "POWER_CARD_USED" && log.metadata?.source === "INSURANCE_BLOCK")) &&
+            id(log.metadata?.teamId) === mySelectedId &&
+            !log.metadata?.isUndo &&
+            (log.metadata?.reason === "CORRECT" || log.metadata?.reason === "WRONG")
+        );
+        if (!latest) return null;
+        return {
+          id: id(latest._id),
+          reason: latest.metadata?.reason as "CORRECT" | "WRONG",
+          points: Number(latest.metadata?.points ?? 0),
+        };
+      })(),
       competition: {
         id: id(room.competitionId),
         title: competition?.title ?? room.name,

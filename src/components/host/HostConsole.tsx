@@ -160,7 +160,6 @@ export function HostConsole({
   const [expandedTeamId, setExpandedTeamId] = useState<string | null>(null);
   const [teamCoinAmount, setTeamCoinAmount] = useState(100);
   const [teamCardId, setTeamCardId] = useState(cards[0]?.id ?? "");
-  const [revealedHintsByQuestion, setRevealedHintsByQuestion] = useState<Record<string, number>>({});
   const [scoringOpen, setScoringOpen] = useState(false);
   const [scoringTeamId, setScoringTeamId] = useState(teams[0]?.id ?? "");
   const [scoringSeed, setScoringSeed] = useState(10);
@@ -268,7 +267,6 @@ export function HostConsole({
 
   const questionIndex = round && question ? round.questionIds.indexOf(question.id) + 1 : null;
   const connectedCount = room.onlineDevices || participants.length;
-  const revealedHints = question ? (revealedHintsByQuestion[question.id] ?? 0) : 0;
   // Where the host is in the flow — 112 steps is too many to track by memory.
   const stepIndex = current ? scenes.findIndex((scene) => scene.id === current.id) + 1 : 0;
   const stepFraction = scenes.length > 0 && stepIndex > 0 ? stepIndex / scenes.length : 0;
@@ -836,8 +834,28 @@ export function HostConsole({
                   <span className="text-[12px] text-mute-2">
                     Answer: <b className="text-ink-2">{question.answer}</b>
                   </span>
+                  {question.hints.length > 0 && (
+                    <div className="flex flex-col gap-1">
+                      <span className="text-[10px] font-semibold tracking-[.1em] text-label">HINTS</span>
+                      {question.hints.map((hint, i) => (
+                        <span key={i} className="text-[11.5px] text-ink-3 bg-line/[.04] rounded-lg px-2 py-1">
+                          Hint {i + 1}: {hint.text} (-{hint.penalty})
+                        </span>
+                      ))}
+                    </div>
+                  )}
 
-                  {/* One-tap scoring for this question's team. */}
+                  {question.isMCQ ? (
+                    /* MCQ auto-grades the instant the team taps an option — no
+                       manual marking (that would double-count the score). */
+                    <div className="flex items-center gap-2 rounded-xl border border-info/25 bg-info/[.06] px-3 py-2.5 mt-0.5">
+                      <span className="text-[15px]">🅰️</span>
+                      <span className="text-[11.5px] text-ink-3">
+                        Multiple choice — auto-scored when the team taps their answer.
+                      </span>
+                    </div>
+                  ) : (
+                  /* One-tap scoring for this question's team. */
                   <div className="flex flex-col gap-1.5 rounded-xl border border-line/[.1] bg-line/[.03] p-2.5 mt-0.5">
                     <span className="text-[10px] font-semibold tracking-[.1em] text-label">
                       MARK ANSWER{assignedTeam ? ` · ${assignedTeam.name}` : ""}
@@ -890,34 +908,21 @@ export function HostConsole({
                       </span>
                     )}
                   </div>
-
-                  {revealedHints > 0 && (
-                    <div className="flex flex-col gap-1 mt-1">
-                      {question.hints.slice(0, revealedHints).map((hint, i) => (
-                        <span key={i} className="text-[11.5px] text-ink-3 bg-line/[.04] rounded-lg px-2 py-1">
-                          Hint {i + 1}: {hint.text} (-{hint.penalty})
-                        </span>
-                      ))}
-                    </div>
                   )}
-                  <div className="grid grid-cols-2 gap-2 mt-1">
-                    <Button
-                      variant="subtle"
-                      size="sm"
-                      onClick={() =>
-                        setRevealedHintsByQuestion((currentHints) => ({
-                          ...currentHints,
-                          [question.id]: Math.min((currentHints[question.id] ?? 0) + 1, question.hints.length),
-                        }))
-                      }
-                      disabled={revealedHints >= question.hints.length}
-                    >
-                      Reveal Hint
-                    </Button>
-                    <Button variant="primary" size="sm" onClick={() => action(() => revealAnswer(room.id))} disabled={pending}>
-                      Reveal Answer
-                    </Button>
-                  </div>
+
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={() => action(() => revealAnswer(room.id))}
+                    disabled={pending || timerRunning}
+                    title={timerRunning ? "Stop the timer before revealing the answer." : undefined}
+                    className="mt-1"
+                  >
+                    Reveal Answer
+                  </Button>
+                  {timerRunning && (
+                    <span className="text-[10.5px] text-mute-2">Stop the timer to reveal the answer.</span>
+                  )}
                   <SubmittedAnswers logs={logs} questionId={question.id} teamById={teamById} />
                 </>
               ) : (
@@ -1591,7 +1596,13 @@ export function HostConsole({
         <Button variant="subtle" onClick={toggleTimer} disabled={pending} className="shrink-0">
           {timerRunning ? "Pause Timer" : "Start Timer"}
         </Button>
-        <Button variant="subtle" onClick={() => action(() => revealAnswer(room.id))} disabled={pending} className="shrink-0">
+        <Button
+          variant="subtle"
+          onClick={() => action(() => revealAnswer(room.id))}
+          disabled={pending || timerRunning}
+          title={timerRunning ? "Stop the timer before revealing the answer." : undefined}
+          className="shrink-0"
+        >
           Reveal Answer
         </Button>
         <Button

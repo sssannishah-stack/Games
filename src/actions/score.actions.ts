@@ -3,11 +3,12 @@
 import { revalidatePath } from "next/cache";
 import { Types } from "mongoose";
 import { connectToDatabase } from "@/lib/database/mongodb";
-import { ScoreTransaction, Team, EventLog, Room, Round, TeamPowerCard, PowerCard, PowerCardRequest } from "@/models";
+import { ScoreTransaction, Team, EventLog, Room, Round, TeamPowerCard, PowerCard, PowerCardRequest, Scene, Question, Competition } from "@/models";
 import { createCoinTransaction } from "@/actions/coin.actions";
 import { detectAchievements } from "@/lib/detectAchievements";
 import { requireUser } from "@/lib/auth/getCurrentUser";
 import { assertRoomOwnership } from "@/lib/authz";
+import { assertTeamController } from "@/lib/teamRoles";
 import { type ScoreReason, type IScoreTransaction } from "@/types/db";
 
 export interface CreateScoreTransactionInput {
@@ -167,35 +168,30 @@ async function consumeTeamPowerCardUse(teamPowerCardId: unknown): Promise<void> 
   await owned.save();
 }
 
-export async function giveMarks(input: {
+/**
+ * Apply a mark through the power-card modifiers (Insurance void, Shield,
+ * Double Points, Gamble) and write it to the ledger + stats. The host's
+ * manual giveMarks and MCQ auto-grading both funnel through here so the
+ * modifiers behave identically. The caller must have already authorized and
+ * connected; this does not touch the timer or bonus-round validation.
+ */
+async function resolveAndApplyMark(input: {
   roomId: string;
   teamId: string;
   points: number;
   reason: ScoreReason;
+  questionId: string | null;
   participantId?: string | null;
-  questionId?: string | null;
-}): Promise<void> {
-  const user = await requireUser();
-  await assertRoomOwnership(input.roomId, user.id);
-  await connectToDatabase();
-  const room = await Room.findById(input.roomId).select("status currentRoundId currentQuestionId").lean();
-  if (input.points < 0) {
-    if (room?.currentRoundId) {
-      const currentRound = await Round.findById(room.currentRoundId).select("specialMode").lean();
-      if (currentRound?.specialMode === "BONUS") {
-        throw new Error("Bonus rounds do not allow negative marks.");
-      }
-    }
-  }
-
-  const questionId = room?.currentQuestionId?.toString();
-  const isTest = room?.status === "TESTING";
+  createdBy?: string | null;
+  isTest: boolean;
+  coinsAwarded?: number;
+}): Promise<{ finalPoints: number; blocked: boolean }> {
   let points = input.points;
+  const questionId = input.questionId;
 
   if (points < 0 && questionId) {
     // Insurance: a covered team takes no negative marks on an insured
-    // question at all — no transaction, as if it never happened. Enforced
-    // server-side so it can never be forgotten or typed around.
+    // question at all — no transaction, as if it never happened.
     const team = await Team.findById(input.teamId).select("insuredQuestionIds").lean();
     if (team?.insuredQuestionIds?.includes(questionId)) {
       await EventLog.create({
@@ -205,20 +201,18 @@ export async function giveMarks(input: {
           teamId: input.teamId,
           source: "INSURANCE_BLOCK",
           blockedPoints: points,
+          reason: input.reason,
+          points: 0,
           text: "Insurance blocked a negative mark",
         },
       });
-      revalidatePath(`/host/${input.roomId}`);
-      revalidatePath(`/admin/rooms/${input.roomId}`);
-      return;
+      return { finalPoints: 0, blocked: true };
     }
   }
 
   // Shield / Double Points / Gamble: auto-applied from whichever this team
-  // currently has ACTIVE — same reliability guarantee as Insurance, instead
-  // of relying on the host to notice and manually double/zero the number
-  // before submitting (easy to forget, and the quick Mark Answer buttons
-  // have no UI to do it at all).
+  // currently has ACTIVE, then consumed — same reliability guarantee as
+  // Insurance, whether the mark came from the host or an MCQ auto-grade.
   let consumed: { id: unknown; powerCardId: string; effectType: string } | null = null;
   if (questionId && points !== 0 && (input.reason === "CORRECT" || input.reason === "WRONG" || input.reason === "BONUS")) {
     const owned = await TeamPowerCard.find({ teamId: input.teamId, status: "ACTIVE" })
@@ -256,11 +250,8 @@ export async function giveMarks(input: {
     }
   }
 
-  if (consumed && !isTest) {
+  if (consumed && !input.isTest) {
     await consumeTeamPowerCardUse(consumed.id);
-    // Keep the matching request's status in sync too, so the Power Requests
-    // panel's "Mark Consumed" button doesn't linger on a card that was just
-    // auto-consumed here (it would otherwise error — no ACTIVE copy left).
     await PowerCardRequest.updateMany(
       { teamId: input.teamId, powerCardId: consumed.powerCardId, status: "ACTIVE" },
       { $set: { status: "CONSUMED" } }
@@ -277,33 +268,206 @@ export async function giveMarks(input: {
     });
   }
 
-  if (isTest) {
+  if (input.isTest) {
     await EventLog.create({
       roomId: input.roomId,
       type: "SCORE_CHANGED",
-      metadata: {
-        teamId: input.teamId,
-        points,
-        reason: input.reason,
-        testMode: true,
-      },
+      metadata: { teamId: input.teamId, points, reason: input.reason, testMode: true },
     });
-    revalidatePath(`/host/${input.roomId}`);
-    return;
+    return { finalPoints: points, blocked: false };
   }
 
   await createScoreTransaction({
-    ...input,
+    roomId: input.roomId,
+    teamId: input.teamId,
     points,
-    createdBy: user.id,
+    reason: input.reason,
+    participantId: input.participantId ?? null,
+    questionId: input.questionId ?? null,
+    createdBy: input.createdBy ?? null,
+    coinsAwarded: input.coinsAwarded,
   });
-
-  // Ranks + streaks are now up to date — surface any newly-earned achievements
-  // to the host as suggestions (they decide whether to grant the reward).
   await detectAchievements(input.roomId);
+  return { finalPoints: points, blocked: false };
+}
+
+export async function giveMarks(input: {
+  roomId: string;
+  teamId: string;
+  points: number;
+  reason: ScoreReason;
+  participantId?: string | null;
+  questionId?: string | null;
+}): Promise<void> {
+  const user = await requireUser();
+  await assertRoomOwnership(input.roomId, user.id);
+  await connectToDatabase();
+  const room = await Room.findById(input.roomId).select("status currentRoundId currentQuestionId").lean();
+  if (input.points < 0 && room?.currentRoundId) {
+    const currentRound = await Round.findById(room.currentRoundId).select("specialMode").lean();
+    if (currentRound?.specialMode === "BONUS") {
+      throw new Error("Bonus rounds do not allow negative marks.");
+    }
+  }
+
+  const isTest = room?.status === "TESTING";
+  // A Correct/Wrong call is the host judging the live question — stop the
+  // clock the instant that happens so the phones get a clean result signal.
+  if (!isTest && (input.reason === "CORRECT" || input.reason === "WRONG")) {
+    await Room.findByIdAndUpdate(input.roomId, { $set: { "liveState.timerPaused": true } });
+  }
+
+  await resolveAndApplyMark({
+    roomId: input.roomId,
+    teamId: input.teamId,
+    points: input.points,
+    reason: input.reason,
+    questionId: room?.currentQuestionId?.toString() ?? input.questionId ?? null,
+    participantId: input.participantId,
+    createdBy: user.id,
+    isTest,
+  });
 
   revalidatePath(`/host/${input.roomId}`);
   revalidatePath(`/admin/rooms/${input.roomId}`);
+}
+
+/**
+ * A team's captain selects an option on a live multiple-choice question. It's
+ * auto-graded against the stored answer and marks land immediately (respecting
+ * Shield/Insurance/Bonus/Double/Gamble, same as a host mark). Double Guess
+ * grants a single retry on a wrong pick; Peek's ruled-out option can't be
+ * chosen. Only the team whose turn it is (when the round assigns turns) may
+ * answer, and each team answers at most once.
+ */
+export async function submitMcqAnswer(input: {
+  roomId: string;
+  teamId: string;
+  participantId: string;
+  optionIndex: number;
+}): Promise<{ result: "CORRECT" | "WRONG" | "RETRY"; points: number }> {
+  await connectToDatabase();
+  await assertTeamController(input.teamId, input.participantId);
+
+  const room = await Room.findById(input.roomId)
+    .select("status currentSceneId currentRoundId currentQuestionId competitionId liveState.showAnswer settings.permissions.requestLifelines")
+    .lean();
+  if (!room?.currentQuestionId || !room.currentSceneId) throw new Error("No question is live.");
+  if (room.liveState?.showAnswer) throw new Error("The answer has already been revealed.");
+
+  const scene = await Scene.findById(room.currentSceneId).select("type settings").lean();
+  if (!scene || scene.type !== "QUESTION") throw new Error("Answers can only be submitted on a live question.");
+
+  const questionId = room.currentQuestionId.toString();
+  const question = await Question.findById(questionId)
+    .select("isMCQ options answer positiveMarks negativeMarks coinReward")
+    .lean();
+  if (!question?.isMCQ) throw new Error("This is not a multiple-choice question.");
+  if (input.optionIndex < 0 || input.optionIndex >= question.options.length) {
+    throw new Error("That option does not exist.");
+  }
+
+  // Turn gate: if the round assigns a team to this question, only that team answers.
+  const assignedTeamId = typeof scene.settings?.assignedTeamId === "string" ? scene.settings.assignedTeamId : null;
+  if (assignedTeamId && assignedTeamId !== input.teamId) {
+    throw new Error("It is not your team's turn to answer.");
+  }
+
+  // One graded answer per team per question.
+  const alreadyGraded = await EventLog.exists({
+    roomId: room._id,
+    type: "MCQ_GRADED",
+    "metadata.teamId": input.teamId,
+    "metadata.questionId": questionId,
+  });
+  if (alreadyGraded) throw new Error("Your team has already answered this question.");
+
+  const team = await Team.findById(input.teamId).select("peeks").lean();
+  const peekedIndex = team?.peeks?.find((p) => p.questionId === questionId)?.eliminatedOptionIndex;
+  if (peekedIndex === input.optionIndex) throw new Error("That option was ruled out by Peek.");
+
+  // A prior wrong pick this question (Double Guess retry in progress).
+  const retryLog = await EventLog.findOne({
+    roomId: room._id,
+    type: "MCQ_RETRY",
+    "metadata.teamId": input.teamId,
+    "metadata.questionId": questionId,
+  }).lean();
+  const firstWrongPick = retryLog ? Number(retryLog.metadata?.firstPick ?? -1) : -1;
+  if (firstWrongPick === input.optionIndex) throw new Error("You already tried that option — pick another.");
+
+  const correct = question.options[input.optionIndex] === question.answer;
+  const isTest = room.status === "TESTING";
+
+  const round = room.currentRoundId
+    ? await Round.findById(room.currentRoundId).select("positiveMarks negativeMarks coinReward specialMode").lean()
+    : null;
+  const isBonus = round?.specialMode === "BONUS";
+
+  // Double Guess: on a wrong first pick, if the team has an active Second
+  // Chance and hasn't retried yet, consume it and let them pick again.
+  if (!correct && !retryLog) {
+    const owned = await TeamPowerCard.find({ teamId: input.teamId, status: "ACTIVE" }).select("_id powerCardId").lean();
+    if (owned.length > 0) {
+      const cards = await PowerCard.find({ _id: { $in: owned.map((o) => o.powerCardId) } })
+        .select("_id effectType")
+        .lean();
+      const dgCardId = new Set(cards.filter((c) => c.effectType === "SECOND_CHANCE").map((c) => c._id.toString()));
+      const dg = owned.find((o) => dgCardId.has(o.powerCardId.toString()));
+      if (dg) {
+        await consumeTeamPowerCardUse(dg._id);
+        await PowerCardRequest.updateMany(
+          { teamId: input.teamId, powerCardId: dg.powerCardId, status: "ACTIVE" },
+          { $set: { status: "CONSUMED" } }
+        );
+        await EventLog.create({
+          roomId: room._id,
+          type: "MCQ_RETRY",
+          metadata: { teamId: input.teamId, questionId, firstPick: input.optionIndex },
+        });
+        revalidatePath(`/host/${input.roomId}`);
+        return { result: "RETRY", points: 0 };
+      }
+    }
+  }
+
+  // Finalize. Coins only pay out on a correct answer, and only in Economy Mode.
+  const positive = round?.positiveMarks ?? question.positiveMarks ?? 10;
+  const negative = Math.abs(round?.negativeMarks ?? question.negativeMarks ?? 5);
+  const rawPoints = correct ? positive : isBonus ? 0 : -negative;
+
+  let coins = 0;
+  if (correct) {
+    const competition = await Competition.findById(room.competitionId).select("settings.economy.enabled").lean();
+    if (competition?.settings?.economy?.enabled) coins = round?.coinReward ?? question.coinReward ?? 0;
+  }
+
+  if (!isTest && assignedTeamId) {
+    // A single assigned answerer just resolved this question — stop the clock.
+    await Room.findByIdAndUpdate(input.roomId, { $set: { "liveState.timerPaused": true } });
+  }
+
+  const { finalPoints } = await resolveAndApplyMark({
+    roomId: input.roomId,
+    teamId: input.teamId,
+    points: rawPoints,
+    reason: correct ? "CORRECT" : "WRONG",
+    questionId,
+    participantId: input.participantId,
+    createdBy: null,
+    isTest,
+    coinsAwarded: coins > 0 ? coins : undefined,
+  });
+
+  await EventLog.create({
+    roomId: room._id,
+    type: "MCQ_GRADED",
+    metadata: { teamId: input.teamId, questionId, optionIndex: input.optionIndex, correct, points: finalPoints },
+  });
+
+  revalidatePath(`/host/${input.roomId}`);
+  revalidatePath(`/admin/rooms/${input.roomId}`);
+  return { result: correct ? "CORRECT" : "WRONG", points: finalPoints };
 }
 
 /**

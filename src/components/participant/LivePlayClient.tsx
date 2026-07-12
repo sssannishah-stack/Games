@@ -5,6 +5,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { purchasePowerCard, requestPowerCard } from "@/actions/powerCard.actions";
 import { placeBid } from "@/actions/auction.actions";
 import { submitTeamAnswer } from "@/actions/room.actions";
+import { submitMcqAnswer } from "@/actions/score.actions";
 import { JoinForm, type JoinedParticipant } from "@/components/room/JoinForm";
 import { JoinPageShell } from "@/components/room/JoinPageShell";
 import { Icon } from "@/components/ui/Icon";
@@ -127,6 +128,14 @@ type LivePayload = {
   } | null;
   /** My team's own submitted answer for the current question (captain-submit mode). */
   myAnswer: { text: string; submittedBy: string; createdAt: string } | null;
+  /** My team's MCQ selection state for the live question. */
+  myMcq: {
+    graded: { optionIndex: number; correct: boolean; points: number } | null;
+    retryFirstPick: number | null;
+    canAnswer: boolean;
+  } | null;
+  /** The host's most recent Correct/Wrong call on my team. */
+  judgment: { id: string; reason: "CORRECT" | "WRONG"; points: number } | null;
   competition: { id: string; title: string };
   turn: {
     assignedTeamId: string | null;
@@ -277,8 +286,12 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
   const seededNotable = useRef(false);
   const [celebrate, setCelebrate] = useState(false);
   const [scoreShake, setScoreShake] = useState(false);
-  // A one-shot CORRECT/WRONG feedback burst driven by our own score changing.
-  const [answerFx, setAnswerFx] = useState<{ id: number; delta: number } | null>(null);
+  // A one-shot CORRECT/WRONG feedback burst driven by the host's judgment
+  // call, not the score number (which can be a 0 delta — Insurance/Shield
+  // voided it — and would otherwise show nothing at all).
+  const [answerFx, setAnswerFx] = useState<{ id: string; correct: boolean; points: number } | null>(null);
+  const lastJudgmentId = useRef<string | null>(null);
+  const seededJudgment = useRef(false);
   const prevScoreRef = useRef<number | null>(null);
   const { enabled: motionEnabled } = useMotionEnabled();
   const [pending, startTransition] = useTransition();
@@ -438,6 +451,28 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
     });
   }
 
+  function selectMcqOption(optionIndex: number) {
+    if (!live?.team || !participant) return;
+    startTransition(async () => {
+      try {
+        const res = await submitMcqAnswer({
+          roomId: live.room.id,
+          teamId: live.team!.id,
+          participantId: participant.id,
+          optionIndex,
+        });
+        if (res.result === "RETRY") {
+          setToast("Wrong — Double Guess gives you one more try!");
+          if (motionEnabled && typeof navigator !== "undefined") navigator.vibrate?.([30, 30]);
+        }
+        // CORRECT/WRONG feedback rides in on the `judgment` signal (same burst
+        // the host's manual marking triggers), so nothing else to do here.
+      } catch (err) {
+        setToast(err instanceof Error ? err.message : "Could not submit your answer.");
+      }
+    });
+  }
+
   useEffect(() => {
     if (!toast) return;
     const timeout = window.setTimeout(() => setToast(null), 2400);
@@ -502,7 +537,6 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
     const prev = prevScoreRef.current;
     prevScoreRef.current = score;
     if (prev == null || score === prev) return;
-    setAnswerFx({ id: Date.now(), delta: score - prev });
     if (score > prev) {
       setCelebrate(true);
       if (motionEnabled && typeof navigator !== "undefined") navigator.vibrate?.(35);
@@ -511,6 +545,26 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
       if (motionEnabled && typeof navigator !== "undefined") navigator.vibrate?.([40, 40, 70]);
     }
   }, [live?.team?.score, motionEnabled]);
+
+  // The reliable Correct/Wrong burst — keyed off the host's judgment call
+  // itself, so it fires exactly once per call even when points land at 0
+  // (Shield/Insurance voided the penalty). First reading only seeds the
+  // baseline so rejoining mid-game doesn't replay the last call.
+  useEffect(() => {
+    const judgment = live?.judgment;
+    if (!judgment) return;
+    if (!seededJudgment.current) {
+      seededJudgment.current = true;
+      lastJudgmentId.current = judgment.id;
+      return;
+    }
+    if (judgment.id === lastJudgmentId.current) return;
+    lastJudgmentId.current = judgment.id;
+    setAnswerFx({ id: judgment.id, correct: judgment.reason === "CORRECT", points: judgment.points });
+    if (motionEnabled && typeof navigator !== "undefined") {
+      navigator.vibrate?.(judgment.reason === "CORRECT" ? 35 : [40, 40, 70]);
+    }
+  }, [live?.judgment, motionEnabled]);
 
   useEffect(() => {
     if (!answerFx) return;
@@ -628,6 +682,7 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
                 seconds={seconds}
                 onRequest={request}
                 onSubmitAnswer={submitAnswer}
+                onSelectMcq={selectMcqOption}
                 pending={pending}
                 participantName={participant.name}
               />
@@ -649,7 +704,7 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
 
       {celebrate && <Confetti count={80} />}
       <AnimatePresence>
-        {answerFx && <AnswerFeedbackOverlay key={answerFx.id} delta={answerFx.delta} />}
+        {answerFx && <AnswerFeedbackOverlay key={answerFx.id} correct={answerFx.correct} points={answerFx.points} />}
       </AnimatePresence>
       <AnimatePresence>
         {moment && <MomentOverlay key={moment.id} moment={moment} />}
@@ -1206,6 +1261,7 @@ function SceneScreen({
   seconds,
   onRequest,
   onSubmitAnswer,
+  onSelectMcq,
   pending,
   participantName,
 }: {
@@ -1213,6 +1269,7 @@ function SceneScreen({
   seconds: number | null;
   onRequest: (card: LivePower) => void;
   onSubmitAnswer: (text: string) => void;
+  onSelectMcq: (optionIndex: number) => void;
   pending: boolean;
   participantName: string;
 }) {
@@ -1261,7 +1318,7 @@ function SceneScreen({
       {type === "WELCOME" && <WelcomeScene live={live} />}
       {type === "ROUND_INTRO" && <RoundIntroScene live={live} />}
       {type === "QUESTION" && (
-        <QuestionScene live={live} seconds={seconds} onRequest={onRequest} onSubmitAnswer={onSubmitAnswer} pending={pending} />
+        <QuestionScene live={live} seconds={seconds} onRequest={onRequest} onSubmitAnswer={onSubmitAnswer} onSelectMcq={onSelectMcq} pending={pending} />
       )}
       {type === "DRAWING" && <DrawingScene live={live} />}
       {type === "ANSWER_REVEAL" && <AnswerRevealScene live={live} />}
@@ -1379,23 +1436,31 @@ function QuestionScene({
   seconds,
   onRequest,
   onSubmitAnswer,
+  onSelectMcq,
   pending,
 }: {
   live: LivePayload;
   seconds: number | null;
   onRequest: (card: LivePower) => void;
   onSubmitAnswer: (text: string) => void;
+  onSelectMcq: (optionIndex: number) => void;
   pending: boolean;
 }) {
   const available = live.powers.cards.filter((card) => card.remainingUses > 0).slice(0, 3);
   const canControl = live.me?.canControl ?? false;
   const captainSubmit = live.room.answerMode === "CAPTAIN_SUBMIT";
   const totalTimer = live.question?.timer && live.question.timer > 0 ? live.question.timer : 30;
-  const urgency = timerUrgency(seconds, totalTimer);
+  // A paused timer (e.g. the host just called Correct/Wrong) computes to
+  // `null` seconds — remember the last real reading so the ring freezes
+  // exactly where it stopped instead of snapping back to the full duration.
+  const lastSecondsRef = useRef<number | null>(null);
+  if (seconds !== null) lastSecondsRef.current = seconds;
+  const displaySeconds = live.timer.paused ? lastSecondsRef.current : seconds;
+  const urgency = timerUrgency(displaySeconds, totalTimer);
   // Progress ring: full at the start, depleting clockwise as time runs out.
   const RING_R = 36;
   const RING_C = 2 * Math.PI * RING_R;
-  const fraction = seconds === null ? 1 : Math.max(0, Math.min(1, seconds / totalTimer));
+  const fraction = displaySeconds === null ? 1 : Math.max(0, Math.min(1, displaySeconds / totalTimer));
   const ringStroke: Record<typeof urgency, string> = {
     idle: "var(--color-accent)",
     safe: "#3DD68C",
@@ -1410,13 +1475,13 @@ function QuestionScene({
         <motion.div
           className="relative w-[94px] h-[94px]"
           animate={
-            seconds === null || urgency === "idle"
+            displaySeconds === null || urgency === "idle" || live.timer.paused
               ? { scale: 1 }
               : { scale: urgency === "critical" ? [1, 1.09, 1] : urgency === "warning" ? [1, 1.05, 1] : [1, 1.03, 1] }
           }
           transition={{
             duration: urgency === "critical" ? 0.6 : urgency === "warning" ? 0.95 : 1.6,
-            repeat: seconds === null ? 0 : Infinity,
+            repeat: displaySeconds === null || live.timer.paused ? 0 : Infinity,
             ease: "easeInOut",
           }}
         >
@@ -1451,10 +1516,20 @@ function QuestionScene({
           </svg>
           <div className="absolute inset-0 flex flex-col items-center justify-center">
             <span className={`text-[26px] leading-none font-black tabular-nums ${TIMER_URGENCY_TEXT[urgency]}`}>
-              {seconds ?? live.question?.timer ?? "--"}
+              {displaySeconds ?? live.question?.timer ?? "--"}
             </span>
-            <span className="mt-0.5 text-[8.5px] font-bold tracking-[.22em] text-mute-2">SEC</span>
+            <span className="mt-0.5 text-[8.5px] font-bold tracking-[.22em] text-mute-2">
+              {live.timer.paused ? "PAUSED" : "SEC"}
+            </span>
           </div>
+          {live.timer.paused && (
+            <span
+              aria-hidden
+              className="absolute -top-1 -right-1 w-6 h-6 rounded-full bg-shell border border-line/[.12] flex items-center justify-center text-[11px]"
+            >
+              ⏸
+            </span>
+          )}
         </motion.div>
       </div>
       {live.turn.frozen && (
@@ -1551,33 +1626,66 @@ function QuestionScene({
           );
         })()}
       </div>
-      {live.question?.isMCQ && live.question.options.length > 0 && (
-        <div className="grid grid-cols-1 gap-2">
-          {live.question.options.map((option, index) => {
-            const eliminated = live.question?.peekedOptionIndex === index;
-            return (
-              <div
-                key={option}
-                className={`flex items-center gap-3 rounded-2xl border px-4 py-3 transition-opacity ${
-                  eliminated ? "border-line/[.06] bg-line/[.02] opacity-45" : "border-line/[.08] bg-line/[.04]"
-                }`}
-              >
-                <span
-                  className={`w-7 h-7 rounded-full border flex items-center justify-center text-xs font-bold shrink-0 ${
-                    eliminated ? "bg-line/[.04] border-line/[.08] text-dim-2" : "bg-line/[.06] border-line/[.09] text-ink-3"
-                  }`}
-                >
-                  {String.fromCharCode(65 + index)}
-                </span>
-                <span className={`text-sm font-semibold ${eliminated ? "text-dim-2 line-through" : "text-ink"}`}>
-                  {option}
-                </span>
-                {eliminated && <span className="ml-auto text-[10px] font-bold text-mute-2">👁 RULED OUT</span>}
-              </div>
-            );
-          })}
-        </div>
-      )}
+      {live.question?.isMCQ && live.question.options.length > 0 && (() => {
+        const mcq = live.myMcq;
+        const graded = mcq?.graded ?? null;
+        const retryFirstPick = mcq?.retryFirstPick ?? null;
+        const answerRevealed = Boolean(live.question?.answer);
+        // Captain can pick while it's the team's turn and nothing's finalized.
+        const selectable = Boolean(mcq?.canAnswer) && canControl && !pending;
+        return (
+          <div className="flex flex-col gap-2">
+            <div className="grid grid-cols-1 gap-2">
+              {live.question!.options.map((option, index) => {
+                const eliminated = live.question?.peekedOptionIndex === index;
+                const wrongFirst = retryFirstPick === index;
+                const isMyPick = graded?.optionIndex === index;
+                const isTheAnswer = answerRevealed && option === live.question?.answer;
+                const locked = eliminated || wrongFirst || !selectable;
+
+                // Color: revealed answer > my graded pick > eliminated/first-wrong.
+                let tone = "border-line/[.08] bg-line/[.04] text-ink";
+                if (isTheAnswer) tone = "border-success/45 bg-success/[.12] text-ink";
+                else if (isMyPick) tone = graded!.correct ? "border-success/45 bg-success/[.12] text-ink" : "border-danger/40 bg-danger/[.1] text-ink";
+                else if (eliminated || wrongFirst) tone = "border-line/[.06] bg-line/[.02] opacity-45";
+
+                return (
+                  <button
+                    key={`${index}-${option}`}
+                    disabled={locked}
+                    onClick={() => selectable && onSelectMcq(index)}
+                    className={`flex items-center gap-3 rounded-2xl border px-4 py-3 text-left transition ${tone} ${
+                      selectable && !eliminated && !wrongFirst ? "cursor-pointer active:scale-[.99] hover:border-accent/40" : "cursor-default"
+                    }`}
+                  >
+                    <span className="w-7 h-7 rounded-full border border-line/[.09] bg-line/[.06] flex items-center justify-center text-xs font-bold text-ink-3 shrink-0">
+                      {String.fromCharCode(65 + index)}
+                    </span>
+                    <span className={`text-sm font-semibold ${eliminated || wrongFirst ? "line-through" : ""}`}>{option}</span>
+                    {isTheAnswer && <span className="ml-auto text-[13px]">✓</span>}
+                    {isMyPick && !isTheAnswer && <span className="ml-auto text-[13px]">{graded!.correct ? "✓" : "✗"}</span>}
+                    {eliminated && !isMyPick && <span className="ml-auto text-[9.5px] font-bold text-mute-2">👁 OUT</span>}
+                    {wrongFirst && !isMyPick && <span className="ml-auto text-[9.5px] font-bold text-mute-2">TRIED</span>}
+                  </button>
+                );
+              })}
+            </div>
+            {graded ? (
+              <span className={`text-center text-[12px] font-bold ${graded.correct ? "text-success" : "text-danger-soft"}`}>
+                {graded.correct ? `Correct · +${graded.points}` : graded.points < 0 ? `Wrong · ${graded.points}` : "Wrong"}
+              </span>
+            ) : retryFirstPick !== null ? (
+              <span className="text-center text-[12px] font-bold text-warn">↩ Double Guess — pick again</span>
+            ) : mcq && !mcq.canAnswer ? (
+              <span className="text-center text-[11px] text-mute-2">Not your team&apos;s turn to answer.</span>
+            ) : !canControl ? (
+              <span className="text-center text-[11px] text-mute-2">👑 The captain taps your team&apos;s answer.</span>
+            ) : (
+              <span className="text-center text-[11px] text-mute-2">Tap your team&apos;s answer.</span>
+            )}
+          </div>
+        );
+      })()}
       {live.question?.answer && (
         <div className="rounded-2xl border border-success/25 bg-success/[.1] px-4 py-3 text-center text-sm font-bold text-success">
           Answer: {live.question.answer}
@@ -1595,7 +1703,9 @@ function QuestionScene({
           ))}
         </div>
       )}
-      {captainSubmit && <CaptainAnswerBox live={live} canControl={canControl} pending={pending} onSubmit={onSubmitAnswer} />}
+      {captainSubmit && !live.question?.isMCQ && (
+        <CaptainAnswerBox live={live} canControl={canControl} pending={pending} onSubmit={onSubmitAnswer} />
+      )}
       <div className="mt-auto">
         <span className="flex items-center gap-1.5 text-[10px] font-semibold tracking-[.12em] text-label">
           <Icon name="zap" size={10} className="text-accent" />
@@ -2236,9 +2346,12 @@ function MomentOverlay({ moment }: { moment: LiveFeedItem }) {
  * Green stamp + rising points on a gain, red stamp + shake on a loss. Brief
  * and pointer-events-none so it never blocks the game.
  */
-function AnswerFeedbackOverlay({ delta }: { delta: number }) {
-  const positive = delta > 0;
-  const color = positive ? "#3DD68C" : "#FF5A5A";
+function AnswerFeedbackOverlay({ correct, points }: { correct: boolean; points: number }) {
+  const positive = correct;
+  // A WRONG call that landed at 0 means Shield/Insurance voided the penalty —
+  // worth calling out distinctly rather than just showing "WRONG · 0".
+  const blocked = !correct && points === 0;
+  const color = positive ? "#3DD68C" : blocked ? "#5EC9E8" : "#FF5A5A";
   return (
     <motion.div
       initial={{ opacity: 0 }}
@@ -2275,18 +2388,18 @@ function AnswerFeedbackOverlay({ delta }: { delta: number }) {
             boxShadow: `0 0 60px color-mix(in oklab, ${color} 55%, transparent)`,
           }}
         >
-          {positive ? "✓" : "✗"}
+          {positive ? "✓" : blocked ? "🛡" : "✗"}
         </span>
         <span className="text-[15px] font-black tracking-[.18em]" style={{ color }}>
-          {positive ? "CORRECT" : "WRONG"}
+          {positive ? "CORRECT" : blocked ? "BLOCKED" : "WRONG"}
         </span>
         <motion.span
           initial={{ y: 6, opacity: 0 }}
           animate={{ y: -6, opacity: 1 }}
-          className="font-mono text-[26px] font-black tabular-nums"
+          className={`font-mono font-black tabular-nums ${blocked ? "text-[15px] tracking-[.06em]" : "text-[26px]"}`}
           style={{ color }}
         >
-          {positive ? `+${delta}` : delta}
+          {blocked ? "Marks saved" : points > 0 ? `+${points}` : points}
         </motion.span>
       </motion.div>
     </motion.div>

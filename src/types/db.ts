@@ -117,6 +117,8 @@ export const EVENT_LOG_TYPES = [
   "AUCTION_CANCELLED",
   "CAPTAIN_CHANGED",
   "ANSWER_SUBMITTED",
+  "MCQ_RETRY",
+  "MCQ_GRADED",
 ] as const;
 export type EventLogType = (typeof EVENT_LOG_TYPES)[number];
 
