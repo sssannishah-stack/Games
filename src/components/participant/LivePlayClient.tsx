@@ -181,6 +181,8 @@ type LivePayload = {
     coinReward: number;
     allowedPowerCards: { id: string; name: string; icon: string }[] | null;
   } | null;
+  /** This question's position within its round (display only), null off a question scene. */
+  questionPosition: { number: number; total: number } | null;
   question: {
     id: string;
     type: string;
@@ -654,40 +656,47 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
       onDragStart={(event) => liveProtection && event.preventDefault()}
     >
       <div className="fixed inset-0 -z-10 bg-[radial-gradient(520px_380px_at_50%_-10%,rgba(108,123,250,.22),transparent_65%)]" />
-      <div className="max-w-[520px] mx-auto min-h-[100dvh] flex flex-col px-4 pt-4 pb-5">
-        <header className="flex items-center gap-3 shrink-0">
-          <div
-            className="w-10 h-10 rounded-2xl flex items-center justify-center text-sm font-black text-white"
-            style={{
-              background: `linear-gradient(135deg, ${live?.team?.color ?? "#6C7BFA"}, color-mix(in oklab, ${live?.team?.color ?? "#6C7BFA"} 70%, black))`,
-              boxShadow: `0 0 0 2px color-mix(in oklab, ${live?.team?.color ?? "#6C7BFA"} 30%, transparent), 0 6px 16px color-mix(in oklab, ${live?.team?.color ?? "#6C7BFA"} 25%, transparent)`,
-            }}
+      <div className="max-w-[520px] mx-auto min-h-[100dvh] flex flex-col px-4 pt-3.5 pb-4">
+        {/* ── HEADER — event context only (competition/room/round/question#,
+            live indicator). Team identity lives in the Team Status card below,
+            not here — the header answers "what event/moment is this", the team
+            card answers "who are we". */}
+        <header className="flex items-center gap-2.5 shrink-0">
+          <span
+            className={`flex items-center gap-1.5 shrink-0 rounded-full px-2.5 py-1 text-[9.5px] font-black tracking-[.14em] border ${
+              offline
+                ? "border-danger/30 bg-danger/10 text-danger-soft"
+                : "border-danger/30 bg-danger/10 text-danger-soft"
+            }`}
           >
-            {(live?.team?.name ?? participant.teamName).charAt(0).toUpperCase()}
-          </div>
+            <span className={`w-1.5 h-1.5 rounded-full ${offline ? "bg-danger" : "bg-danger animate-enc-pulse"}`} />
+            {offline ? "OFFLINE" : "LIVE"}
+          </span>
           <div className="flex flex-col min-w-0">
-            {/* Team name is the primary identity — keep it prominent and never
-                let the long competition title crowd it out on small screens. */}
-            <span className="flex items-center gap-1.5 min-w-0">
-              <span className="text-[14px] font-bold text-ink truncate">
-                {live?.team?.name ?? participant.teamName}
-              </span>
-              {live?.me && <RoleBadge role={live.me.role} acting={live.me.isActingCaptain} />}
+            <span className="text-[13px] font-bold text-ink truncate leading-tight">
+              {live?.competition.title ?? room.name}
             </span>
-            <span className="text-[11px] text-mute-2 truncate">
-              {participant.name} · {live?.competition.title ?? room.name}
+            <span className="flex items-center gap-1 text-[10.5px] text-mute-2 truncate leading-tight">
+              {live?.room.name && live.room.name !== live.competition.title && (
+                <span className="truncate">{live.room.name}</span>
+              )}
+              {live?.round?.title && (
+                <>
+                  {live?.room.name && live.room.name !== live.competition.title && <span aria-hidden>·</span>}
+                  <span className="truncate">{live.round.title}</span>
+                </>
+              )}
+              {live?.questionPosition && (
+                <>
+                  <span aria-hidden>·</span>
+                  <span className="shrink-0 font-semibold text-ink-3">
+                    Q{live.questionPosition.number}/{live.questionPosition.total}
+                  </span>
+                </>
+              )}
             </span>
           </div>
-          <div className="ml-auto flex items-center gap-2">
-            {offline ? (
-              <span className="w-8 h-8 rounded-xl bg-danger/10 border border-danger/25 flex items-center justify-center">
-                <Icon name="wifi-off" size={15} className="text-danger-soft" />
-              </span>
-            ) : (
-              <span className="w-8 h-8 rounded-xl bg-success/10 border border-success/25 flex items-center justify-center">
-                <span className="w-2 h-2 rounded-full bg-success animate-enc-pulse" />
-              </span>
-            )}
+          <div className="ml-auto flex items-center gap-1.5 shrink-0">
             <SoundToggle />
             <ThemeToggle className="w-8 h-8" />
             {liveProtection && (
@@ -720,11 +729,24 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
           </div>
         ) : (
           <>
-            <StatusStrip live={live} seconds={seconds} shake={scoreShake} />
-            {live.me && !live.me.captainConnected && (
-              <CaptainStatusBanner me={live.me} />
+            {/* ── LIVE STATUS — exactly one card, telling the team what's
+                happening right now and what to do about it. An open auction
+                takes over this slot with its own rich bidding widget instead
+                of a duplicate status message. */}
+            {live.auction ? (
+              <AuctionPanel
+                auction={live.auction}
+                coins={live.team?.coins ?? 0}
+                pending={pending}
+                onBid={bid}
+                canControl={live.me?.canControl ?? false}
+              />
+            ) : (
+              <LiveStatusCard live={live} />
             )}
-            <main className="flex-1 min-h-0 py-4">
+
+            {/* ── QUESTION / SCENE AREA — the primary content. */}
+            <main className="flex-1 min-h-0 py-3">
               <SceneScreen
                 live={live}
                 seconds={seconds}
@@ -734,18 +756,15 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
                 pending={pending}
                 participantName={participant.name}
                 participantId={participant.id}
+                onToast={setToast}
               />
             </main>
-            {live.auction && (
-              <AuctionPanel
-                auction={live.auction}
-                coins={live.team?.coins ?? 0}
-                pending={pending}
-                onBid={bid}
-                canControl={live.me?.canControl ?? false}
-              />
-            )}
-            <LiveFeed feed={live.feed} />
+
+            {/* ── TEAM STATUS — always visible: who we are, our numbers. */}
+            <TeamStatusCard live={live} participant={participant} shake={scoreShake} />
+            {live.me && !live.me.captainConnected && <CaptainStatusBanner live={live} me={live.me} />}
+
+            {/* ── BOTTOM ACTION BAR — fixed, always the same four slots. */}
             <BottomBar
               live={live}
               pending={pending}
@@ -901,59 +920,156 @@ function RoundModeBadge({ mode }: { mode?: string }) {
   );
 }
 
-function StatusStrip({
+/**
+ * The single dynamic status card between the header and the question area.
+ * Exactly one message is ever shown — priority order below — so the team
+ * never has to reconcile two different banners telling them what to do.
+ * (An open auction pre-empts this slot entirely with its own rich widget;
+ * see LivePlayClient's render.)
+ */
+function LiveStatusCard({ live }: { live: LivePayload }) {
+  const type = live.currentScene.type;
+  const onQuestion = type === "QUESTION" || type === "DRAWING";
+  const storeVisible = live.powers.storeOpen && live.room.permissions?.buyPowers !== false;
+
+  type Status = { icon: string; title: string; subtitle: string; tone: "info" | "success" | "warn" | "danger" };
+  let status: Status | null = null;
+
+  if (onQuestion && live.turn.frozen) {
+    status = { icon: "❄️", title: "Your Team Is Frozen", tone: "info", subtitle: "An opponent froze you — no power cards on this question." };
+  } else if (onQuestion && live.turn.assignedTeamId && !live.turn.isMyTurn) {
+    status = {
+      icon: "⏳",
+      title: `${live.turn.assignedTeamName ?? "Another team"} is answering`,
+      tone: "warn",
+      subtitle: "Wait for your turn. Only Freeze can be played right now.",
+    };
+  } else if (onQuestion && live.turn.assignedTeamId && live.turn.isMyTurn) {
+    status = { icon: "🎯", title: "Your Turn", tone: "success", subtitle: "Discuss quickly — your captain should answer." };
+  } else if (onQuestion && !live.question?.isMCQ && live.timer.paused && !live.judgment && !live.timer.showAnswer) {
+    // The host stopped the clock and hasn't judged yet — the team is
+    // waiting on a verdict, not on each other.
+    status = { icon: "🧑‍⚖️", title: "Host Reviewing", tone: "info", subtitle: "Waiting for the host to award points." };
+  } else if (storeVisible) {
+    status = {
+      icon: "🛍",
+      title: "Store Open",
+      tone: "warn",
+      subtitle: live.powers.flashSale.active ? `⚡ Flash sale — ${live.powers.flashSale.percent}% off right now.` : "Purchases are available from the bottom bar.",
+    };
+  } else if (onQuestion) {
+    status = { icon: "💬", title: "Discussing", tone: "info", subtitle: "Talk it through with your team." };
+  }
+
+  if (!status) return null;
+
+  const TONE: Record<Status["tone"], { border: string; bg: string; text: string; glow: string }> = {
+    info: { border: "border-info/35", bg: "bg-info/[.09]", text: "text-info", glow: "rgba(94,201,232,.5)" },
+    success: { border: "border-success/40", bg: "bg-success/[.1]", text: "text-success", glow: "rgba(61,214,140,.5)" },
+    warn: { border: "border-warn/40", bg: "bg-warn/[.1]", text: "text-warn", glow: "rgba(232,163,61,.5)" },
+    danger: { border: "border-danger/40", bg: "bg-danger/[.1]", text: "text-danger-soft", glow: "rgba(255,90,90,.5)" },
+  };
+  const t = TONE[status.tone];
+
+  return (
+    <motion.div
+      key={`${status.icon}-${status.title}`}
+      initial={{ opacity: 0, y: -6 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.2 }}
+      className={`relative mt-3 shrink-0 overflow-hidden rounded-2xl border ${t.border} ${t.bg} px-4 py-3`}
+      style={{ boxShadow: `0 8px 24px -10px ${t.glow}` }}
+    >
+      <div className="flex items-center gap-2.5">
+        <span className="text-xl leading-none shrink-0">{status.icon}</span>
+        <div className="flex flex-col min-w-0">
+          <span className={`text-[13px] font-black leading-tight ${t.text}`}>{status.title}</span>
+          <span className="text-[11.5px] text-mute-2 leading-snug">{status.subtitle}</span>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+/**
+ * Always-visible team identity + numbers — "who are we, how are we doing."
+ * Positioned right after the question area per the spec's information
+ * hierarchy, so it never competes with the question for the top of the fold.
+ */
+function TeamStatusCard({
   live,
-  seconds,
+  participant,
   shake,
 }: {
   live: LivePayload;
-  seconds: number | null;
+  participant: { name: string };
   shake?: boolean;
 }) {
-  const streak = live.team?.streak ?? 0;
+  const team = live.team;
+  const color = team?.color ?? "#6C7BFA";
+  const captain = team?.devices?.find((d) => d.role === "CAPTAIN") ?? null;
+  const viceCaptain = team?.devices?.find((d) => d.role === "VICE_CAPTAIN") ?? null;
+  const streak = team?.streak ?? 0;
   const activeEffects = live.powers.cards.filter((c) => c.status === "ACTIVE");
   const activeTypes = new Set(activeEffects.map((e) => e.effectType));
   const combo = activeTypes.has("DOUBLE_SCORE") && activeTypes.has("BLOCK_NEGATIVE");
-  const timerAccent: Record<ReturnType<typeof timerUrgency>, string | undefined> = {
-    idle: undefined,
-    safe: "#3DD68C",
-    warning: "#E8A33D",
-    critical: "#FF5A5A",
-  };
 
   return (
-    <div className="mt-4 flex flex-col gap-2">
-      <div className="grid grid-cols-4 gap-2">
-        <Metric label="Rank" icon="medal" tone="#6C7BFA" value={live.team ? `#${live.team.rank}` : "-"} />
-        <Metric label="Score" icon="zap" tone="#3DD68C" numeric={live.team?.score} shake={shake} />
-        <Metric label="Coins" icon="coins" tone="#E8C84A" numeric={live.team?.coins} accent="#E8C84A" />
+    <div className="mt-3 shrink-0 rounded-2xl border border-line/[.09] bg-gradient-to-b from-line/[.05] to-line/[.015] p-3.5">
+      <div className="flex items-center gap-2.5">
+        <div
+          className="w-9 h-9 rounded-xl flex items-center justify-center text-[13px] font-black text-white shrink-0"
+          style={{
+            background: `linear-gradient(135deg, ${color}, color-mix(in oklab, ${color} 70%, black))`,
+            boxShadow: `0 0 0 2px color-mix(in oklab, ${color} 30%, transparent)`,
+          }}
+        >
+          {(team?.name ?? "T").charAt(0).toUpperCase()}
+        </div>
+        <div className="flex flex-col min-w-0">
+          <span className="flex items-center gap-1.5 min-w-0">
+            <span className="text-[14px] font-bold text-ink truncate">{team?.name ?? "Your team"}</span>
+            {live.me && <RoleBadge role={live.me.role} acting={live.me.isActingCaptain} />}
+          </span>
+          <span className="text-[10.5px] text-mute-2 truncate">
+            {captain && (
+              <>
+                👑 {captain.name}
+                {!captain.connected && " (offline)"}
+              </>
+            )}
+            {captain && viceCaptain && " · "}
+            {viceCaptain && (
+              <>
+                ⭐ {viceCaptain.name}
+                {!viceCaptain.connected && " (offline)"}
+              </>
+            )}
+            {!captain && !viceCaptain && participant.name}
+          </span>
+        </div>
+      </div>
+
+      <div className="mt-3 grid grid-cols-4 gap-2">
+        <Metric label="Rank" icon="medal" tone="#6C7BFA" value={team ? `#${team.rank}` : "-"} />
+        <Metric label="Score" icon="zap" tone="#3DD68C" numeric={team?.score} shake={shake} />
+        <Metric label="Coins" icon="coins" tone="#E8C84A" numeric={team?.coins} accent="#E8C84A" />
         <Metric
-          label="Timer"
-          icon="timer"
-          tone={timerAccent[timerUrgency(seconds, live.question?.timer ?? 30)] ?? "#8EA0B8"}
-          value={seconds === null ? "--" : `${seconds}s`}
-          accent={timerAccent[timerUrgency(seconds, live.question?.timer ?? 30)]}
+          label="Streak"
+          icon="flame"
+          tone={streak >= 3 ? "#E8A33D" : "#8EA0B8"}
+          value={`${streak}×`}
+          accent={streak >= 2 ? "#E8A33D" : undefined}
         />
       </div>
 
-      {/* Streak + currently-active effects only. Owned cards live in the
-          question's "Available Powers" grid — no need to repeat them here. */}
-      {(streak >= 2 || activeEffects.length > 0) && (
-        <div className="flex items-center gap-1.5 flex-wrap">
+      {/* Currently-active effects only — owned-but-idle cards live in the
+          question's power grid, no need to repeat them here. */}
+      {(combo || activeEffects.length > 0) && (
+        <div className="mt-2 flex items-center gap-1.5 flex-wrap">
           {combo && (
             <span className="flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-bold bg-[linear-gradient(90deg,rgba(108,123,250,.25),rgba(61,214,140,.25))] border border-accent/40 text-ink">
               🔥 COMBO · Safe Double Attack
-            </span>
-          )}
-          {streak >= 2 && (
-            <span
-              className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-bold ${
-                streak >= 3
-                  ? "bg-warn/15 border border-warn/35 text-warn"
-                  : "bg-line/[.05] border border-line/[.1] text-ink-3"
-              }`}
-            >
-              🔥 {streak} streak
             </span>
           )}
           {activeEffects.map((effect) => (
@@ -1038,12 +1154,50 @@ function RoleBadge({ role, acting }: { role: TeamDeviceRole; acting?: boolean })
 }
 
 /** Shown when the team captain's phone has dropped off. */
-function CaptainStatusBanner({ me }: { me: NonNullable<LivePayload["me"]> }) {
+/**
+ * Shown when the team captain's phone has dropped off. The "offline for Xs"
+ * reading is timed from when THIS device first noticed the disconnect (not a
+ * server-provided deadline — the API only ever tells us connected/not, never
+ * a timestamp) — an honest, locally-derived elapsed reading rather than a
+ * fabricated countdown to a deadline nobody actually sent us.
+ */
+function CaptainStatusBanner({ live, me }: { live: LivePayload; me: NonNullable<LivePayload["me"]> }) {
+  const [elapsed, setElapsed] = useState(0);
+  const startRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (startRef.current === null) startRef.current = Date.now();
+    const id = window.setInterval(() => setElapsed(Math.floor((Date.now() - (startRef.current ?? Date.now())) / 1000)), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const controller = live.team?.devices?.find((d) => d.connected && (d.role === "CAPTAIN" || d.role === "VICE_CAPTAIN"));
+  const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
+  const ss = String(elapsed % 60).padStart(2, "0");
+
   return (
-    <div className="mt-2 rounded-2xl border border-warn/30 bg-warn/[.08] px-3 py-2 text-[12px] font-medium text-warn">
-      {me.isActingCaptain
-        ? "👑 Captain disconnected — you are temporary captain."
-        : `Captain${me.captainName ? ` ${me.captainName}` : ""} disconnected${me.role === "MEMBER" ? "." : " — vice captain has control."}`}
+    <div className="mt-2 shrink-0 rounded-2xl border border-warn/30 bg-warn/[.08] px-3.5 py-3">
+      <span className="flex items-center gap-1.5 text-[12px] font-black text-warn">
+        ⚠ Captain Offline
+      </span>
+      <span className="block mt-0.5 text-[11.5px] text-mute-2 leading-snug">
+        {me.isActingCaptain
+          ? "You've been promoted to temporary captain."
+          : "Vice captain promoted temporarily."}
+      </span>
+      <div className="mt-2 flex items-center justify-between gap-2">
+        <span className="text-[10.5px] text-mute-2">
+          {controller ? (
+            <>
+              Current controller: <b className="text-ink-3">{ROLE_META[controller.role].emoji} {controller.name}</b>
+            </>
+          ) : (
+            "No one in control yet."
+          )}
+        </span>
+        <span className="font-mono text-[11px] font-bold text-warn tabular-nums shrink-0">
+          Offline {mm}:{ss}
+        </span>
+      </div>
     </div>
   );
 }
@@ -1067,7 +1221,7 @@ function BottomBar({
    *  sheet straight to the store from anywhere on screen. */
   openStoreSignal: number;
 }) {
-  const [open, setOpen] = useState<"LEADERBOARD" | "POWERS" | "STORE" | null>(null);
+  const [open, setOpen] = useState<"LEADERBOARD" | "POWERS" | "STORE" | "ACTIVITY" | null>(null);
   const canControl = live.me?.canControl ?? false;
   const storeVisible =
     live.powers.storeOpen && live.room.permissions?.buyPowers !== false;
@@ -1088,7 +1242,10 @@ function BottomBar({
 
   return (
     <>
-      <nav className="shrink-0 grid gap-2 pt-1" style={{ gridTemplateColumns: `repeat(${(showLeaderboard ? 1 : 0) + 1 + (storeVisible ? 1 : 0)}, 1fr)` }}>
+      <nav
+        className="shrink-0 grid gap-2 pt-1"
+        style={{ gridTemplateColumns: `repeat(${(showLeaderboard ? 1 : 0) + 2 + (storeVisible ? 1 : 0)}, 1fr)` }}
+      >
         {showLeaderboard && (
           <button
             onClick={() => setOpen("LEADERBOARD")}
@@ -1120,6 +1277,13 @@ function BottomBar({
             <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-warn animate-enc-pulse" />
           </button>
         )}
+        <button
+          onClick={() => setOpen("ACTIVITY")}
+          className="group rounded-2xl border border-line/[.09] bg-gradient-to-b from-line/[.06] to-line/[.02] px-3 py-2.5 cursor-pointer transition active:scale-[.97]"
+        >
+          <span className="block text-base leading-none">📢</span>
+          <span className="block mt-1 text-[11px] font-bold text-ink-2">Activity</span>
+        </button>
       </nav>
 
       <AnimatePresence>
@@ -1140,7 +1304,13 @@ function BottomBar({
             >
               <div className="flex items-center gap-2 mb-4">
                 <span className="text-[13px] font-bold text-ink">
-                  {open === "LEADERBOARD" ? "🏆 Leaderboard" : open === "POWERS" ? "⚡ Team Powers" : "🛒 Power Store"}
+                  {open === "LEADERBOARD"
+                    ? "🏆 Leaderboard"
+                    : open === "POWERS"
+                      ? "⚡ Team Powers"
+                      : open === "ACTIVITY"
+                        ? "📢 Activity"
+                        : "🛒 Power Store"}
                 </span>
                 <button
                   onClick={() => setOpen(null)}
@@ -1155,6 +1325,7 @@ function BottomBar({
               {open === "POWERS" && (
                 <PowersSheet live={live} pending={pending} canControl={canControl} onRequest={onRequest} />
               )}
+              {open === "ACTIVITY" && <ActivityTimeline feed={live.feed} />}
               {open === "STORE" && (
                 <PowerStoreExperience
                   cards={live.powers.cards}
@@ -1225,12 +1396,40 @@ function PowersSheet({
 }) {
   const inventory = live.powers.cards.filter((c) => c.remainingUses > 0);
   const requestsAllowed = live.room.permissions?.requestLifelines !== false;
+  const [waitingId, setWaitingId] = useState<string | null>(null);
+
+  function use(card: LivePower) {
+    onRequest(card);
+    if (card.requiresApproval) {
+      setWaitingId(card.id);
+      window.setTimeout(() => setWaitingId((id) => (id === card.id ? null : id)), 1800);
+    }
+  }
 
   return (
     <div className="flex flex-col gap-2.5">
       {!canControl && (
         <div className="rounded-xl border border-line/[.09] bg-line/[.04] px-3 py-2 text-[11.5px] text-mute-2">
           👑 Only the captain can activate powers — you can watch the inventory here.
+        </div>
+      )}
+      {/* Round restrictions — which cards this round actually allows. */}
+      {live.round?.allowedPowerCards && (
+        <div className="rounded-xl border border-line/[.09] bg-line/[.03] px-3 py-2">
+          <span className="block text-[9.5px] font-bold tracking-[.12em] text-mute-2 mb-1.5">
+            THIS ROUND ALLOWS
+          </span>
+          {live.round.allowedPowerCards.length === 0 ? (
+            <span className="text-[11.5px] text-mute-2">No power cards this round.</span>
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
+              {live.round.allowedPowerCards.map((c) => (
+                <span key={c.id} className="flex items-center gap-1 rounded-full bg-line/[.06] border border-line/[.08] px-2 py-0.5 text-[10.5px] text-ink-3">
+                  {c.icon} {c.name}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       )}
       {inventory.length === 0 ? (
@@ -1272,20 +1471,27 @@ function PowersSheet({
                   />
                 </div>
                 {canControl ? (
-                  <>
-                    <Button
-                      variant="primary"
-                      size="sm"
-                      disabled={pending || !requestsAllowed || busy || !play.usable}
-                      onClick={() => onRequest(card)}
-                      className="justify-center"
-                    >
-                      {card.status === "REQUESTED" ? "Pending" : card.status === "ACTIVE" ? "Active" : "Use Power"}
-                    </Button>
-                    {!play.usable && !busy && (
-                      <span className="text-center text-[9.5px] text-dim leading-snug">{play.reason}</span>
-                    )}
-                  </>
+                  waitingId === card.id ? (
+                    <div className="flex items-center justify-center gap-1.5 rounded-xl border border-accent/25 bg-accent/[.08] py-1.5">
+                      <span className="w-3 h-3 rounded-full border-2 border-accent/30 border-t-accent animate-spin" />
+                      <span className="text-[11px] font-bold text-accent">Waiting for host…</span>
+                    </div>
+                  ) : (
+                    <>
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        disabled={pending || !requestsAllowed || busy || !play.usable}
+                        onClick={() => use(card)}
+                        className="justify-center"
+                      >
+                        {card.status === "REQUESTED" ? "Pending" : card.status === "ACTIVE" ? "Active" : "Use Power"}
+                      </Button>
+                      {!play.usable && !busy && (
+                        <span className="text-center text-[9.5px] text-dim leading-snug">{play.reason}</span>
+                      )}
+                    </>
+                  )
                 ) : (
                   <span className="text-center text-[10.5px] text-dim py-1">Only captain can activate</span>
                 )}
@@ -1298,6 +1504,89 @@ function PowersSheet({
   );
 }
 
+/**
+ * The tap-through flow for a power card: tap -> popup with its description
+ * and current status -> Use -> a brief "waiting for host approval" state
+ * (skipped for cards that don't require approval). Only ever opened for the
+ * captain — a member's tap is handled by the caller as an inline toast
+ * ("Only captain can activate this power"), never this popup.
+ */
+function PowerCardActionSheet({
+  card,
+  pending,
+  onUse,
+  onClose,
+}: {
+  card: LivePower | null;
+  pending: boolean;
+  onUse: (card: LivePower) => void;
+  onClose: () => void;
+}) {
+  const [waiting, setWaiting] = useState(false);
+  useEffect(() => {
+    setWaiting(false);
+  }, [card?.id]);
+
+  return (
+    <AnimatePresence>
+      {card && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-[70] flex items-center justify-center px-6"
+        >
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-[2px]" onClick={() => !waiting && onClose()} />
+          <motion.div
+            initial={{ scale: 0.92, y: 12, opacity: 0 }}
+            animate={{ scale: 1, y: 0, opacity: 1 }}
+            exit={{ scale: 0.95, opacity: 0 }}
+            className="relative w-full max-w-[340px] rounded-[24px] border border-line/[.12] bg-card p-5 text-center shadow-[0_24px_70px_rgba(0,0,0,.6)]"
+          >
+            <span className="mx-auto flex w-14 h-14 items-center justify-center rounded-2xl border border-accent/25 bg-accent/[.1] text-2xl">
+              {card.icon}
+            </span>
+            <h3 className="mt-3 text-[16px] font-black text-ink">{card.name}</h3>
+            <p className="mt-1.5 text-[12.5px] leading-relaxed text-mute-2">{card.description}</p>
+
+            {waiting ? (
+              <div className="mt-4 flex flex-col items-center gap-2 rounded-2xl border border-accent/25 bg-accent/[.08] px-4 py-3">
+                <span className="w-5 h-5 rounded-full border-2 border-accent/30 border-t-accent animate-spin" />
+                <span className="text-[12px] font-bold text-accent">Waiting for host approval…</span>
+              </div>
+            ) : (
+              <>
+                <Button
+                  variant="primary"
+                  disabled={pending}
+                  onClick={() => {
+                    onUse(card);
+                    if (card.requiresApproval) {
+                      setWaiting(true);
+                      window.setTimeout(onClose, 1800);
+                    } else {
+                      onClose();
+                    }
+                  }}
+                  className="mt-4 w-full justify-center"
+                >
+                  Use {card.name}
+                </Button>
+                <button
+                  onClick={onClose}
+                  className="mt-2 w-full rounded-xl px-4 py-2 text-[12px] font-semibold text-mute-2 cursor-pointer"
+                >
+                  Cancel
+                </button>
+              </>
+            )}
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
 function SceneScreen({
   live,
   seconds,
@@ -1307,6 +1596,7 @@ function SceneScreen({
   pending,
   participantName,
   participantId,
+  onToast,
 }: {
   live: LivePayload;
   seconds: number | null;
@@ -1316,6 +1606,7 @@ function SceneScreen({
   pending: boolean;
   participantName: string;
   participantId: string;
+  onToast: (message: string) => void;
 }) {
   const type = live.currentScene.type;
   const accent = sceneAccent(type);
@@ -1326,7 +1617,7 @@ function SceneScreen({
       initial={{ opacity: 0, y: 16, scale: 0.98 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       transition={{ duration: 0.25 }}
-      className="relative h-full min-h-[430px] rounded-[28px] border border-line/[.09] bg-card/90 shadow-[0_22px_70px_rgba(0,0,0,.44)] p-5 flex flex-col overflow-hidden"
+      className="relative h-full min-h-[400px] rounded-[28px] border border-line/[.09] bg-card/90 shadow-[0_22px_70px_rgba(0,0,0,.44)] p-4 flex flex-col overflow-hidden"
       style={{ boxShadow: `0 20px 80px color-mix(in oklab, ${accent} 18%, transparent)` }}
     >
       {/* Scene-accent hairline + soft top glow — gives the card a lit, premium edge. */}
@@ -1354,6 +1645,11 @@ function SceneScreen({
         {(type === "QUESTION" || type === "DRAWING" || type === "ANSWER_REVEAL") && live.round && (
           <span className="text-[11px] text-mute-2 truncate">{live.round.title}</span>
         )}
+        {live.questionPosition && (
+          <span className="text-[10.5px] font-bold text-ink-3 shrink-0">
+            Q{live.questionPosition.number}/{live.questionPosition.total}
+          </span>
+        )}
         <RoundModeBadge mode={live.round?.specialMode} />
         <span className="ml-auto text-[11px] text-mute-2">{live.room.roomCode}</span>
       </div>
@@ -1362,7 +1658,7 @@ function SceneScreen({
       {type === "WELCOME" && <WelcomeScene live={live} />}
       {type === "ROUND_INTRO" && <RoundIntroScene live={live} />}
       {type === "QUESTION" && (
-        <QuestionScene live={live} seconds={seconds} onRequest={onRequest} onSubmitAnswer={onSubmitAnswer} onSelectMcq={onSelectMcq} pending={pending} />
+        <QuestionScene live={live} seconds={seconds} onRequest={onRequest} onSubmitAnswer={onSubmitAnswer} onSelectMcq={onSelectMcq} pending={pending} onToast={onToast} />
       )}
       {type === "DRAWING" && <DrawingScene live={live} participantId={participantId} />}
       {type === "ANSWER_REVEAL" && <AnswerRevealScene live={live} />}
@@ -1554,6 +1850,7 @@ function QuestionScene({
   onSubmitAnswer,
   onSelectMcq,
   pending,
+  onToast,
 }: {
   live: LivePayload;
   seconds: number | null;
@@ -1561,10 +1858,12 @@ function QuestionScene({
   onSubmitAnswer: (text: string) => void;
   onSelectMcq: (optionIndex: number) => void;
   pending: boolean;
+  onToast: (message: string) => void;
 }) {
   const available = live.powers.cards.filter((card) => card.remainingUses > 0).slice(0, 3);
   const canControl = live.me?.canControl ?? false;
   const captainSubmit = live.room.answerMode === "CAPTAIN_SUBMIT";
+  const [actionCard, setActionCard] = useState<LivePower | null>(null);
   const totalTimer = live.question?.timer && live.question.timer > 0 ? live.question.timer : 30;
   // A paused timer (e.g. the host just called Correct/Wrong) computes to
   // `null` seconds — remember the last real reading so the ring freezes
@@ -1584,7 +1883,7 @@ function QuestionScene({
     critical: "#FF5A5A",
   };
   return (
-    <div className="flex-1 flex flex-col gap-4 pt-5">
+    <div className="flex-1 flex flex-col gap-3 pt-2.5">
       <div className="flex items-center justify-center">
         {/* Breathing timer ring — the heartbeat speeds up (and the pulse
             grows) as the clock runs down: calm in the green, urgent in red. */}
@@ -1648,43 +1947,8 @@ function QuestionScene({
           )}
         </motion.div>
       </div>
-      {live.turn.frozen && (
-        <div className="relative overflow-hidden rounded-2xl border border-info/45 bg-info/[.1] px-4 py-3 text-center">
-          <span className="inline-flex items-center gap-1.5 text-[11px] font-black tracking-[.14em] text-info">
-            <span className="text-[13px]">❄️</span>
-            YOUR TEAM IS FROZEN
-          </span>
-          <span className="block mt-1 text-[12px] text-mute-2">
-            An opponent froze you — no power cards on this question.
-          </span>
-        </div>
-      )}
-      {live.turn.assignedTeamId && (
-        <div
-          className={`relative overflow-hidden rounded-2xl border px-4 py-3 text-center ${
-            live.turn.isMyTurn
-              ? "border-success/35 bg-[linear-gradient(135deg,color-mix(in_oklab,#3DD68C_14%,transparent),color-mix(in_oklab,#3DD68C_5%,transparent))]"
-              : "border-warn/35 bg-[linear-gradient(135deg,color-mix(in_oklab,#E8A33D_12%,transparent),color-mix(in_oklab,#E8A33D_4%,transparent))]"
-          }`}
-        >
-          <span
-            aria-hidden
-            className="absolute inset-x-6 top-0 h-px"
-            style={{
-              background: `linear-gradient(90deg, transparent, ${live.turn.isMyTurn ? "rgba(61,214,140,.55)" : "rgba(232,163,61,.55)"}, transparent)`,
-            }}
-          />
-          <span className={`inline-flex items-center gap-1.5 text-[10px] font-black tracking-[.14em] ${live.turn.isMyTurn ? "text-success" : "text-warn"}`}>
-            <span className="text-[12px]">{live.turn.isMyTurn ? "🎯" : "⏳"}</span>
-            {live.turn.isMyTurn ? "YOUR TEAM'S TURN" : `${live.turn.assignedTeamName ?? "ANOTHER TEAM"}'S TURN`}
-          </span>
-          <span className="block mt-1 text-[12px] text-mute-2">
-            {live.turn.isMyTurn
-              ? "You may use any allowed card except Freeze."
-              : "Only Freeze can be played by your team right now."}
-          </span>
-        </div>
-      )}
+      {/* Turn/frozen state is now surfaced once, by the unified LiveStatusCard
+          above the question area — no need to repeat it here. */}
       {live.question?.media?.url && (
         <motion.div
           initial={{ opacity: 0, scale: 0.97 }}
@@ -1715,7 +1979,7 @@ function QuestionScene({
       <div className="text-center">
         <WordReveal
           text={live.question?.question || live.currentScene.title}
-          className="text-[28px] leading-[1.12] font-black tracking-[-.03em]"
+          className="text-[24px] leading-[1.14] font-black tracking-[-.03em]"
         />
         <motion.span
           aria-hidden
@@ -1733,14 +1997,9 @@ function QuestionScene({
           <JudgmentBanner judgment={live.judgment} />
         ) : (
           <>
-            <p className="text-[13px] text-mute-2 mt-3">
-              {captainSubmit
-                ? canControl
-                  ? "Discuss with your team, then submit the team's answer below."
-                  : "Discuss with your team — the captain submits the answer."
-                : "Discuss with your team. The host gives marks manually."}
-            </p>
-            {/* What's on the line for this question. */}
+            {/* Scoring — information chips, not buttons. What's on the line
+                for this question, read top to bottom like a scoreboard rule,
+                not tapped like a control. */}
             {(() => {
               const pos = live.round?.positiveMarks ?? live.question?.positiveMarks ?? 0;
               const neg = Math.abs(live.round?.negativeMarks ?? live.question?.negativeMarks ?? 0);
@@ -1749,28 +2008,58 @@ function QuestionScene({
               const economy = live.powers.economyEnabled;
               return (
                 <motion.div
-                  className="mt-3.5 flex flex-wrap items-center justify-center gap-2"
+                  className="mt-3.5 rounded-2xl border border-line/[.08] bg-line/[.03] px-3.5 py-3"
                   initial="hidden"
                   animate="show"
-                  variants={{ show: { transition: { staggerChildren: 0.08, delayChildren: 0.35 } } }}
+                  variants={{ show: { transition: { staggerChildren: 0.08, delayChildren: 0.2 } } }}
                 >
-                  <motion.span variants={CHIP_VARIANTS} className="flex items-center gap-1 rounded-full border border-success/30 bg-success/[.1] px-2.5 py-1 text-[11.5px] font-bold text-success">
-                    ✓ Correct +{pos}
-                    {economy && coins > 0 ? ` · ${coins}🪙` : ""}
-                  </motion.span>
-                  {!isBonus && neg > 0 && (
-                    <motion.span variants={CHIP_VARIANTS} className="flex items-center gap-1 rounded-full border border-danger/30 bg-danger/[.08] px-2.5 py-1 text-[11.5px] font-bold text-danger-soft">
-                      ✗ Wrong −{neg}
-                    </motion.span>
-                  )}
-                  {isBonus && (
-                    <motion.span variants={CHIP_VARIANTS} className="rounded-full border border-warn/30 bg-warn/[.08] px-2.5 py-1 text-[11.5px] font-bold text-warn">
-                      Bonus — no penalty
-                    </motion.span>
-                  )}
+                  <span className="block text-[9.5px] font-bold tracking-[.16em] text-mute-2 mb-2">SCORING</span>
+                  <div className="flex flex-col gap-1.5">
+                    <motion.div variants={CHIP_VARIANTS} className="flex items-center justify-between gap-2">
+                      <span className="flex items-center gap-1.5 text-[12.5px] font-semibold text-success">
+                        ✔ Correct Answer
+                      </span>
+                      <span className="text-[12.5px] font-black text-success tabular-nums">
+                        +{pos}{economy && coins > 0 ? ` · ${coins}🪙` : ""}
+                      </span>
+                    </motion.div>
+                    {!isBonus && neg > 0 && (
+                      <motion.div variants={CHIP_VARIANTS} className="flex items-center justify-between gap-2">
+                        <span className="flex items-center gap-1.5 text-[12.5px] font-semibold text-danger-soft">
+                          ✖ Wrong Answer
+                        </span>
+                        <span className="text-[12.5px] font-black text-danger-soft tabular-nums">−{neg}</span>
+                      </motion.div>
+                    )}
+                    {isBonus && (
+                      <motion.div variants={CHIP_VARIANTS} className="flex items-center justify-between gap-2">
+                        <span className="text-[12.5px] font-semibold text-warn">Bonus Round</span>
+                        <span className="text-[12.5px] font-black text-warn">No penalty</span>
+                      </motion.div>
+                    )}
+                  </div>
                 </motion.div>
               );
             })()}
+            {/* Discussion instructions — what the team should actually do. */}
+            <div className="mt-3 flex flex-col gap-1 text-left">
+              <span className="flex items-center gap-2 text-[12px] text-mute-2">
+                <span className="shrink-0">💬</span>
+                Discuss the answer with your teammates.
+              </span>
+              <span className="flex items-center gap-2 text-[12px] text-mute-2">
+                <span className="shrink-0">🎤</span>
+                {captainSubmit
+                  ? canControl
+                    ? "You're the captain — submit your team's answer below."
+                    : "Captain will submit the answer when ready."
+                  : "Captain will answer when called."}
+              </span>
+              <span className="flex items-center gap-2 text-[12px] text-mute-2">
+                <span className="shrink-0">🏆</span>
+                Host will award points after judging.
+              </span>
+            </div>
           </>
         )}
       </div>
@@ -1870,26 +2159,40 @@ function QuestionScene({
               // ACTIVE = already armed (Shield/Double Points/Gamble waiting on
               // the next mark) or a card that just resolved but hasn't been
               // re-synced yet — either way it isn't AVAILABLE to play again.
-              // Without this check the button stayed clickable and tapping it
-              // threw a confusing "you don't own an available copy" error.
               const armed = card.status === "ACTIVE";
-              const usable = canControl && play.usable && card.status === "AVAILABLE";
+              const requested = card.status === "REQUESTED";
+              const roundLocked = !play.usable;
+              // Real status is always shown — "do not grey everything out" —
+              // the captain gate only changes what tapping does, never what's
+              // visible. Ready = usable right now; a locked/pending card still
+              // shows its real state instead of vanishing into CAPTAIN ONLY.
+              const statusLabel = requested ? "Pending" : armed ? "Armed" : roundLocked ? "Locked this round" : "Ready";
+              const dimmed = armed || requested || roundLocked;
               return (
                 <motion.button
                   key={card.id}
                   layout
                   initial={{ scale: 0.7, opacity: 0 }}
-                  animate={{ scale: 1, opacity: usable || armed ? 1 : 0.6 }}
+                  animate={{ scale: 1, opacity: dimmed ? 0.75 : 1 }}
                   transition={{ type: "spring", stiffness: 460, damping: 26 }}
                   whileTap={{ scale: 0.95 }}
-                  onClick={() => usable && onRequest(card)}
-                  disabled={pending || !usable}
-                  className={`group relative overflow-hidden rounded-2xl border px-2 pt-3 pb-2.5 text-center ${
-                    usable
-                      ? "border-accent/25 bg-gradient-to-b from-accent/[.1] to-accent/[.02] cursor-pointer"
-                      : armed
-                        ? "border-success/45 bg-success/[.08]"
-                        : "border-line/[.08] bg-line/[.03]"
+                  onClick={() => {
+                    if (pending || requested || roundLocked) return;
+                    if (armed) return;
+                    if (!canControl) {
+                      onToast("👑 Only the captain can activate this power.");
+                      return;
+                    }
+                    setActionCard(card);
+                  }}
+                  disabled={pending}
+                  title={roundLocked ? play.reason ?? undefined : undefined}
+                  className={`group relative overflow-hidden rounded-2xl border px-2 pt-3 pb-2.5 text-center cursor-pointer ${
+                    armed
+                      ? "border-success/45 bg-success/[.08]"
+                      : roundLocked || requested
+                        ? "border-line/[.08] bg-line/[.03]"
+                        : "border-accent/25 bg-gradient-to-b from-accent/[.1] to-accent/[.02]"
                   }`}
                   style={armed ? { boxShadow: "0 0 18px -2px color-mix(in oklab, #3DD68C 55%, transparent)" } : undefined}
                 >
@@ -1902,9 +2205,14 @@ function QuestionScene({
                       style={{ background: "radial-gradient(circle at 50% 30%, color-mix(in oklab, #3DD68C 18%, transparent), transparent 70%)" }}
                     />
                   )}
+                  {card.remainingUses > 1 && (
+                    <span className="absolute top-1 right-1 min-w-[16px] h-4 px-1 rounded-full bg-ink/80 text-shell text-[9px] font-black flex items-center justify-center">
+                      ×{card.remainingUses}
+                    </span>
+                  )}
                   <span
                     className={`mx-auto flex w-9 h-9 items-center justify-center rounded-xl text-lg border ${
-                      usable ? "border-accent/25 bg-accent/[.12]" : armed ? "border-success/30 bg-success/[.1]" : "border-line/[.1] bg-line/[.05]"
+                      armed ? "border-success/30 bg-success/[.1]" : roundLocked || requested ? "border-line/[.1] bg-line/[.05]" : "border-accent/25 bg-accent/[.12]"
                     }`}
                   >
                     {card.icon}
@@ -1912,18 +2220,10 @@ function QuestionScene({
                   <span className="block text-[11px] font-bold text-ink mt-1.5 truncate">{card.name}</span>
                   <span
                     className={`mt-1 inline-block rounded-full px-2 py-0.5 text-[9px] font-bold tracking-[.06em] ${
-                      usable ? "bg-accent/15 text-accent" : armed ? "bg-success/15 text-success" : "bg-line/[.07] text-mute-2"
+                      armed ? "bg-success/15 text-success" : roundLocked || requested ? "bg-line/[.07] text-mute-2" : "bg-accent/15 text-accent"
                     }`}
                   >
-                    {!canControl
-                      ? "CAPTAIN ONLY"
-                      : card.status === "REQUESTED"
-                        ? "PENDING"
-                        : armed
-                          ? "ARMED"
-                          : !play.usable
-                            ? "LOCKED"
-                            : `${card.remainingUses} LEFT`}
+                    {statusLabel}
                   </span>
                 </motion.button>
               );
@@ -1934,6 +2234,12 @@ function QuestionScene({
           <span className="block mt-1.5 text-center text-[10.5px] text-dim">👑 Only the captain can activate powers.</span>
         )}
       </div>
+      <PowerCardActionSheet
+        card={actionCard}
+        pending={pending}
+        onUse={(card) => onRequest(card)}
+        onClose={() => setActionCard(null)}
+      />
     </div>
   );
 }
@@ -2383,35 +2689,46 @@ const FEED_TONE: Record<LiveFeedItem["tone"], string> = {
   achievement: "text-warn",
 };
 
-function LiveFeed({ feed }: { feed: LiveFeedItem[] }) {
-  const items = feed.slice(0, 4);
-  if (items.length === 0) return null;
+/** HH:MM from an ISO timestamp, local time — the timeline's leading column. */
+function feedClock(iso: string) {
+  const d = new Date(iso);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+/**
+ * The full activity feed as a timeline — opened from the bottom bar's
+ * Activity tab. Newest first, one row per event, time-stamped like a
+ * scoreboard log rather than the old always-on inline strip.
+ */
+function ActivityTimeline({ feed }: { feed: LiveFeedItem[] }) {
+  if (feed.length === 0) {
+    return <span className="block py-8 text-center text-sm text-mute-2">Nothing has happened yet.</span>;
+  }
   return (
-    <div className="shrink-0 mb-2 rounded-2xl border border-line/[.08] bg-line/[.03] px-3 py-2">
-      <div className="flex items-center gap-1.5 mb-1.5">
-        <span className="w-1.5 h-1.5 rounded-full bg-live animate-enc-pulse" />
-        <span className="text-[10px] font-semibold tracking-[.12em] text-label">LIVE FEED</span>
-      </div>
-      <div className="flex flex-col gap-1">
-        <AnimatePresence initial={false}>
-          {items.map((item) => (
-            <motion.div
-              key={item.id}
-              layout
-              initial={{ opacity: 0, x: -8 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0 }}
-              className="flex items-center gap-2 text-[12px]"
-            >
-              <span className="text-[13px]">{item.icon}</span>
+    <div className="flex flex-col">
+      <AnimatePresence initial={false}>
+        {feed.map((item, i) => (
+          <motion.div
+            key={item.id}
+            layout
+            initial={{ opacity: 0, x: -8 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0 }}
+            className={`flex items-start gap-3 py-2.5 ${i < feed.length - 1 ? "border-b border-line/[.06]" : ""}`}
+          >
+            <span className="w-10 shrink-0 pt-0.5 font-mono text-[10.5px] font-bold text-mute-2 tabular-nums">
+              {feedClock(item.createdAt)}
+            </span>
+            <span className="text-[15px] leading-none pt-0.5">{item.icon}</span>
+            <span className="flex items-center gap-1.5 min-w-0 text-[13px]">
               {item.teamColor && (
                 <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: item.teamColor }} />
               )}
-              <span className={`truncate font-medium ${FEED_TONE[item.tone]}`}>{item.text}</span>
-            </motion.div>
-          ))}
-        </AnimatePresence>
-      </div>
+              <span className={`font-medium ${FEED_TONE[item.tone]}`}>{item.text}</span>
+            </span>
+          </motion.div>
+        ))}
+      </AnimatePresence>
     </div>
   );
 }

@@ -92,6 +92,18 @@ export async function GET(
     currentScene?.roundId ? Round.findById(currentScene.roundId).lean<IRound>() : null,
   ]);
 
+  // Display-only "Question N / M" position within the current round — derived
+  // entirely from the scene list already fetched above (no extra query, no
+  // logic change). Null off a QUESTION/DRAWING scene or before a round starts.
+  let questionPosition: { number: number; total: number } | null = null;
+  if (currentScene && round && (currentScene.type === "QUESTION" || currentScene.type === "DRAWING")) {
+    const roundQuestionScenes = scenes.filter(
+      (scene) => id(scene.roundId) === id(round._id) && (scene.type === "QUESTION" || scene.type === "DRAWING")
+    );
+    const index = roundQuestionScenes.findIndex((scene) => id(scene._id) === id(currentScene._id));
+    if (index !== -1) questionPosition = { number: index + 1, total: roundQuestionScenes.length };
+  }
+
   const selectedTeam = teamId ? teams.find((team) => id(team._id) === teamId) ?? null : null;
   const assignedTeamId = typeof currentScene?.settings?.assignedTeamId === "string"
     ? currentScene.settings.assignedTeamId
@@ -504,6 +516,9 @@ export async function GET(
               : null,
           }
         : null,
+      // Display-only position within the round (see questionPosition above) —
+      // null off a question scene.
+      questionPosition,
       question: question
         ? {
             id: id(question._id),
