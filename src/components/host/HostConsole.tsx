@@ -1901,8 +1901,9 @@ const EFFECT_LABEL: Record<PowerCardEffectType, string> = {
   SECOND_CHANCE: "Second Chance — may answer again",
   MYSTERY: "Mystery effect",
   GAMBLE: "All-or-Nothing — double reward or double penalty",
-  FREEZE: "Freeze — opponent power paused",
+  FREEZE: "Freeze — opponent's cards locked next question",
   STEAL: "Steal — coins from another team",
+  PEEK: "Peek — one wrong MCQ option ruled out",
 };
 
 function ScoringModal({

@@ -201,6 +201,7 @@ export async function GET(
                 effectType: usedCard.effectType,
                 rarity: usedCard.rarity,
                 teamName,
+                teamId: id(meta.teamId),
               }
             : null,
         };
@@ -365,6 +366,12 @@ export async function GET(
         assignedTeamName: assignedTeam?.name ?? null,
         isMyTurn: Boolean(selectedTeam && assignedTeamId === id(selectedTeam._id)),
         stolen: turnStolen,
+        // My team is frozen (an opponent's Freeze) on the live question.
+        frozen: Boolean(
+          selectedTeam &&
+            room.currentQuestionId &&
+            selectedTeam.frozenQuestionIds?.includes(id(room.currentQuestionId))
+        ),
       },
       currentScene: currentScene
         ? {
@@ -399,6 +406,7 @@ export async function GET(
             defaultTimer: round.defaultTimer,
             positiveMarks: round.positiveMarks,
             negativeMarks: round.negativeMarks,
+            coinReward: round.coinReward ?? 0,
             allowedPowerCards: roundIsRestricted
               ? visibleCards.map((card) => ({ id: id(card._id), name: card.name, icon: card.icon }))
               : null,
@@ -416,7 +424,19 @@ export async function GET(
             isMCQ: question.isMCQ,
             options: question.options ?? [],
             answer: room.liveState.showAnswer ? question.answer : null,
-            hints: question.hints ?? [],
+            // Only send this team the hints it has actually unlocked with the
+            // Hint card — others get none, so hint text never leaks early.
+            hints: (question.hints ?? []).slice(
+              0,
+              selectedTeam?.hintsRevealed?.find((h) => h.questionId === id(question._id))?.count ?? 0
+            ),
+            // Total hint count (not the text) so a team can tell Hint is
+            // exhausted/unavailable without spoiling anything for others.
+            hintsTotal: question.hints?.length ?? 0,
+            // This team's own Peek result, if they used it on this question —
+            // the index of one wrong option, to strike through client-side.
+            peekedOptionIndex:
+              selectedTeam?.peeks?.find((p) => p.questionId === id(question._id))?.eliminatedOptionIndex ?? null,
           }
         : null,
       team: selectedTeam

@@ -22,6 +22,16 @@ export interface PowerPlayContext {
   actingTeamId?: string | null;
   /** A Steal Chance has already transferred this question once. */
   turnStolen?: boolean;
+  /** The acting team is frozen on this question (opponent's Freeze) — no cards. */
+  frozen?: boolean;
+  /** How many hints this question has authored, and how many this team has revealed so far. */
+  hintsTotal?: number;
+  hintsRevealed?: number;
+  /** Whether the live question is multiple-choice, and how many options it has. */
+  isMCQ?: boolean;
+  optionsCount?: number;
+  /** This team has already Peeked (eliminated a wrong option) on the live question. */
+  alreadyPeeked?: boolean;
 }
 
 export interface PowerPlayability {
@@ -37,25 +47,47 @@ export function powerCardPlayability(
   if (!ctx.sceneType || !PLAYABLE_SCENES.has(ctx.sceneType)) {
     return { usable: false, reason: "Cards can be played while a question is live." };
   }
+  if (ctx.frozen) {
+    return { usable: false, reason: "Your team is frozen this question — no power cards." };
+  }
   if (effectType === "MYSTERY") {
     return { usable: false, reason: "Mystery Box opens automatically when it is purchased." };
   }
+  // Steal Chance and Freeze are attack cards — played by another team against
+  // whoever's turn it currently is, not on your own turn.
   const isSteal = effectType === "STEAL";
+  const isAttack = isSteal || effectType === "FREEZE";
   if (!ctx.assignedTeamId) {
-    if (isSteal) {
-      return { usable: false, reason: "Steal Chance needs a question assigned to another team." };
+    if (isAttack) {
+      return { usable: false, reason: "This card needs a question assigned to another team." };
     }
   } else if (ctx.actingTeamId === ctx.assignedTeamId) {
-    if (isSteal) {
-      return { usable: false, reason: "It is already your turn — Steal Chance is for other teams." };
+    if (isAttack) {
+      return { usable: false, reason: "It is your turn — attack cards target other teams." };
     }
-  } else if (!isSteal) {
-    return { usable: false, reason: "Only the active team can use this card. You may only play Steal Chance." };
-  } else if (ctx.turnStolen) {
+  } else if (!isAttack) {
+    return { usable: false, reason: "Only the active team can use this card. You may play Steal Chance or Freeze." };
+  } else if (isSteal && ctx.turnStolen) {
     return { usable: false, reason: "Steal Chance has already been used for this question." };
   }
   if (effectType === "EXTRA_TIME" && !ctx.timerRunning) {
     return { usable: false, reason: "Extra Time needs the timer to be running." };
+  }
+  if (effectType === "HINT") {
+    if (!ctx.hintsTotal) {
+      return { usable: false, reason: "This question has no hints." };
+    }
+    if ((ctx.hintsRevealed ?? 0) >= ctx.hintsTotal) {
+      return { usable: false, reason: "All hints for this question are already revealed." };
+    }
+  }
+  if (effectType === "PEEK") {
+    if (!ctx.isMCQ || (ctx.optionsCount ?? 0) < 3) {
+      return { usable: false, reason: "Peek needs a multiple-choice question with 3+ options." };
+    }
+    if (ctx.alreadyPeeked) {
+      return { usable: false, reason: "You already peeked this question." };
+    }
   }
   return { usable: true, reason: null };
 }

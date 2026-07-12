@@ -95,6 +95,7 @@ type LiveFeedItem = {
     effectType: string;
     rarity: string;
     teamName: string;
+    teamId: string;
   } | null;
 };
 
@@ -132,6 +133,7 @@ type LivePayload = {
     assignedTeamName: string | null;
     isMyTurn: boolean;
     stolen: boolean;
+    frozen: boolean;
   };
   currentScene: {
     id: string | null;
@@ -156,6 +158,7 @@ type LivePayload = {
     defaultTimer: number;
     positiveMarks: number;
     negativeMarks: number;
+    coinReward: number;
     allowedPowerCards: { id: string; name: string; icon: string }[] | null;
   } | null;
   question: {
@@ -170,6 +173,8 @@ type LivePayload = {
     options: string[];
     answer: string | null;
     hints: { text: string; penalty: number }[];
+    hintsTotal: number;
+    peekedOptionIndex: number | null;
   } | null;
   team: LiveTeam | null;
   leaderboard: Array<Omit<LiveTeam, "members">>;
@@ -238,6 +243,12 @@ function livePlayContext(live: LivePayload): PowerPlayContext {
     assignedTeamId: live.turn.assignedTeamId,
     actingTeamId: live.team?.id ?? null,
     turnStolen: live.turn.stolen,
+    frozen: live.turn.frozen,
+    hintsTotal: live.question?.hintsTotal ?? 0,
+    hintsRevealed: live.question?.hints.length ?? 0,
+    isMCQ: live.question?.isMCQ ?? false,
+    optionsCount: live.question?.options.length ?? 0,
+    alreadyPeeked: live.question?.peekedOptionIndex != null,
   };
 }
 
@@ -259,6 +270,9 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
   const [toast, setToast] = useState<string | null>(null);
   const [moment, setMoment] = useState<LiveFeedItem | null>(null);
   const [powerMoment, setPowerMoment] = useState<LiveFeedItem | null>(null);
+  // When OUR team plays a card we skip the big card-flip (it wastes their
+  // answering time) and show a quick effect toast — the result, not the card.
+  const [selfPower, setSelfPower] = useState<{ id: string; effectType: string; icon: string; name: string } | null>(null);
   const [leaveConfirm, setLeaveConfirm] = useState(false);
   const [privacyCovered, setPrivacyCovered] = useState(false);
   const lastNotableId = useRef<string | null>(null);
@@ -450,13 +464,24 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
     if (newest.id !== lastNotableId.current) {
       lastNotableId.current = newest.id;
       if (newest.power) {
-        setPowerMoment(newest);
+        // Our own play → quick effect toast; another team's play → full card.
+        if (newest.power.teamId === live.team?.id) {
+          setSelfPower({ id: newest.id, effectType: newest.power.effectType, icon: newest.power.icon, name: newest.power.name });
+        } else {
+          setPowerMoment(newest);
+        }
         if (motionEnabled && typeof navigator !== "undefined") navigator.vibrate?.([30, 40, 60]);
       } else {
         setMoment(newest);
       }
     }
   }, [live, motionEnabled]);
+
+  useEffect(() => {
+    if (!selfPower) return;
+    const timeout = window.setTimeout(() => setSelfPower(null), 1400);
+    return () => window.clearTimeout(timeout);
+  }, [selfPower]);
 
   useEffect(() => {
     if (!moment) return;
@@ -466,7 +491,7 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
 
   useEffect(() => {
     if (!powerMoment) return;
-    const timeout = window.setTimeout(() => setPowerMoment(null), 3200);
+    const timeout = window.setTimeout(() => setPowerMoment(null), 1800);
     return () => window.clearTimeout(timeout);
   }, [powerMoment]);
 
@@ -632,6 +657,9 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
         {moment && <MomentOverlay key={moment.id} moment={moment} />}
       </AnimatePresence>
       <AnimatePresence>
+        {selfPower && <SelfPowerEffect key={selfPower.id} effectType={selfPower.effectType} icon={selfPower.icon} name={selfPower.name} />}
+      </AnimatePresence>
+      <AnimatePresence>
         {powerMoment?.power && <PowerActivationOverlay key={powerMoment.id} power={powerMoment.power} />}
       </AnimatePresence>
       <AnimatePresence>
@@ -727,6 +755,7 @@ const EFFECT_ICON: Record<string, string> = {
   GAMBLE: "🎲",
   FREEZE: "❄",
   STEAL: "🫳",
+  PEEK: "👁",
 };
 
 type RoundMode = "SPEED" | "RISK" | "SURVIVAL" | "BONUS";
@@ -1431,6 +1460,17 @@ function QuestionScene({
           </div>
         </motion.div>
       </div>
+      {live.turn.frozen && (
+        <div className="relative overflow-hidden rounded-2xl border border-info/45 bg-info/[.1] px-4 py-3 text-center">
+          <span className="inline-flex items-center gap-1.5 text-[11px] font-black tracking-[.14em] text-info">
+            <span className="text-[13px]">❄️</span>
+            YOUR TEAM IS FROZEN
+          </span>
+          <span className="block mt-1 text-[12px] text-mute-2">
+            An opponent froze you — no power cards on this question.
+          </span>
+        </div>
+      )}
       {live.turn.assignedTeamId && (
         <div
           className={`relative overflow-hidden rounded-2xl border px-4 py-3 text-center ${
@@ -1489,25 +1529,75 @@ function QuestionScene({
               : "Discuss with your team — the captain submits the answer."
             : "Discuss with your team. The host gives marks manually."}
         </p>
+        {/* What's on the line for this question. */}
+        {(() => {
+          const pos = live.round?.positiveMarks ?? live.question?.positiveMarks ?? 0;
+          const neg = Math.abs(live.round?.negativeMarks ?? live.question?.negativeMarks ?? 0);
+          const coins = live.round?.coinReward ?? 0;
+          const isBonus = live.round?.specialMode === "BONUS";
+          const economy = live.powers.economyEnabled;
+          return (
+            <div className="mt-3.5 flex flex-wrap items-center justify-center gap-2">
+              <span className="flex items-center gap-1 rounded-full border border-success/30 bg-success/[.1] px-2.5 py-1 text-[11.5px] font-bold text-success">
+                ✓ Correct +{pos}
+                {economy && coins > 0 ? ` · ${coins}🪙` : ""}
+              </span>
+              {!isBonus && neg > 0 && (
+                <span className="flex items-center gap-1 rounded-full border border-danger/30 bg-danger/[.08] px-2.5 py-1 text-[11.5px] font-bold text-danger-soft">
+                  ✗ Wrong −{neg}
+                </span>
+              )}
+              {isBonus && (
+                <span className="rounded-full border border-warn/30 bg-warn/[.08] px-2.5 py-1 text-[11.5px] font-bold text-warn">
+                  Bonus — no penalty
+                </span>
+              )}
+            </div>
+          );
+        })()}
       </div>
       {live.question?.isMCQ && live.question.options.length > 0 && (
         <div className="grid grid-cols-1 gap-2">
-          {live.question.options.map((option, index) => (
-            <div
-              key={option}
-              className="flex items-center gap-3 rounded-2xl border border-line/[.08] bg-line/[.04] px-4 py-3"
-            >
-              <span className="w-7 h-7 rounded-full bg-line/[.06] border border-line/[.09] flex items-center justify-center text-xs font-bold text-ink-3 shrink-0">
-                {String.fromCharCode(65 + index)}
-              </span>
-              <span className="text-sm font-semibold text-ink">{option}</span>
-            </div>
-          ))}
+          {live.question.options.map((option, index) => {
+            const eliminated = live.question?.peekedOptionIndex === index;
+            return (
+              <div
+                key={option}
+                className={`flex items-center gap-3 rounded-2xl border px-4 py-3 transition-opacity ${
+                  eliminated ? "border-line/[.06] bg-line/[.02] opacity-45" : "border-line/[.08] bg-line/[.04]"
+                }`}
+              >
+                <span
+                  className={`w-7 h-7 rounded-full border flex items-center justify-center text-xs font-bold shrink-0 ${
+                    eliminated ? "bg-line/[.04] border-line/[.08] text-dim-2" : "bg-line/[.06] border-line/[.09] text-ink-3"
+                  }`}
+                >
+                  {String.fromCharCode(65 + index)}
+                </span>
+                <span className={`text-sm font-semibold ${eliminated ? "text-dim-2 line-through" : "text-ink"}`}>
+                  {option}
+                </span>
+                {eliminated && <span className="ml-auto text-[10px] font-bold text-mute-2">👁 RULED OUT</span>}
+              </div>
+            );
+          })}
         </div>
       )}
       {live.question?.answer && (
         <div className="rounded-2xl border border-success/25 bg-success/[.1] px-4 py-3 text-center text-sm font-bold text-success">
           Answer: {live.question.answer}
+        </div>
+      )}
+      {(live.question?.hints?.length ?? 0) > 0 && (
+        <div className="flex flex-col gap-1.5 rounded-2xl border border-warn/25 bg-warn/[.07] px-3.5 py-3">
+          <span className="flex items-center gap-1.5 text-[10px] font-bold tracking-[.12em] text-warn">
+            💡 HINT{(live.question?.hints?.length ?? 0) > 1 ? "S" : ""} UNLOCKED
+          </span>
+          {live.question!.hints.map((hint, i) => (
+            <span key={i} className="text-[13.5px] font-semibold text-ink leading-snug">
+              {hint.text}
+            </span>
+          ))}
         </div>
       )}
       {captainSubmit && <CaptainAnswerBox live={live} canControl={canControl} pending={pending} onSubmit={onSubmitAnswer} />}
@@ -2194,6 +2284,71 @@ function AnswerFeedbackOverlay({ delta }: { delta: number }) {
           {positive ? `+${delta}` : delta}
         </motion.span>
       </motion.div>
+    </motion.div>
+  );
+}
+
+/**
+ * Effect-specific copy for the quick toast shown to the team that PLAYED a
+ * card — the result, not a card-flip that would eat their answering time.
+ */
+const SELF_POWER_FX: Record<string, { icon: string; text: string; color: string }> = {
+  EXTRA_TIME: { icon: "⏱", text: "+30 sec added to the timer", color: "#3DD68C" },
+  HINT: { icon: "💡", text: "Hint revealed · +10 sec", color: "#E8A33D" },
+  STEAL: { icon: "🥷", text: "You stole this turn!", color: "#A79BFF" },
+  INSURANCE: { icon: "🩹", text: "Insured — no negatives for 3 questions", color: "#6FD3C6" },
+  FREEZE: { icon: "❄️", text: "Opponent frozen next question", color: "#6ED3F2" },
+  DOUBLE_SCORE: { icon: "⚡", text: "Double Points armed", color: "#FF9A3D" },
+  BLOCK_NEGATIVE: { icon: "🛡", text: "Shield armed", color: "#9BC0EF" },
+  GAMBLE: { icon: "🎲", text: "Gamble on — double or nothing", color: "#F06A96" },
+  SECOND_CHANCE: { icon: "↩", text: "Second chance ready", color: "#3DD68C" },
+  PEEK: { icon: "👁", text: "One wrong option ruled out", color: "#5EC9E8" },
+};
+
+/**
+ * Quick, non-blocking confirmation for your OWN play. Extra Time shows the
+ * "+30s" rising toward the timer; every other card shows a compact effect
+ * pill. ~1.4s, pointer-events-none — the game underneath stays interactive.
+ */
+function SelfPowerEffect({ effectType, icon, name }: { effectType: string; icon: string; name: string }) {
+  const fx = SELF_POWER_FX[effectType] ?? { icon, text: `${name} activated`, color: "#6C7BFA" };
+
+  if (effectType === "EXTRA_TIME") {
+    // Float the bonus up toward the timer ring at the top of the card.
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: 40, scale: 0.7 }}
+        animate={{ opacity: [0, 1, 1, 0], y: [40, -140, -180, -220], scale: [0.7, 1.1, 1, 0.9] }}
+        transition={{ duration: 1.4, times: [0, 0.2, 0.7, 1], ease: "easeOut" }}
+        className="fixed left-1/2 top-1/2 z-[66] -translate-x-1/2 pointer-events-none flex flex-col items-center"
+      >
+        <span className="font-mono text-[40px] font-black" style={{ color: fx.color, textShadow: `0 0 24px ${fx.color}` }}>
+          +30s
+        </span>
+        <span className="text-[11px] font-bold tracking-[.12em]" style={{ color: fx.color }}>
+          EXTRA TIME
+        </span>
+      </motion.div>
+    );
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 24, scale: 0.85 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: -16, scale: 0.9 }}
+      transition={{ type: "spring", stiffness: 340, damping: 22 }}
+      className="fixed left-1/2 top-[16%] z-[66] -translate-x-1/2 pointer-events-none"
+    >
+      <div
+        className="flex items-center gap-2.5 rounded-2xl border px-4 py-2.5 bg-card/95 shadow-[0_16px_40px_rgba(0,0,0,.5)]"
+        style={{ borderColor: `color-mix(in oklab, ${fx.color} 45%, transparent)`, boxShadow: `0 0 34px color-mix(in oklab, ${fx.color} 32%, transparent)` }}
+      >
+        <span className="text-2xl">{fx.icon}</span>
+        <span className="text-[13.5px] font-bold" style={{ color: fx.color }}>
+          {fx.text}
+        </span>
+      </div>
     </motion.div>
   );
 }

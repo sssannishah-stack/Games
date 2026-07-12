@@ -36,6 +36,7 @@ const EFFECT_THEMES: Record<string, EffectTheme> = {
   GAMBLE: { deep: "#48122a", accent: "#F06A96", glyph: "🎲", tag: "HIGH STAKES" },
   FREEZE: { deep: "#0e3346", accent: "#6ED3F2", glyph: "❄", tag: "STOP RIVALS" },
   STEAL: { deep: "#241a45", accent: "#A79BFF", glyph: "🥷", tag: "TAKE THEIRS" },
+  PEEK: { deep: "#0e2f3d", accent: "#5EC9E8", glyph: "👁", tag: "RULE ONE OUT" },
 };
 
 const FALLBACK_THEME: EffectTheme = { deep: "#24283b", accent: "#8EA0B8", glyph: "✦", tag: "POWER", typographic: true };

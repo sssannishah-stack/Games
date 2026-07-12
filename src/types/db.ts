@@ -176,6 +176,7 @@ export const POWER_CARD_EFFECT_TYPES = [
   "GAMBLE",
   "FREEZE",
   "STEAL",
+  "PEEK",
 ] as const;
 export type PowerCardEffectType = (typeof POWER_CARD_EFFECT_TYPES)[number];
 
@@ -416,6 +417,12 @@ export interface ITeam {
   stats: TeamStats;
   /** Question ids this team is shielded from negative marks on (Insurance card). */
   insuredQuestionIds: string[];
+  /** Hints unlocked per question via the Hint card. */
+  hintsRevealed: Array<{ questionId: string; count: number }>;
+  /** Questions this team is frozen on (opponent's Freeze card) — no cards playable. */
+  frozenQuestionIds: string[];
+  /** One eliminated wrong-option index per question this team has Peeked. */
+  peeks: Array<{ questionId: string; eliminatedOptionIndex: number }>;
   createdAt: Date;
   updatedAt: Date;
 }

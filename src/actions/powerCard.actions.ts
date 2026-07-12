@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { connectToDatabase } from "@/lib/database/mongodb";
-import { PowerCard, Team, PowerCardRequest, TeamPowerCard, Room, Round, Scene, EventLog, Competition } from "@/models";
+import { PowerCard, Team, PowerCardRequest, TeamPowerCard, Room, Round, Scene, EventLog, Competition, Question } from "@/models";
 import { requireUser } from "@/lib/auth/getCurrentUser";
 import { assertRoomOwnership, assertPowerCardOwnership } from "@/lib/authz";
 import { assertTeamController } from "@/lib/teamRoles";
@@ -215,6 +215,93 @@ async function applyInsuranceCoverage(roomId: string, teamId: string): Promise<v
   await Team.findByIdAndUpdate(teamId, { $addToSet: { insuredQuestionIds: { $each: window } } });
 }
 
+/** Push the live countdown forward by `seconds` (Extra Time / Hint). No-op if
+ *  no timer is currently set. Extends from whichever is later — the current
+ *  end or now — so it always adds real time. */
+async function extendRoomTimer(roomId: string, seconds: number): Promise<void> {
+  const room = await Room.findById(roomId).select("liveState.timerEndsAt").lean();
+  const endsAt = room?.liveState?.timerEndsAt;
+  if (!endsAt) return;
+  const base = Math.max(new Date(endsAt).getTime(), Date.now());
+  await Room.findByIdAndUpdate(roomId, {
+    $set: { "liveState.timerEndsAt": new Date(base + seconds * 1000), "liveState.timerPaused": false },
+  });
+}
+
+/** Reveal the next hint to this team for the live question, and add 10s. */
+async function applyHintReveal(roomId: string, teamId: string): Promise<void> {
+  const room = await Room.findById(roomId).select("currentQuestionId").lean();
+  const questionId = room?.currentQuestionId?.toString();
+  if (!questionId) return;
+
+  const bumped = await Team.updateOne(
+    { _id: teamId, "hintsRevealed.questionId": questionId },
+    { $inc: { "hintsRevealed.$.count": 1 } }
+  );
+  if (bumped.matchedCount === 0) {
+    await Team.updateOne({ _id: teamId }, { $push: { hintsRevealed: { questionId, count: 1 } } });
+  }
+  await extendRoomTimer(roomId, 10);
+}
+
+/**
+ * Freeze the active (assigned) team on their NEXT question — the current one
+ * plays out normally, but they can play no power cards on the following one.
+ * `actingTeamId` is the team casting Freeze; the target is whoever's turn it
+ * currently is.
+ */
+async function applyFreezeEffect(roomId: string, actingTeamId: string): Promise<void> {
+  const room = await Room.findById(roomId).select("currentSceneId currentQuestionId").lean();
+  if (!room?.currentSceneId) return;
+  const scene = await Scene.findById(room.currentSceneId).select("settings").lean();
+  const targetTeamId =
+    typeof scene?.settings?.assignedTeamId === "string" ? scene.settings.assignedTeamId : null;
+  if (!targetTeamId || targetTeamId === actingTeamId.toString()) {
+    throw new Error("Freeze needs another team to be on the active question.");
+  }
+
+  // Distinct question ids in flow order; freeze the one after the current.
+  const questionScenes = await Scene.find({ roomId, type: "QUESTION", questionId: { $ne: null } })
+    .sort({ order: 1 })
+    .select("questionId")
+    .lean();
+  const order: string[] = [];
+  for (const s of questionScenes) {
+    const qid = s.questionId?.toString();
+    if (qid && !order.includes(qid)) order.push(qid);
+  }
+  const currentQid = room.currentQuestionId?.toString();
+  const idx = currentQid ? order.indexOf(currentQid) : -1;
+  const nextQid = idx >= 0 ? order[idx + 1] : order[0];
+  if (!nextQid) throw new Error("There is no next question to freeze.");
+
+  await Team.findByIdAndUpdate(targetTeamId, { $addToSet: { frozenQuestionIds: nextQid } });
+}
+
+/**
+ * Eliminate one wrong option on the live MCQ question for this team only.
+ * Playability already guarantees isMCQ + 3+ options (so one elimination never
+ * leaves a single obvious answer) and that this team hasn't peeked already.
+ */
+async function applyPeekEffect(roomId: string, teamId: string): Promise<void> {
+  const room = await Room.findById(roomId).select("currentQuestionId").lean();
+  const questionId = room?.currentQuestionId?.toString();
+  if (!questionId) return;
+  const question = await Question.findById(questionId).select("options answer").lean();
+  if (!question) return;
+
+  const wrongIndexes = question.options
+    .map((opt, index) => ({ opt, index }))
+    .filter(({ opt }) => opt !== question.answer)
+    .map(({ index }) => index);
+  if (wrongIndexes.length === 0) return;
+
+  const eliminatedOptionIndex = wrongIndexes[Math.floor(Math.random() * wrongIndexes.length)];
+  await Team.findByIdAndUpdate(teamId, {
+    $push: { peeks: { questionId, eliminatedOptionIndex } },
+  });
+}
+
 async function applyImmediatePowerEffect(
   roomId: string,
   teamId: string,
@@ -222,6 +309,12 @@ async function applyImmediatePowerEffect(
 ): Promise<void> {
   if (effectType === "STEAL") await applyStealChance(roomId, teamId);
   if (effectType === "INSURANCE") await applyInsuranceCoverage(roomId, teamId);
+  if (effectType === "HINT") await applyHintReveal(roomId, teamId);
+  if (effectType === "FREEZE") await applyFreezeEffect(roomId, teamId);
+  if (effectType === "PEEK") await applyPeekEffect(roomId, teamId);
+  // Extra Time can only be played while the clock ticks (see playability),
+  // so there's always a timer to extend here.
+  if (effectType === "EXTRA_TIME") await extendRoomTimer(roomId, 30);
 }
 
 /** Create a power card in the host's global catalog. Card names must be unique per host (case-insensitive). */
@@ -527,7 +620,9 @@ export async function requestPowerCard(
   if (room.settings?.permissions?.requestLifelines === false) {
     throw new Error("Power card use is disabled for participants.");
   }
-  const team = await Team.exists({ _id: input.teamId, roomId: input.roomId });
+  const team = await Team.findOne({ _id: input.teamId, roomId: input.roomId })
+    .select("frozenQuestionIds hintsRevealed peeks")
+    .lean();
   if (!team) throw new Error("Team does not belong to this room.");
   if (input.targetTeamId) {
     const target = await Team.exists({ _id: input.targetTeamId, roomId: input.roomId });
@@ -549,6 +644,15 @@ export async function requestPowerCard(
     Boolean(room.liveState?.timerEndsAt) &&
     !room.liveState?.timerPaused &&
     new Date(room.liveState.timerEndsAt as unknown as string).getTime() > Date.now();
+  const currentQid = room.currentQuestionId?.toString() ?? null;
+  const frozen = Boolean(currentQid && team.frozenQuestionIds?.includes(currentQid));
+  const currentQuestion = currentQid
+    ? await Question.findById(currentQid).select("isMCQ options hints").lean()
+    : null;
+  const hintsRevealed = currentQid
+    ? (team.hintsRevealed?.find((h) => h.questionId === currentQid)?.count ?? 0)
+    : 0;
+  const alreadyPeeked = Boolean(currentQid && team.peeks?.some((p) => p.questionId === currentQid));
   const playability = powerCardPlayability(card.effectType, {
     sceneType: currentScene?.type ?? null,
     timerRunning,
@@ -558,6 +662,12 @@ export async function requestPowerCard(
         : null,
     actingTeamId: input.teamId,
     turnStolen: currentScene?.settings?.turnStolen === true,
+    frozen,
+    hintsTotal: currentQuestion?.hints?.length ?? 0,
+    hintsRevealed,
+    isMCQ: currentQuestion?.isMCQ ?? false,
+    optionsCount: currentQuestion?.options?.length ?? 0,
+    alreadyPeeked,
   });
   if (!playability.usable) {
     throw new Error(playability.reason ?? "This card can't be played right now.");
@@ -591,7 +701,10 @@ export async function requestPowerCard(
     typeof currentScene?.settings?.assignedTeamId === "string"
       ? currentScene.settings.assignedTeamId
       : null;
-  const effectiveTargetTeamId = card.effectType === "STEAL" ? assignedTeamId : input.targetTeamId ?? null;
+  const effectiveTargetTeamId =
+    card.effectType === "STEAL" || card.effectType === "FREEZE"
+      ? assignedTeamId
+      : input.targetTeamId ?? null;
 
   const request = await PowerCardRequest.create({
     roomId: input.roomId,

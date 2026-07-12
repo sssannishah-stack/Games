@@ -30,6 +30,31 @@ const TeamSchema = new Schema<ITeam>(
     // Insurance card is activated, covering the question it was used on plus
     // the next two (by the room's flow order).
     insuredQuestionIds: { type: [String], default: [] },
+    // How many hints this team has unlocked per question (Hint card). The
+    // live feed sends this team only that many of the question's hints.
+    hintsRevealed: {
+      type: [
+        new Schema(
+          { questionId: { type: String, required: true }, count: { type: Number, default: 1 } },
+          { _id: false }
+        ),
+      ],
+      default: [],
+    },
+    // Questions this team is frozen on — set when an opponent plays Freeze,
+    // covering the team's next question. While frozen, it can play no power
+    // cards on that question.
+    frozenQuestionIds: { type: [String], default: [] },
+    // One eliminated wrong-option index per question this team has Peeked.
+    peeks: {
+      type: [
+        new Schema(
+          { questionId: { type: String, required: true }, eliminatedOptionIndex: { type: Number, required: true } },
+          { _id: false }
+        ),
+      ],
+      default: [],
+    },
   },
   { timestamps: true }
 );

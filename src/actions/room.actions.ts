@@ -389,6 +389,9 @@ export async function resetRoom(
               previousRank: 0,
               coins: 0,
               insuredQuestionIds: [],
+              hintsRevealed: [],
+              frozenQuestionIds: [],
+              peeks: [],
               stats: {
                 correctAnswers: 0,
                 wrongAnswers: 0,
