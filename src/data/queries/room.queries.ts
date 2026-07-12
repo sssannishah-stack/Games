@@ -51,6 +51,7 @@ export interface RoomDetail extends RoomSummary {
     showAnswer: boolean;
     flashSaleActive: boolean;
     flashSaleEndsAt: string | null;
+    drawerTeamId: string | null;
   };
 }
 
@@ -184,6 +185,7 @@ export async function getRoomById(
       showAnswer: room.liveState?.showAnswer ?? false,
       flashSaleActive: room.liveState?.flashSaleActive ?? false,
       flashSaleEndsAt: room.liveState?.flashSaleEndsAt ? room.liveState.flashSaleEndsAt.toISOString() : null,
+      drawerTeamId: room.liveState?.drawerTeamId ? room.liveState.drawerTeamId.toString() : null,
     },
     economyEnabled: competition.settings?.economy?.enabled ?? false,
     teamCount: teams.length,

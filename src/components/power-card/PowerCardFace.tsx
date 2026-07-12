@@ -91,6 +91,10 @@ export function PowerCardFace({
   const frame = RARITY_FRAME[(rarity as PowerCardRarityName) in RARITY_FRAME ? (rarity as PowerCardRarityName) : "COMMON"];
   const s = SIZE_STYLES[size];
   const legendary = rarity === "LEGENDARY";
+  // Everything above Common gets the trading-card foil; it gets stronger with
+  // rarity so a Legendary reads as clearly more precious than a Rare.
+  const foil = rarity === "RARE" || rarity === "EPIC" || rarity === "LEGENDARY";
+  const foilStrength = legendary ? 0.5 : rarity === "EPIC" ? 0.38 : 0.28;
 
   return (
     <div
@@ -119,12 +123,26 @@ export function PowerCardFace({
         className="absolute inset-0"
         style={{ background: "linear-gradient(180deg, rgba(255,255,255,.09), transparent 30%)" }}
       />
-      {/* Legendary: animated shine sweep. */}
+      {/* Holographic foil — a slow rainbow sheen, screen-blended so it reads as
+          light catching the card rather than a colored overlay. */}
+      {foil && (
+        <div
+          aria-hidden
+          className="absolute inset-0 animate-[encHolo_5s_ease-in-out_infinite] mix-blend-screen pointer-events-none"
+          style={{
+            opacity: foilStrength,
+            backgroundImage:
+              "linear-gradient(115deg, transparent 20%, rgba(255,120,180,.5), rgba(120,200,255,.5), rgba(150,255,190,.5), rgba(255,220,130,.5), transparent 80%)",
+            backgroundSize: "220% 220%",
+          }}
+        />
+      )}
+      {/* Legendary: animated shine sweep on top of the foil. */}
       {legendary && (
         <div aria-hidden className="absolute inset-0 overflow-hidden">
           <div
             className="absolute inset-y-0 w-1/3 animate-[encShine_2.6s_ease-in-out_infinite]"
-            style={{ background: "linear-gradient(105deg, transparent, rgba(255,240,190,.22), transparent)" }}
+            style={{ background: "linear-gradient(105deg, transparent, rgba(255,240,190,.28), transparent)" }}
           />
         </div>
       )}

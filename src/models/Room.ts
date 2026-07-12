@@ -66,6 +66,7 @@ const RoomSchema = new Schema<IRoom>(
       flashSaleActive: { type: Boolean, default: false },
       flashSalePercent: { type: Number, default: 0 },
       flashSaleEndsAt: { type: Date, default: null },
+      drawerTeamId: { type: Schema.Types.ObjectId, ref: "Team", default: null },
     },
     onlineDevices: { type: Number, default: 0 },
   },

@@ -129,7 +129,11 @@ export async function GET(
 
   // My team's MCQ answer state for the live question — finalized pick + result,
   // or a Double Guess retry in progress (with the wrong first pick to lock out).
-  const [mcqGraded, mcqRetry] = await Promise.all([
+  // Also the team's judgment on this question directly (not sliced out of the
+  // 20-event feed window, which can roll it out of range in a busy room before
+  // the host moves on — this backs a persistent "you got it right/wrong"
+  // banner that must not silently disappear).
+  const [mcqGraded, mcqRetry, judgmentLog] = await Promise.all([
     selectedTeam && room.currentQuestionId
       ? EventLog.findOne({
           roomId: room._id,
@@ -145,6 +149,18 @@ export async function GET(
           "metadata.teamId": id(selectedTeam._id),
           "metadata.questionId": id(room.currentQuestionId),
         }).lean<IEventLog>()
+      : null,
+    selectedTeam && room.currentQuestionId
+      ? EventLog.findOne({
+          roomId: room._id,
+          type: { $in: ["SCORE_CHANGED", "POWER_CARD_USED"] },
+          "metadata.teamId": id(selectedTeam._id),
+          "metadata.questionId": id(room.currentQuestionId),
+          "metadata.reason": { $in: ["CORRECT", "WRONG"] },
+          "metadata.isUndo": { $ne: true },
+        })
+          .sort({ createdAt: -1 })
+          .lean<IEventLog>()
       : null,
   ]);
 
@@ -187,7 +203,11 @@ export async function GET(
   function feedEntry(log: IEventLog) {
     const meta = log.metadata ?? {};
     const teamMeta = teamMetaById.get(id(meta.teamId));
-    const teamName = teamMeta?.name ?? "A team";
+    // Speak to the viewing team in second person for their own actions — "You
+    // won the auction" instead of "Team B won the auction" showing up on Team
+    // B's own phone reads as someone else's result, not theirs.
+    const isMyTeam = Boolean(selectedTeam) && id(meta.teamId) === id(selectedTeam!._id);
+    const teamName = isMyTeam ? "You" : teamMeta?.name ?? "A team";
     const teamColor = teamMeta?.color ?? null;
     const cardName = cardNameById.get(id(meta.powerCardId)) ?? "a power card";
     switch (log.type) {
@@ -264,8 +284,9 @@ export async function GET(
         };
       case "LUCKY_SPIN": {
         const bad = meta.kind === "PENALTY" || meta.kind === "NOTHING";
+        const cardName = typeof meta.cardName === "string" ? meta.cardName : null;
         return {
-          text: `${teamName}: Lucky Spin — ${String(meta.label ?? "")}`,
+          text: `${teamName}: Lucky Spin — ${String(meta.label ?? "")}${cardName ? `: ${cardName}` : ""}`,
           icon: String(meta.emoji ?? "🍀"),
           tone: bad ? "down" : "achievement",
           teamColor,
@@ -399,23 +420,17 @@ export async function GET(
       // signal (not inferred from the score number moving) so the phone can
       // show a reliable result even when the delta is 0 (Insurance/Shield
       // voided it, or a 0-point bonus mark).
-      judgment: (() => {
-        if (!selectedTeam) return null;
-        const mySelectedId = id(selectedTeam._id);
-        const latest = recentEvents.find(
-          (log) =>
-            (log.type === "SCORE_CHANGED" || (log.type === "POWER_CARD_USED" && log.metadata?.source === "INSURANCE_BLOCK")) &&
-            id(log.metadata?.teamId) === mySelectedId &&
-            !log.metadata?.isUndo &&
-            (log.metadata?.reason === "CORRECT" || log.metadata?.reason === "WRONG")
-        );
-        if (!latest) return null;
-        return {
-          id: id(latest._id),
-          reason: latest.metadata?.reason as "CORRECT" | "WRONG",
-          points: Number(latest.metadata?.points ?? 0),
-        };
-      })(),
+      // Scoped to the LIVE question — once the host moves to the next one this
+      // naturally goes back to null (no judgment yet for that question),
+      // which is what lets the participant UI show a persistent "you got
+      // this one right/wrong" banner without it going stale on the next Q.
+      judgment: judgmentLog
+        ? {
+            id: id(judgmentLog._id),
+            reason: judgmentLog.metadata?.reason as "CORRECT" | "WRONG",
+            points: Number(judgmentLog.metadata?.points ?? 0),
+          }
+        : null,
       competition: {
         id: id(room.competitionId),
         title: competition?.title ?? room.name,
@@ -431,6 +446,25 @@ export async function GET(
             selectedTeam.frozenQuestionIds?.includes(id(room.currentQuestionId))
         ),
       },
+      // Drawing board context (DRAWING scenes only). Tells this phone whether
+      // it holds the pen — the strokes themselves come from the dedicated
+      // /drawing poll, not this payload, to keep the 2s poll small.
+      drawing:
+        currentScene?.type === "DRAWING"
+          ? (() => {
+              const drawerTeamId = room.liveState?.drawerTeamId
+                ? id(room.liveState.drawerTeamId)
+                : null;
+              const drawerTeam = drawerTeamId ? teams.find((t) => id(t._id) === drawerTeamId) : null;
+              const isDrawerTeam = Boolean(selectedTeam && drawerTeamId === id(selectedTeam._id));
+              return {
+                drawerTeamId,
+                drawerTeamName: drawerTeam?.name ?? null,
+                isDrawerTeam,
+                canDraw: isDrawerTeam && canControl,
+              };
+            })()
+          : null,
       currentScene: currentScene
         ? {
             id: id(currentScene._id),

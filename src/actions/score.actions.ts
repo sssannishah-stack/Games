@@ -138,6 +138,7 @@ export async function createScoreTransaction(
     type: "SCORE_CHANGED",
     metadata: {
       teamId: input.teamId,
+      questionId: input.questionId ?? null,
       points: input.points,
       reason: input.reason,
       isUndo: input.isUndo ?? false,
@@ -199,6 +200,7 @@ async function resolveAndApplyMark(input: {
         type: "POWER_CARD_USED",
         metadata: {
           teamId: input.teamId,
+          questionId,
           source: "INSURANCE_BLOCK",
           blockedPoints: points,
           reason: input.reason,
@@ -272,7 +274,7 @@ async function resolveAndApplyMark(input: {
     await EventLog.create({
       roomId: input.roomId,
       type: "SCORE_CHANGED",
-      metadata: { teamId: input.teamId, points, reason: input.reason, testMode: true },
+      metadata: { teamId: input.teamId, questionId, points, reason: input.reason, testMode: true },
     });
     return { finalPoints: points, blocked: false };
   }
@@ -311,6 +313,30 @@ export async function giveMarks(input: {
   }
 
   const isTest = room?.status === "TESTING";
+  const questionId = room?.currentQuestionId?.toString() ?? input.questionId ?? null;
+
+  // A whole-team Correct/Wrong verdict is a one-shot judgment on a question —
+  // tapping Wrong right after Correct (or vice versa) used to just stack a
+  // second transaction on top instead of replacing the first, so the team's
+  // score silently drifted by both amounts. Block a second verdict on the
+  // same question until the host explicitly Undoes the first one. Per-member
+  // scoring (a specific participantId) is unaffected — that's intentionally
+  // independent per member.
+  if (!isTest && !input.participantId && questionId && (input.reason === "CORRECT" || input.reason === "WRONG")) {
+    const alreadyJudged = await ScoreTransaction.exists({
+      roomId: input.roomId,
+      teamId: input.teamId,
+      questionId,
+      participantId: null,
+      reason: { $in: ["CORRECT", "WRONG"] },
+      isUndo: { $ne: true },
+      isReverted: { $ne: true },
+    });
+    if (alreadyJudged) {
+      throw new Error("This team has already been marked for this question. Undo it first to re-judge.");
+    }
+  }
+
   // A Correct/Wrong call is the host judging the live question — stop the
   // clock the instant that happens so the phones get a clean result signal.
   if (!isTest && (input.reason === "CORRECT" || input.reason === "WRONG")) {
@@ -322,7 +348,7 @@ export async function giveMarks(input: {
     teamId: input.teamId,
     points: input.points,
     reason: input.reason,
-    questionId: room?.currentQuestionId?.toString() ?? input.questionId ?? null,
+    questionId,
     participantId: input.participantId,
     createdBy: user.id,
     isTest,

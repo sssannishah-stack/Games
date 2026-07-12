@@ -197,6 +197,31 @@
       transform: scale(1.05);
     }
   }
+  /* Mythic rarity border — animated hue sweep around the card edge. */
+  @keyframes encRainbow {
+    0% {
+      filter: hue-rotate(0deg);
+    }
+    100% {
+      filter: hue-rotate(360deg);
+    }
+  }
+
+  /* Holographic foil — drifts a rainbow sheen across a trading card. */
+  @keyframes encHolo {
+    0% {
+      background-position: 0% 50%;
+      opacity: 0.35;
+    }
+    50% {
+      background-position: 100% 50%;
+      opacity: 0.6;
+    }
+    100% {
+      background-position: 0% 50%;
+      opacity: 0.35;
+    }
+  }
 }
 
 /* ─── Bright theme — swaps the whole surface/text/line ramp for a light,

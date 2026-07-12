@@ -296,6 +296,9 @@ export interface RoomLiveState {
   flashSaleActive: boolean;
   flashSalePercent: number;
   flashSaleEndsAt: Date | null;
+  /** DRAWING scenes: the team whose captain may draw on the shared board.
+   *  Null = only the host draws; everyone else watches. */
+  drawerTeamId: Types.ObjectId | null;
 }
 
 export const ANSWER_MODES = ["VERBAL", "CAPTAIN_SUBMIT"] as const;
@@ -540,6 +543,31 @@ export interface IScene {
   updatedAt: Date;
 }
 
+export const DRAWING_STROKE_KINDS = ["STROKE", "CLEAR"] as const;
+export type DrawingStrokeKind = (typeof DRAWING_STROKE_KINDS)[number];
+
+/**
+ * One append-only mark on a DRAWING scene's shared board. Coordinates are
+ * normalized 0..1 (a flat [x0,y0,x1,y1,…] array) so the same stroke renders
+ * correctly on any screen size. A `CLEAR` row is a wipe marker: on replay the
+ * canvas resets and only strokes with a higher `seq` are drawn. Scoped to a
+ * question so a new drawing question always starts on a blank board.
+ */
+export interface IDrawingStroke {
+  _id: Types.ObjectId;
+  roomId: Types.ObjectId;
+  questionId: Types.ObjectId;
+  seq: number;
+  kind: DrawingStrokeKind;
+  color: string;
+  width: number;
+  /** True for eraser strokes (rendered as destination-out). */
+  erase: boolean;
+  /** Flat, normalized: [x0, y0, x1, y1, …]. Empty for CLEAR rows. */
+  points: number[];
+  createdAt: Date;
+}
+
 /** A reusable question in the host's library — not tied to any one round. */
 export interface IQuestion {
   _id: Types.ObjectId;
@@ -548,7 +576,10 @@ export interface IQuestion {
   question: string;
   mediaUrl?: string;
   media?: QuestionMedia | null;
-  /** Multiple-choice display only — the host still judges/scores manually, never auto-graded. */
+  /** Opt-in multiple-choice: when true, the assigned captain taps an option and
+   *  submitMcqAnswer auto-scores it against `answer` (the one auto-graded flow);
+   *  the host's manual marking is hidden for these. False = host-judged like every
+   *  other question type. */
   isMCQ: boolean;
   options: string[];
   answer: string;

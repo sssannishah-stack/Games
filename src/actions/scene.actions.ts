@@ -356,6 +356,15 @@ export async function publishScene(roomId: string, sceneId: string): Promise<ISc
   await assertRoomOwnership(roomId, user.id);
   await connectToDatabase();
 
+  // Re-publishing the scene that's already live (a stray click on its own
+  // Event Flow tile) used to fully reset the timer and answer-reveal state —
+  // a question a team had already answered would suddenly look "replayable"
+  // again with a fresh countdown. No-op instead; nothing actually changed.
+  const room = await Room.findById(roomId).select("currentSceneId").lean();
+  if (room?.currentSceneId?.toString() === sceneId) {
+    return Scene.findById(sceneId).lean<IScene>();
+  }
+
   await Scene.updateMany({ roomId, status: "LIVE" }, { $set: { status: "COMPLETED", isActive: false } });
   const scene = await Scene.findOneAndUpdate(
     { _id: sceneId, roomId },

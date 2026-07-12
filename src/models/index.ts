@@ -20,3 +20,4 @@ export { default as EventLog } from "./EventLog";
 export { default as TeamAchievement } from "./TeamAchievement";
 export { default as Auction } from "./Auction";
 export { default as AuctionBid } from "./AuctionBid";
+export { default as DrawingStroke } from "./DrawingStroke";

@@ -34,6 +34,10 @@ import {
 import { giveCoins } from "@/actions/coin.actions";
 import { setTeamDeviceRole } from "@/actions/team.actions";
 import { giveMarks, hostUndoScoreTransaction } from "@/actions/score.actions";
+import { setDrawer } from "@/actions/drawing.actions";
+import { LiveDrawBoard } from "@/components/draw/LiveDrawBoard";
+import { useSound } from "@/lib/sound/useSound";
+import { SoundToggle } from "@/components/sound/SoundToggle";
 import { awardAchievement, dismissAchievement, giveManualAchievement } from "@/actions/achievement.actions";
 import { luckySpin, type SpinResult } from "@/actions/surprise.actions";
 import {
@@ -153,6 +157,7 @@ export function HostConsole({
   auction,
 }: HostConsoleProps) {
   const router = useRouter();
+  const play = useSound();
   const [pending, startTransition] = useTransition();
   const [feedback, setFeedback] = useState<string | null>(null);
   const [broadcast, setBroadcast] = useState("");
@@ -205,6 +210,21 @@ export function HostConsole({
   const assignmentSource = typeof current?.settings?.assignmentSource === "string"
     ? current.settings.assignmentSource
     : null;
+  // Has the assigned team already gotten a whole-team Correct/Wrong verdict
+  // on this question? Tapping the other button afterward used to just stack
+  // a second mark on top — block it here too (server also enforces this).
+  const alreadyJudgedTransaction =
+    assignedTeamId && question
+      ? scoreHistory.find(
+          (entry) =>
+            entry.teamId === assignedTeamId &&
+            entry.questionId === question.id &&
+            !entry.participantId &&
+            (entry.reason === "CORRECT" || entry.reason === "WRONG") &&
+            !entry.isUndo &&
+            !entry.isReverted
+        )
+      : undefined;
   const ownedByTeam = new Map<string, TeamPowerCardRecord[]>();
   for (const owned of ownedCards) {
     const list = ownedByTeam.get(owned.teamId) ?? [];
@@ -216,6 +236,18 @@ export function HostConsole({
     const interval = window.setInterval(() => setNow(Date.now()), 250);
     return () => window.clearInterval(interval);
   }, []);
+
+  // The host console only refreshed on its OWN actions — anything a
+  // participant does (play Extra Time, buy from the store, submit an MCQ
+  // answer) updated the database but never reached this screen until the
+  // host happened to click something themselves. Poll for it instead, same
+  // idea as the participant phone's live fetch loop.
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      if (!pending) router.refresh();
+    }, 4000);
+    return () => window.clearInterval(interval);
+  }, [pending, router]);
 
   useEffect(() => {
     if (!scoreFloat) return;
@@ -418,6 +450,7 @@ export function HostConsole({
     if (previewPoints !== 0) {
       setScoreFloat({ id: Date.now(), points: previewPoints, team: teamById.get(teamId)?.name ?? "Team" });
     }
+    play(correct ? "correct" : "wrong");
     action(async () => {
       await giveMarks({
         roomId: room.id,
@@ -498,6 +531,7 @@ export function HostConsole({
           {STATUS_LABEL[room.status]}
         </Badge>
         <span className="hidden sm:flex items-center gap-1.5 text-[12px] text-mute-2 shrink-0">
+          <span className={`w-1.5 h-1.5 rounded-full ${connectedCount > 0 ? "bg-success animate-enc-pulse" : "bg-line/[.3]"}`} />
           <Icon name="users" size={13} />
           {connectedCount} Connected
         </span>
@@ -513,6 +547,7 @@ export function HostConsole({
         >
           {timerDisplay}
         </span>
+        <SoundToggle className="shrink-0" />
         <Button
           variant="danger"
           size="sm"
@@ -705,6 +740,12 @@ export function HostConsole({
                     style={{ background: "linear-gradient(90deg, transparent, rgba(108,123,250,.6), transparent)" }}
                   />
                   <div className="flex items-center gap-2">
+                    {/* Broadcast-style "now playing" bug — a live dot + the scene
+                        currently on every screen in the room. */}
+                    <span className="flex items-center gap-1.5 rounded-full bg-danger/15 border border-danger/30 px-2.5 py-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-danger animate-enc-pulse" />
+                      <span className="text-[9px] font-black tracking-[.16em] text-danger-soft">ON AIR</span>
+                    </span>
                     <span className="text-[11px] font-semibold text-accent bg-accent/15 rounded-full px-3 py-1">
                       {current?.type ?? "NO SCENE"}
                     </span>
@@ -735,6 +776,22 @@ export function HostConsole({
                       {question.media.type === "AUDIO" && <audio controls src={question.media.url} className="w-full" />}
                       {question.media.type === "VIDEO" && (
                         <video controls src={question.media.url} className="w-full max-h-52 rounded-lg" />
+                      )}
+                    </div>
+                  )}
+                  {current?.type === "DRAWING" && (
+                    <div className="w-full max-w-[440px]">
+                      <LiveDrawBoard
+                        roomId={room.id}
+                        roomCode={room.roomCode}
+                        canDraw={!room.liveState.drawerTeamId}
+                        identity={{}}
+                      />
+                      {room.liveState.drawerTeamId && (
+                        <span className="mt-2 block text-[11px] text-mute-2">
+                          {teams.find((t) => t.id === room.liveState.drawerTeamId)?.name ?? "A team"} is drawing —
+                          reclaim the pen below to draw yourself.
+                        </span>
                       )}
                     </div>
                   )}
@@ -812,8 +869,13 @@ export function HostConsole({
 
         {/* RIGHT PANEL — CONTROL CENTER */}
         <aside className="flex flex-col border-t xl:border-t-0 xl:border-l border-line/[.07] min-h-[620px] xl:min-h-0">
-          <div className="px-4 py-3 text-[11px] font-mono font-semibold tracking-[.12em] text-label">
+          <div className="flex items-center gap-2 px-4 py-3 text-[11px] font-mono font-semibold tracking-[.12em] text-label border-b border-line/[.06]">
+            <Icon name="sliders-horizontal" size={13} className="text-accent" />
             CONTROL CENTER
+            <span className="ml-auto flex items-center gap-1 text-[9px] font-bold tracking-[.14em] text-mute-2">
+              <span className={`w-1.5 h-1.5 rounded-full ${timerRunning ? "bg-success animate-enc-pulse" : "bg-line/[.3]"}`} />
+              {timerRunning ? "TIMER LIVE" : "IDLE"}
+            </span>
           </div>
           <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
             {/* CURRENT QUESTION */}
@@ -842,6 +904,41 @@ export function HostConsole({
                           Hint {i + 1}: {hint.text} (-{hint.penalty})
                         </span>
                       ))}
+                    </div>
+                  )}
+
+                  {current?.type === "DRAWING" && (
+                    <div className="flex flex-col gap-1.5 rounded-xl border border-accent/20 bg-accent/[.05] p-2.5 mt-0.5">
+                      <span className="text-[10px] font-semibold tracking-[.1em] text-label">WHO DRAWS</span>
+                      <div className="flex flex-wrap gap-1.5">
+                        <button
+                          onClick={() => action(() => setDrawer(room.id, null))}
+                          disabled={pending}
+                          className={`rounded-lg px-2.5 py-1.5 text-[11px] font-bold transition ${
+                            !room.liveState.drawerTeamId ? "bg-accent text-white" : "bg-line/[.06] text-mute-2 hover:bg-line/[.1]"
+                          }`}
+                        >
+                          🎨 Host draws
+                        </button>
+                        {teams.map((team) => (
+                          <button
+                            key={team.id}
+                            onClick={() => action(() => setDrawer(room.id, team.id))}
+                            disabled={pending}
+                            className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-bold transition ${
+                              room.liveState.drawerTeamId === team.id
+                                ? "bg-accent text-white"
+                                : "bg-line/[.06] text-mute-2 hover:bg-line/[.1]"
+                            }`}
+                          >
+                            <span className="w-2 h-2 rounded-full" style={{ background: team.color ?? "#6C7BFA" }} />
+                            {team.name}
+                          </button>
+                        ))}
+                      </div>
+                      <span className="text-[10px] text-mute-2">
+                        Assigning a team hands its captain the pen and clears the board.
+                      </span>
                     </div>
                   )}
 
@@ -877,7 +974,7 @@ export function HostConsole({
                       <Button
                         variant="success"
                         size="sm"
-                        disabled={pending || teams.length === 0}
+                        disabled={pending || teams.length === 0 || Boolean(alreadyJudgedTransaction)}
                         onClick={() =>
                           assignedTeamId
                             ? quickMark(assignedTeamId, true)
@@ -891,7 +988,7 @@ export function HostConsole({
                       <Button
                         variant="danger"
                         size="sm"
-                        disabled={pending || teams.length === 0 || round?.specialMode === "BONUS"}
+                        disabled={pending || teams.length === 0 || round?.specialMode === "BONUS" || Boolean(alreadyJudgedTransaction)}
                         onClick={() =>
                           assignedTeamId
                             ? quickMark(assignedTeamId, false)
@@ -907,13 +1004,30 @@ export function HostConsole({
                         No team assigned — you&apos;ll pick the team next.
                       </span>
                     )}
+                    {alreadyJudgedTransaction && (
+                      <div className="flex items-center gap-2 text-[10.5px] text-mute-2">
+                        <span>
+                          Already marked {alreadyJudgedTransaction.reason === "CORRECT" ? "✓ Correct" : "✗ Wrong"}.
+                        </span>
+                        <button
+                          onClick={() => action(() => hostUndoScoreTransaction(alreadyJudgedTransaction.id))}
+                          disabled={pending}
+                          className="ml-auto font-semibold text-accent hover:underline cursor-pointer"
+                        >
+                          Undo to re-judge
+                        </button>
+                      </div>
+                    )}
                   </div>
                   )}
 
                   <Button
                     variant="primary"
                     size="sm"
-                    onClick={() => action(() => revealAnswer(room.id))}
+                    onClick={() => {
+            play("reveal");
+            action(() => revealAnswer(room.id));
+          }}
                     disabled={pending || timerRunning}
                     title={timerRunning ? "Stop the timer before revealing the answer." : undefined}
                     className="mt-1"
@@ -1598,7 +1712,10 @@ export function HostConsole({
         </Button>
         <Button
           variant="subtle"
-          onClick={() => action(() => revealAnswer(room.id))}
+          onClick={() => {
+            play("reveal");
+            action(() => revealAnswer(room.id));
+          }}
           disabled={pending || timerRunning}
           title={timerRunning ? "Stop the timer before revealing the answer." : undefined}
           className="shrink-0"
@@ -1709,7 +1826,10 @@ export function HostConsole({
         teams={teams}
         teamId={surpriseTeamId}
         onTeamChange={setSurpriseTeamId}
-        onSpin={(teamId) => luckySpin(room.id, teamId)}
+        onSpin={(teamId) => {
+          play("spin");
+          return luckySpin(room.id, teamId);
+        }}
         onDone={() => router.refresh()}
       />
 
@@ -1861,8 +1981,13 @@ function LuckySpinModal({
         {result ? (
           <div className="flex flex-col items-center gap-1 text-center">
             <span className="text-3xl">{result.emoji}</span>
-            <span className="text-lg font-bold text-ink">{result.label}</span>
+            <span className="text-lg font-bold text-ink">
+              {result.cardName ? `${result.label}: ${result.cardName}` : result.label}
+            </span>
             <span className="text-[12px] text-mute-2">{teams.find((t) => t.id === teamId)?.name}</span>
+            {result.cardName && (
+              <span className="text-[11px] text-accent">Added to their inventory — usable next question.</span>
+            )}
           </div>
         ) : (
           <span className="text-[12px] text-mute-2 h-[68px] flex items-center">

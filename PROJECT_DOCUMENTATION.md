@@ -6,7 +6,7 @@
 
 ## 1. What this product is
 
-Encore is **not a quiz app**. It is not Kahoot, Quizizz, or Slido. There is no auto-scored multiple-choice flow and no participant-driven navigation.
+Encore is **not a quiz app**. It is not Kahoot, Quizizz, or Slido. Judging is host-directed by default, and there is no participant-driven navigation. (One optional exception exists: a host may flag a specific question as multiple-choice, in which case the assigned team's captain taps an option and it auto-scores — see §MCQ below. This is an opt-in convenience per question, not the product's spine.)
 
 Encore is an operating system for running a **real, physical, host-directed live competition** — the kind of event a family, school, or community runs in a hall with a projector, a host holding a laptop, and everyone else on their phones as companion screens. Examples: school inter-house competitions, Antakshari nights, community quiz evenings, corporate team offsites, cultural festival competitions.
 
@@ -14,7 +14,7 @@ The mental model:
 
 - **The host is a TV show director.** They control every screen, every transition, every point awarded. Nothing happens without them.
 - **Participants are the studio audience with a second screen.** They watch what the host is showing, request help via power cards, and see their team's score — they never drive the show.
-- **Judging is manual, always.** Someone in the room speaks an answer, sings a line, or draws on paper. The host decides if it's correct and awards marks by hand. The system never auto-grades.
+- **Judging is manual by default.** Someone in the room speaks an answer, sings a line, or draws on paper. The host decides if it's correct and awards marks by hand. The one exception is a question the host explicitly marks as multiple-choice (`isMCQ`): there the assigned captain taps an option and the system scores it automatically. Every other question type is host-judged, never auto-graded.
 
 Combine three products and that's roughly the shape of Encore:
 
@@ -253,6 +253,15 @@ ScoreTransaction {
 
 A team's live `score` is a **derived value**, recalculated by summing every non-undone, non-reverted transaction for that room and re-ranking all teams — not something incremented in place. Undo doesn't delete history: it flags the original row `isReverted: true` and appends a new inverse transaction. This is what makes "undo any mistake" and "full score history" both trivially correct — the ledger is the single source of truth, the `score` field is just a cache of it.
 
+### MCQ auto-scoring (the one opt-in exception)
+
+A question the host has flagged `isMCQ` is the single place scoring is *not* manual. On such a question the assigned team's captain taps an option and `submitMcqAnswer` grades it server-side against `question.answer`, writing exactly the same `ScoreTransaction` (`CORRECT`/`WRONG`, with `questionId`) plus an `MCQ_GRADED` event so the result survives the live feed window. Rules that keep this honest and non-double-counting:
+
+- **Only the captain, only on their turn, once.** A second submission is rejected once an `MCQ_GRADED` event exists for that team+question.
+- **The host cannot also mark it.** The host console hides the manual Correct/Wrong controls for MCQ questions and shows an "auto-scored" notice instead — so a question is scored by *either* the captain's tap *or* the host, never both.
+- **Power cards still apply:** Double Guess grants one retry on a wrong pick (`MCQ_RETRY`), and Peek rules out one wrong option client-side.
+- Everything else — undo, the derived-score model, coin rewards in Economy Mode — behaves identically to a host-awarded mark. MCQ changes *who taps the button*, not how the ledger works.
+
 ---
 
 ## 8. Coins vs. points — never mixed
@@ -356,7 +365,7 @@ Live per-room toggle: `Room.liveState.storeStatus` = `OPEN` or `CLOSED`, control
 
 **Never build:**
 - A participant dashboard or participant account/login system.
-- Automatic quiz scoring or a forced multiple-choice-only flow.
+- A *forced* multiple-choice-only flow, or auto-scoring anything other than a question the host has explicitly opted into MCQ. (Opt-in per-question MCQ auto-scoring exists and is fine; making it the default or the only mode is not.)
 - Independent participant navigation (a participant choosing what screen they're on).
 - A second, competing "cards" or "lifelines" system — everything strategy-related goes through the one Power Card engine described in §9.
 

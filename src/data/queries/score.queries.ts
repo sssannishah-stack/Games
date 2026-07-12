@@ -9,6 +9,8 @@ export interface ScoreTransactionRecord {
   roomId: string;
   teamId: string;
   teamName: string;
+  questionId: string | null;
+  participantId: string | null;
   points: number;
   reason: ScoreReason;
   isUndo: boolean;
@@ -31,6 +33,8 @@ export async function getScoreHistoryByRoom(roomId: string): Promise<ScoreTransa
       roomId: item.roomId.toString(),
       teamId: item.teamId.toString(),
       teamName: teamMap.get(item.teamId.toString()) ?? "Team",
+      questionId: item.questionId ? item.questionId.toString() : null,
+      participantId: item.participantId ? item.participantId.toString() : null,
       points: item.points,
       reason: item.reason,
       isUndo: item.isUndo ?? false,

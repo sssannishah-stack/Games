@@ -15,6 +15,10 @@ export interface SpinResult {
   label: string;
   emoji: string;
   amount: number;
+  /** Which card the CARD segment actually granted — the wheel only says
+   *  "Surprise card" generically, so without this neither the host nor the
+   *  team has any way to know what landed in their inventory. */
+  cardName: string | null;
 }
 
 /**
@@ -29,6 +33,7 @@ export async function luckySpin(roomId: string, teamId: string): Promise<SpinRes
 
   const index = pickSpinIndex();
   const seg = SPIN_SEGMENTS[index];
+  let cardName: string | null = null;
 
   if (seg.kind === "COINS") {
     await createCoinTransaction({
@@ -62,34 +67,36 @@ export async function luckySpin(roomId: string, teamId: string): Promise<SpinRes
       createdBy: user.id,
     });
   } else if (seg.kind === "CARD") {
-    await grantRandomCard(roomId, teamId);
+    cardName = await grantRandomCard(roomId, teamId);
   }
 
   await EventLog.create({
     roomId,
     type: "LUCKY_SPIN",
-    metadata: { teamId, label: seg.label, emoji: seg.emoji, kind: seg.kind },
+    metadata: { teamId, label: seg.label, emoji: seg.emoji, kind: seg.kind, cardName },
   });
 
   revalidatePath(`/host/${roomId}`);
-  return { index, kind: seg.kind, label: seg.label, emoji: seg.emoji, amount: seg.amount };
+  return { index, kind: seg.kind, label: seg.label, emoji: seg.emoji, amount: seg.amount, cardName };
 }
 
-/** Grant a random non-mystery card from the host's catalog to a team. */
-async function grantRandomCard(roomId: string, teamId: string): Promise<void> {
+/** Grant a random non-mystery card from the host's catalog to a team. Returns
+ *  its name so the spin result can actually say what was won, instead of the
+ *  wheel's generic "Surprise card" label leaving it to guesswork. */
+async function grantRandomCard(roomId: string, teamId: string): Promise<string | null> {
   const room = await Room.findById(roomId).select("competitionId").lean<{ competitionId: unknown }>();
-  if (!room) return;
+  if (!room) return null;
   const competition = await Competition.findById(room.competitionId).select("ownerId").lean<{ ownerId: unknown }>();
-  if (!competition) return;
+  if (!competition) return null;
 
   const pool = await PowerCard.find({
     ownerId: String(competition.ownerId),
     enabled: true,
     effectType: { $ne: "MYSTERY" },
   })
-    .select("_id usesPerTeam")
+    .select("_id name usesPerTeam")
     .lean();
-  if (pool.length === 0) return;
+  if (pool.length === 0) return null;
 
   const prize = pool[Math.floor(Math.random() * pool.length)];
   await TeamPowerCard.findOneAndUpdate(
@@ -97,4 +104,5 @@ async function grantRandomCard(roomId: string, teamId: string): Promise<void> {
     { $inc: { remainingUses: prize.usesPerTeam || 1 }, $set: { status: "AVAILABLE" } },
     { upsert: true }
   );
+  return prize.name;
 }
