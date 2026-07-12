@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { Types } from "mongoose";
 import { connectToDatabase } from "@/lib/database/mongodb";
-import { ScoreTransaction, Team, EventLog, Room, Round } from "@/models";
+import { ScoreTransaction, Team, EventLog, Room, Round, TeamPowerCard, PowerCard, PowerCardRequest } from "@/models";
 import { createCoinTransaction } from "@/actions/coin.actions";
 import { detectAchievements } from "@/lib/detectAchievements";
 import { requireUser } from "@/lib/auth/getCurrentUser";
@@ -158,6 +158,15 @@ export async function createScoreTransaction(
   return transaction.toObject() as IScoreTransaction;
 }
 
+/** Decrement one use of an owned power card, same transition consumePowerCard uses. */
+async function consumeTeamPowerCardUse(teamPowerCardId: unknown): Promise<void> {
+  const owned = await TeamPowerCard.findById(teamPowerCardId);
+  if (!owned) return;
+  owned.remainingUses -= 1;
+  owned.status = owned.remainingUses <= 0 ? "CONSUMED" : "AVAILABLE";
+  await owned.save();
+}
+
 export async function giveMarks(input: {
   roomId: string;
   teamId: string;
@@ -177,37 +186,104 @@ export async function giveMarks(input: {
         throw new Error("Bonus rounds do not allow negative marks.");
       }
     }
+  }
 
+  const questionId = room?.currentQuestionId?.toString();
+  const isTest = room?.status === "TESTING";
+  let points = input.points;
+
+  if (points < 0 && questionId) {
     // Insurance: a covered team takes no negative marks on an insured
-    // question. Enforced server-side so the penalty is voided regardless of
-    // what the host enters, then logged so the block is visible in the timeline.
-    const questionId = room?.currentQuestionId?.toString();
-    if (questionId) {
-      const team = await Team.findById(input.teamId).select("insuredQuestionIds").lean();
-      if (team?.insuredQuestionIds?.includes(questionId)) {
-        await EventLog.create({
-          roomId: input.roomId,
-          type: "POWER_CARD_USED",
-          metadata: {
-            teamId: input.teamId,
-            source: "INSURANCE_BLOCK",
-            blockedPoints: input.points,
-            text: "Insurance blocked a negative mark",
-          },
-        });
-        revalidatePath(`/host/${input.roomId}`);
-        revalidatePath(`/admin/rooms/${input.roomId}`);
-        return;
+    // question at all — no transaction, as if it never happened. Enforced
+    // server-side so it can never be forgotten or typed around.
+    const team = await Team.findById(input.teamId).select("insuredQuestionIds").lean();
+    if (team?.insuredQuestionIds?.includes(questionId)) {
+      await EventLog.create({
+        roomId: input.roomId,
+        type: "POWER_CARD_USED",
+        metadata: {
+          teamId: input.teamId,
+          source: "INSURANCE_BLOCK",
+          blockedPoints: points,
+          text: "Insurance blocked a negative mark",
+        },
+      });
+      revalidatePath(`/host/${input.roomId}`);
+      revalidatePath(`/admin/rooms/${input.roomId}`);
+      return;
+    }
+  }
+
+  // Shield / Double Points / Gamble: auto-applied from whichever this team
+  // currently has ACTIVE — same reliability guarantee as Insurance, instead
+  // of relying on the host to notice and manually double/zero the number
+  // before submitting (easy to forget, and the quick Mark Answer buttons
+  // have no UI to do it at all).
+  let consumed: { id: unknown; powerCardId: string; effectType: string } | null = null;
+  if (questionId && points !== 0 && (input.reason === "CORRECT" || input.reason === "WRONG" || input.reason === "BONUS")) {
+    const owned = await TeamPowerCard.find({ teamId: input.teamId, status: "ACTIVE" })
+      .select("_id powerCardId")
+      .lean();
+    if (owned.length > 0) {
+      const cards = await PowerCard.find({ _id: { $in: owned.map((o) => o.powerCardId) } })
+        .select("_id effectType")
+        .lean();
+      const effectByCardId = new Map(cards.map((c) => [c._id.toString(), c.effectType]));
+      const findActive = (effectType: string) =>
+        owned.find((o) => effectByCardId.get(o.powerCardId.toString()) === effectType);
+
+      if (points < 0) {
+        const shield = findActive("BLOCK_NEGATIVE");
+        const gamble = findActive("GAMBLE");
+        if (shield) {
+          points = 0;
+          consumed = { id: shield._id, powerCardId: shield.powerCardId.toString(), effectType: "BLOCK_NEGATIVE" };
+        } else if (gamble) {
+          points *= 2;
+          consumed = { id: gamble._id, powerCardId: gamble.powerCardId.toString(), effectType: "GAMBLE" };
+        }
+      } else {
+        const gamble = findActive("GAMBLE");
+        const double = findActive("DOUBLE_SCORE");
+        if (gamble) {
+          points *= 2;
+          consumed = { id: gamble._id, powerCardId: gamble.powerCardId.toString(), effectType: "GAMBLE" };
+        } else if (double) {
+          points *= 2;
+          consumed = { id: double._id, powerCardId: double.powerCardId.toString(), effectType: "DOUBLE_SCORE" };
+        }
       }
     }
   }
-  if (room?.status === "TESTING") {
+
+  if (consumed && !isTest) {
+    await consumeTeamPowerCardUse(consumed.id);
+    // Keep the matching request's status in sync too, so the Power Requests
+    // panel's "Mark Consumed" button doesn't linger on a card that was just
+    // auto-consumed here (it would otherwise error — no ACTIVE copy left).
+    await PowerCardRequest.updateMany(
+      { teamId: input.teamId, powerCardId: consumed.powerCardId, status: "ACTIVE" },
+      { $set: { status: "CONSUMED" } }
+    );
+    await EventLog.create({
+      roomId: input.roomId,
+      type: "POWER_CARD_USED",
+      metadata: {
+        teamId: input.teamId,
+        source: "AUTO_APPLIED",
+        effectType: consumed.effectType,
+        text: `${consumed.effectType === "BLOCK_NEGATIVE" ? "Shield" : consumed.effectType === "GAMBLE" ? "Gamble" : "Double Points"} applied automatically`,
+      },
+    });
+  }
+
+  if (isTest) {
     await EventLog.create({
       roomId: input.roomId,
       type: "SCORE_CHANGED",
       metadata: {
         teamId: input.teamId,
-        points: input.points,
+        points,
         reason: input.reason,
         testMode: true,
       },
@@ -218,6 +294,7 @@ export async function giveMarks(input: {
 
   await createScoreTransaction({
     ...input,
+    points,
     createdBy: user.id,
   });
 

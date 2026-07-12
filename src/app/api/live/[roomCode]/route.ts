@@ -99,7 +99,6 @@ export async function GET(
   const assignedTeam = assignedTeamId
     ? teams.find((team) => id(team._id) === assignedTeamId) ?? null
     : null;
-  const turnStolen = currentScene?.settings?.turnStolen === true;
   const [catalog, inventory, requests, teamDevices, myAnswerLog] = await Promise.all([
     competition
       ? PowerCard.find({ ownerId: competition.ownerId, enabled: true }).sort({ price: 1 }).lean<IPowerCard[]>()
@@ -365,7 +364,6 @@ export async function GET(
         assignedTeamId,
         assignedTeamName: assignedTeam?.name ?? null,
         isMyTurn: Boolean(selectedTeam && assignedTeamId === id(selectedTeam._id)),
-        stolen: turnStolen,
         // My team is frozen (an opponent's Freeze) on the live question.
         frozen: Boolean(
           selectedTeam &&

@@ -83,10 +83,6 @@ export async function applyQuestionTeamAssignments(roomId: string, competitionId
                     "settings.assignedTeamId": assignment.teamId,
                     "settings.assignmentSource": assignment.source,
                   },
-                  $unset: {
-                    "settings.turnStolen": "",
-                    "settings.stolenFromTeamId": "",
-                  },
                 },
               },
             }
@@ -98,8 +94,6 @@ export async function applyQuestionTeamAssignments(roomId: string, competitionId
                   $unset: {
                     "settings.assignedTeamId": "",
                     "settings.assignmentSource": "",
-                    "settings.turnStolen": "",
-                    "settings.stolenFromTeamId": "",
                   },
                 },
               },

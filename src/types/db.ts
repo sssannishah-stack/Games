@@ -160,8 +160,8 @@ export const POWER_CARD_RARITIES = ["COMMON", "RARE", "EPIC", "LEGENDARY"] as co
 export type PowerCardRarity = (typeof POWER_CARD_RARITIES)[number];
 
 // Base set is what the spec named explicitly (HINT/EXTRA_TIME/BLOCK_NEGATIVE/
-// DOUBLE_SCORE/SECOND_CHANCE/MYSTERY); GAMBLE/FREEZE/STEAL are added so every
-// named example card (Gamble, Freeze, Steal Chance) maps to a real effect.
+// DOUBLE_SCORE/SECOND_CHANCE/MYSTERY); GAMBLE/FREEZE are added so every named
+// example card (Gamble, Freeze) maps to a real effect.
 // INSURANCE is a stronger sibling of BLOCK_NEGATIVE: Shield (BLOCK_NEGATIVE)
 // voids a negative on the current question only; Insurance (INSURANCE) shields
 // a team from all negatives across three rounds.
@@ -175,7 +175,6 @@ export const POWER_CARD_EFFECT_TYPES = [
   "MYSTERY",
   "GAMBLE",
   "FREEZE",
-  "STEAL",
   "PEEK",
 ] as const;
 export type PowerCardEffectType = (typeof POWER_CARD_EFFECT_TYPES)[number];

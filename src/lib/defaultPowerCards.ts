@@ -23,5 +23,4 @@ export const DEFAULT_POWER_CARDS: DefaultPowerCard[] = [
   { id: "gamble", icon: "🎲", name: "Gamble", description: "Big reward if correct, penalty if wrong", category: "RISK", rarity: "EPIC", effectType: "GAMBLE", price: 1100 },
   { id: "mystery-box", icon: "🎁", name: "Mystery Box", description: "Random reward", category: "RISK", rarity: "RARE", effectType: "MYSTERY", price: 900 },
   { id: "freeze", icon: "❄", name: "Freeze", description: "Slow or block an opponent", category: "ATTACK", rarity: "EPIC", effectType: "FREEZE", price: 1600 },
-  { id: "steal-chance", icon: "🥷", name: "Steal Chance", description: "Take an opponent's opportunity", category: "ATTACK", rarity: "LEGENDARY", effectType: "STEAL", price: 2500 },
 ];

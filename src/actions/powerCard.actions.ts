@@ -137,53 +137,6 @@ async function getEnabledPowerCardForRoom(
   return card;
 }
 
-async function applyStealChance(roomId: string, stealingTeamId: string): Promise<void> {
-  const room = await Room.findById(roomId).select("currentSceneId currentRoundId currentQuestionId").lean();
-  if (!room?.currentSceneId || !room.currentQuestionId) {
-    throw new Error("There is no assigned question to steal right now.");
-  }
-
-  const current = await Scene.findOneAndUpdate(
-    {
-      _id: room.currentSceneId,
-      roomId,
-      type: { $in: ["QUESTION", "DRAWING"] },
-      "settings.assignedTeamId": { $exists: true, $ne: stealingTeamId },
-      "settings.turnStolen": { $ne: true },
-    },
-    {
-      $set: {
-        "settings.assignedTeamId": stealingTeamId,
-        "settings.assignmentSource": "STEAL",
-        "settings.turnStolen": true,
-      },
-    },
-    { new: false }
-  ).lean();
-  if (!current) throw new Error("This turn cannot be stolen or has already been stolen.");
-
-  const stolenFromTeamId = String(current.settings?.assignedTeamId ?? "");
-  await Scene.updateMany(
-    {
-      roomId,
-      questionId: room.currentQuestionId,
-      ...(room.currentRoundId ? { roundId: room.currentRoundId } : {}),
-      _id: { $ne: room.currentSceneId },
-    },
-    {
-      $set: {
-        "settings.assignedTeamId": stealingTeamId,
-        "settings.assignmentSource": "STEAL",
-        "settings.turnStolen": true,
-        "settings.stolenFromTeamId": stolenFromTeamId,
-      },
-    }
-  );
-  await Scene.findByIdAndUpdate(room.currentSceneId, {
-    $set: { "settings.stolenFromTeamId": stolenFromTeamId },
-  });
-}
-
 /**
  * Insurance grants negative-mark immunity for the next three questions — the
  * one live when it is used plus the next two, by the room's flow order. We
@@ -307,7 +260,6 @@ async function applyImmediatePowerEffect(
   teamId: string,
   effectType: string
 ): Promise<void> {
-  if (effectType === "STEAL") await applyStealChance(roomId, teamId);
   if (effectType === "INSURANCE") await applyInsuranceCoverage(roomId, teamId);
   if (effectType === "HINT") await applyHintReveal(roomId, teamId);
   if (effectType === "FREEZE") await applyFreezeEffect(roomId, teamId);
@@ -315,6 +267,30 @@ async function applyImmediatePowerEffect(
   // Extra Time can only be played while the clock ticks (see playability),
   // so there's always a timer to extend here.
   if (effectType === "EXTRA_TIME") await extendRoomTimer(roomId, 30);
+}
+
+/**
+ * Effects that fully resolve the instant they're played — nothing is left
+ * for the host to judge or apply later. Without auto-consuming, these sat
+ * stuck at status "ACTIVE" forever (never decremented, never playable
+ * again), which also made them show up as false "active effects" in the
+ * Give Marks panel on later, unrelated questions.
+ */
+const INSTANT_CONSUME_EFFECTS = new Set([
+  "HINT",
+  "EXTRA_TIME",
+  "INSURANCE",
+  "FREEZE",
+  "PEEK",
+]);
+
+/** Decrement one use of an owned power card, mirroring consumePowerCard's transition. */
+async function consumeTeamPowerCardUse(teamPowerCardId: unknown): Promise<void> {
+  const owned = await TeamPowerCard.findById(teamPowerCardId);
+  if (!owned) return;
+  owned.remainingUses -= 1;
+  owned.status = owned.remainingUses <= 0 ? "CONSUMED" : "AVAILABLE";
+  await owned.save();
 }
 
 /** Create a power card in the host's global catalog. Card names must be unique per host (case-insensitive). */
@@ -661,7 +637,6 @@ export async function requestPowerCard(
         ? currentScene.settings.assignedTeamId
         : null,
     actingTeamId: input.teamId,
-    turnStolen: currentScene?.settings?.turnStolen === true,
     frozen,
     hintsTotal: currentQuestion?.hints?.length ?? 0,
     hintsRevealed,
@@ -688,9 +663,14 @@ export async function requestPowerCard(
     throw new Error("Your team does not own an available copy of this card.");
   }
 
+  let instantlyConsumed = false;
   if (skipApproval) {
     try {
       await applyImmediatePowerEffect(input.roomId, input.teamId, card.effectType);
+      if (INSTANT_CONSUME_EFFECTS.has(card.effectType)) {
+        await consumeTeamPowerCardUse(owned._id);
+        instantlyConsumed = true;
+      }
     } catch (error) {
       await TeamPowerCard.findByIdAndUpdate(owned._id, { $set: { status: "AVAILABLE" } });
       throw error;
@@ -702,16 +682,14 @@ export async function requestPowerCard(
       ? currentScene.settings.assignedTeamId
       : null;
   const effectiveTargetTeamId =
-    card.effectType === "STEAL" || card.effectType === "FREEZE"
-      ? assignedTeamId
-      : input.targetTeamId ?? null;
+    card.effectType === "FREEZE" ? assignedTeamId : input.targetTeamId ?? null;
 
   const request = await PowerCardRequest.create({
     roomId: input.roomId,
     teamId: input.teamId,
     powerCardId: input.powerCardId,
     targetTeamId: effectiveTargetTeamId,
-    status: skipApproval ? "ACTIVE" : "REQUESTED",
+    status: instantlyConsumed ? "CONSUMED" : skipApproval ? "ACTIVE" : "REQUESTED",
     approvedBy: null,
   });
 
@@ -819,6 +797,9 @@ async function activatePowerCard(requestId: string): Promise<IPowerCardRequest> 
   }
   try {
     await applyImmediatePowerEffect(request.roomId.toString(), request.teamId.toString(), card.effectType);
+    if (INSTANT_CONSUME_EFFECTS.has(card.effectType)) {
+      await consumeTeamPowerCardUse(owned._id);
+    }
   } catch (error) {
     // Another team may have stolen the turn while this request was waiting
     // for approval. Cancel cleanly instead of leaving the card stuck ACTIVE.
@@ -828,7 +809,7 @@ async function activatePowerCard(requestId: string): Promise<IPowerCardRequest> 
     throw error;
   }
 
-  request.status = "ACTIVE";
+  request.status = INSTANT_CONSUME_EFFECTS.has(card.effectType) ? "CONSUMED" : "ACTIVE";
   await request.save();
 
   await EventLog.create({

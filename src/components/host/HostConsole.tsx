@@ -388,16 +388,37 @@ export function HostConsole({
   // One-tap correct/wrong for the current question. Awards the round's
   // marks to the given team (the assigned team by default) with the right
   // reason, and floats the delta — same path as the Give Marks panel, just
-  // without the modal. Negative marks on an insured team are voided
-  // server-side (see giveMarks).
+  // without the modal. Negative marks on an insured team are voided, and
+  // Shield/Double Points/Gamble are auto-applied, server-side (see
+  // giveMarks) — mirror that same adjustment here so the floating number
+  // matches what actually lands instead of the pre-multiplier base marks.
   function quickMark(teamId: string, correct: boolean) {
     if (!teamId) return;
     const magnitude = correct
       ? Math.abs(round?.positiveMarks ?? 10)
       : Math.abs(round?.negativeMarks ?? 5);
+    // The BASE marks — this is what's actually sent to the server. giveMarks
+    // applies Shield/Double/Gamble itself; sending an already-adjusted value
+    // here would double-apply the multiplier server-side.
     const points = correct ? magnitude : -magnitude;
-    if (points !== 0) {
-      setScoreFloat({ id: Date.now(), points, team: teamById.get(teamId)?.name ?? "Team" });
+
+    // Preview-only: mirror the server's adjustment so the floating number
+    // shown to the host matches what will actually land, not the raw base.
+    let previewPoints = points;
+    const activeEffectTypes = new Set(
+      (ownedByTeam.get(teamId) ?? [])
+        .filter((o) => o.status === "ACTIVE")
+        .map((o) => cardById.get(o.powerCardId)?.effectType)
+    );
+    if (previewPoints < 0) {
+      if (activeEffectTypes.has("BLOCK_NEGATIVE")) previewPoints = 0;
+      else if (activeEffectTypes.has("GAMBLE")) previewPoints *= 2;
+    } else if (activeEffectTypes.has("GAMBLE") || activeEffectTypes.has("DOUBLE_SCORE")) {
+      previewPoints *= 2;
+    }
+
+    if (previewPoints !== 0) {
+      setScoreFloat({ id: Date.now(), points: previewPoints, team: teamById.get(teamId)?.name ?? "Team" });
     }
     action(async () => {
       await giveMarks({
@@ -702,7 +723,6 @@ export function HostConsole({
                       <span className="w-2.5 h-2.5 rounded-full" style={{ background: assignedTeam.color ?? "#6C7BFA" }} />
                       <span className="text-sm font-black text-ink">{assignedTeam.name}</span>
                       {assignmentSource === "RANDOM_REMAINDER" && <span className="text-[10px] text-mute-2">random remainder</span>}
-                      {assignmentSource === "STEAL" && <span className="text-[10px] font-bold text-warn">turn stolen</span>}
                     </div>
                   )}
                   <div className="text-4xl font-bold text-ink leading-tight">
@@ -1902,7 +1922,6 @@ const EFFECT_LABEL: Record<PowerCardEffectType, string> = {
   MYSTERY: "Mystery effect",
   GAMBLE: "All-or-Nothing — double reward or double penalty",
   FREEZE: "Freeze — opponent's cards locked next question",
-  STEAL: "Steal — coins from another team",
   PEEK: "Peek — one wrong MCQ option ruled out",
 };
 
@@ -2080,7 +2099,7 @@ function ScoringModal({
           <div className="flex flex-col gap-2 rounded-xl border border-accent/30 bg-accent/[.08] px-3 py-2.5">
             <span className="flex items-center gap-1.5 text-[11px] font-semibold tracking-[.1em] text-accent">
               <Icon name="zap" size={12} />
-              ACTIVE POWERS — YOU DECIDE HOW THEY APPLY
+              ACTIVE POWERS — APPLIED AUTOMATICALLY
             </span>
             <div className="flex flex-col gap-1">
               {activeEffects.map((effect, i) => (
@@ -2090,23 +2109,11 @@ function ScoringModal({
                 </span>
               ))}
             </div>
-            {(hasDouble || hasGamble) && points > 0 && (
-              <button
-                onClick={() => setPoints(points * 2)}
-                className="flex items-center justify-center gap-1.5 rounded-lg border border-success/40 bg-success/[.12] px-2.5 py-1.5 text-[12px] font-semibold text-success cursor-pointer hover:bg-success/20"
-              >
-                <Icon name="trending-up" size={11} />
-                Apply 2× → +{points * 2}
-              </button>
-            )}
-            {(hasShield || hasGamble) && points < 0 && (
-              <button
-                onClick={() => setPoints(hasShield ? 0 : points * 2)}
-                className="flex items-center justify-center gap-1.5 rounded-lg border border-info/40 bg-info/[.12] px-2.5 py-1.5 text-[12px] font-semibold text-info cursor-pointer hover:bg-info/20"
-              >
-                <Icon name="shield" size={11} />
-                {hasShield ? "Shield → 0" : `Double penalty → ${points * 2}`}
-              </button>
+            {(hasShield || hasDouble || hasGamble) && (
+              <span className="text-[11px] text-mute-2">
+                Enter the number normally — Shield/Double/Gamble apply and consume themselves on submit, no need to
+                pre-multiply.
+              </span>
             )}
           </div>
         )}

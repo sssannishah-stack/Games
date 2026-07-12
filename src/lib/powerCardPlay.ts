@@ -20,8 +20,6 @@ export interface PowerPlayContext {
   assignedTeamId?: string | null;
   /** Team attempting to play the card. */
   actingTeamId?: string | null;
-  /** A Steal Chance has already transferred this question once. */
-  turnStolen?: boolean;
   /** The acting team is frozen on this question (opponent's Freeze) — no cards. */
   frozen?: boolean;
   /** How many hints this question has authored, and how many this team has revealed so far. */
@@ -53,10 +51,9 @@ export function powerCardPlayability(
   if (effectType === "MYSTERY") {
     return { usable: false, reason: "Mystery Box opens automatically when it is purchased." };
   }
-  // Steal Chance and Freeze are attack cards — played by another team against
-  // whoever's turn it currently is, not on your own turn.
-  const isSteal = effectType === "STEAL";
-  const isAttack = isSteal || effectType === "FREEZE";
+  // Freeze is an attack card — played by another team against whoever's
+  // turn it currently is, not on your own turn.
+  const isAttack = effectType === "FREEZE";
   if (!ctx.assignedTeamId) {
     if (isAttack) {
       return { usable: false, reason: "This card needs a question assigned to another team." };
@@ -66,9 +63,7 @@ export function powerCardPlayability(
       return { usable: false, reason: "It is your turn — attack cards target other teams." };
     }
   } else if (!isAttack) {
-    return { usable: false, reason: "Only the active team can use this card. You may play Steal Chance or Freeze." };
-  } else if (isSteal && ctx.turnStolen) {
-    return { usable: false, reason: "Steal Chance has already been used for this question." };
+    return { usable: false, reason: "Only the active team can use this card. You may play Freeze." };
   }
   if (effectType === "EXTRA_TIME" && !ctx.timerRunning) {
     return { usable: false, reason: "Extra Time needs the timer to be running." };

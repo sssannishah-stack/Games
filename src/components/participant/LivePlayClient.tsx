@@ -132,7 +132,6 @@ type LivePayload = {
     assignedTeamId: string | null;
     assignedTeamName: string | null;
     isMyTurn: boolean;
-    stolen: boolean;
     frozen: boolean;
   };
   currentScene: {
@@ -242,7 +241,6 @@ function livePlayContext(live: LivePayload): PowerPlayContext {
     timerRunning: endsAt > Date.now() && !live.timer.paused,
     assignedTeamId: live.turn.assignedTeamId,
     actingTeamId: live.team?.id ?? null,
-    turnStolen: live.turn.stolen,
     frozen: live.turn.frozen,
     hintsTotal: live.question?.hintsTotal ?? 0,
     hintsRevealed: live.question?.hints.length ?? 0,
@@ -754,7 +752,6 @@ const EFFECT_ICON: Record<string, string> = {
   MYSTERY: "🎁",
   GAMBLE: "🎲",
   FREEZE: "❄",
-  STEAL: "🫳",
   PEEK: "👁",
 };
 
@@ -1487,15 +1484,13 @@ function QuestionScene({
             }}
           />
           <span className={`inline-flex items-center gap-1.5 text-[10px] font-black tracking-[.14em] ${live.turn.isMyTurn ? "text-success" : "text-warn"}`}>
-            <span className="text-[12px]">{live.turn.isMyTurn ? (live.turn.stolen ? "🥷" : "🎯") : "⏳"}</span>
-            {live.turn.isMyTurn ? (live.turn.stolen ? "YOU STOLE THIS TURN" : "YOUR TEAM'S TURN") : `${live.turn.assignedTeamName ?? "ANOTHER TEAM"}'S TURN`}
+            <span className="text-[12px]">{live.turn.isMyTurn ? "🎯" : "⏳"}</span>
+            {live.turn.isMyTurn ? "YOUR TEAM'S TURN" : `${live.turn.assignedTeamName ?? "ANOTHER TEAM"}'S TURN`}
           </span>
           <span className="block mt-1 text-[12px] text-mute-2">
             {live.turn.isMyTurn
-              ? "You may use any allowed card except Steal Chance."
-              : live.turn.stolen
-                ? "The turn has already been stolen; your cards are locked for this question."
-                : "Only Steal Chance can be played by your team right now."}
+              ? "You may use any allowed card except Freeze."
+              : "Only Freeze can be played by your team right now."}
           </span>
         </div>
       )}
@@ -1614,7 +1609,13 @@ function QuestionScene({
           ) : (
             available.map((card) => {
               const play = powerCardPlayability(card.effectType, livePlayContext(live));
-              const usable = canControl && play.usable && card.status !== "REQUESTED";
+              // ACTIVE = already armed (Shield/Double Points/Gamble waiting on
+              // the next mark) or a card that just resolved but hasn't been
+              // re-synced yet — either way it isn't AVAILABLE to play again.
+              // Without this check the button stayed clickable and tapping it
+              // threw a confusing "you don't own an available copy" error.
+              const armed = card.status === "ACTIVE";
+              const usable = canControl && play.usable && card.status === "AVAILABLE";
               return (
                 <button
                   key={card.id}
@@ -1623,12 +1624,14 @@ function QuestionScene({
                   className={`group relative overflow-hidden rounded-2xl border px-2 pt-3 pb-2.5 text-center transition active:scale-[.97] ${
                     usable
                       ? "border-accent/25 bg-gradient-to-b from-accent/[.1] to-accent/[.02] cursor-pointer"
-                      : "border-line/[.08] bg-line/[.03] opacity-60"
+                      : armed
+                        ? "border-success/30 bg-success/[.06]"
+                        : "border-line/[.08] bg-line/[.03] opacity-60"
                   }`}
                 >
                   <span
                     className={`mx-auto flex w-9 h-9 items-center justify-center rounded-xl text-lg border ${
-                      usable ? "border-accent/25 bg-accent/[.12]" : "border-line/[.1] bg-line/[.05]"
+                      usable ? "border-accent/25 bg-accent/[.12]" : armed ? "border-success/30 bg-success/[.1]" : "border-line/[.1] bg-line/[.05]"
                     }`}
                   >
                     {card.icon}
@@ -1636,16 +1639,18 @@ function QuestionScene({
                   <span className="block text-[11px] font-bold text-ink mt-1.5 truncate">{card.name}</span>
                   <span
                     className={`mt-1 inline-block rounded-full px-2 py-0.5 text-[9px] font-bold tracking-[.06em] ${
-                      usable ? "bg-accent/15 text-accent" : "bg-line/[.07] text-mute-2"
+                      usable ? "bg-accent/15 text-accent" : armed ? "bg-success/15 text-success" : "bg-line/[.07] text-mute-2"
                     }`}
                   >
                     {!canControl
                       ? "CAPTAIN ONLY"
                       : card.status === "REQUESTED"
                         ? "PENDING"
-                        : !play.usable
-                          ? "LOCKED"
-                          : `${card.remainingUses} LEFT`}
+                        : armed
+                          ? "ARMED"
+                          : !play.usable
+                            ? "LOCKED"
+                            : `${card.remainingUses} LEFT`}
                   </span>
                 </button>
               );
@@ -2295,7 +2300,6 @@ function AnswerFeedbackOverlay({ delta }: { delta: number }) {
 const SELF_POWER_FX: Record<string, { icon: string; text: string; color: string }> = {
   EXTRA_TIME: { icon: "⏱", text: "+30 sec added to the timer", color: "#3DD68C" },
   HINT: { icon: "💡", text: "Hint revealed · +10 sec", color: "#E8A33D" },
-  STEAL: { icon: "🥷", text: "You stole this turn!", color: "#A79BFF" },
   INSURANCE: { icon: "🩹", text: "Insured — no negatives for 3 questions", color: "#6FD3C6" },
   FREEZE: { icon: "❄️", text: "Opponent frozen next question", color: "#6ED3F2" },
   DOUBLE_SCORE: { icon: "⚡", text: "Double Points armed", color: "#FF9A3D" },
