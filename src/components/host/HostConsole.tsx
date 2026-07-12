@@ -125,6 +125,102 @@ const LOG_VISUAL: Record<string, { icon: string; color: string }> = {
   COMPETITION_STARTED: { icon: "flag", color: "text-success" },
 };
 
+type LogFilter = "ALL" | "POWER" | "STORE" | "AUCTION" | "SCORE" | "BROADCAST" | "GENERAL";
+
+/** Which filter bucket a log type falls under (for the Event Log filters). */
+const LOG_CATEGORY: Record<string, Exclude<LogFilter, "ALL">> = {
+  POWER_CARD_REQUESTED: "POWER",
+  POWER_CARD_USED: "POWER",
+  CARD_PURCHASED: "STORE",
+  STORE_OPENED: "STORE",
+  STORE_CLOSED: "STORE",
+  FLASH_SALE_STARTED: "STORE",
+  REWARD_DROP: "STORE",
+  AUCTION_STARTED: "AUCTION",
+  AUCTION_SOLD: "AUCTION",
+  AUCTION_CANCELLED: "AUCTION",
+  SCORE_CHANGED: "SCORE",
+  ACHIEVEMENT_EARNED: "SCORE",
+  COIN_AWARDED: "SCORE",
+  LUCKY_SPIN: "SCORE",
+  BROADCAST_SENT: "BROADCAST",
+};
+function logCategory(type: string): Exclude<LogFilter, "ALL"> {
+  return LOG_CATEGORY[type] ?? "GENERAL";
+}
+const LOG_FILTERS: LogFilter[] = ["ALL", "SCORE", "POWER", "STORE", "AUCTION", "BROADCAST", "GENERAL"];
+
+/** One-tap announcements for the Broadcast composer. */
+const BROADCAST_TEMPLATES: { label: string; message: string }[] = [
+  { label: "Round Starting", message: "The next round is starting — get ready!" },
+  { label: "Store Open", message: "The Power Store is now OPEN. Spend your coins!" },
+  { label: "Maintain Silence", message: "Please maintain silence during the question." },
+  { label: "Tea Break", message: "Short break — back in 10 minutes." },
+  { label: "Final Round", message: "This is the FINAL round. Give it everything!" },
+];
+
+/**
+ * A collapsible module for the right-hand Quick Controls rail — a titled,
+ * self-managing accordion so the host can fold away what they don't need and
+ * keep the panel scroll-free. Purely presentational; all controls live inside.
+ */
+function Module({
+  title,
+  icon,
+  accent = "#6C7BFA",
+  badge,
+  defaultOpen = true,
+  children,
+}: {
+  title: string;
+  icon: string;
+  accent?: string;
+  badge?: React.ReactNode;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <section className="rounded-2xl border border-line/[.08] bg-line/[.03] overflow-hidden">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center gap-2 px-3.5 py-2.5 cursor-pointer hover:bg-line/[.03]"
+      >
+        <Icon name={icon} size={14} style={{ color: accent }} className="shrink-0" />
+        <span className="text-[12px] font-bold tracking-[.06em] text-ink-2 uppercase">{title}</span>
+        {badge}
+        <Icon name={open ? "chevron-up" : "chevron-down"} size={14} className="ml-auto text-dim shrink-0" />
+      </button>
+      {open && <div className="px-3.5 pb-3.5 pt-0.5 flex flex-col gap-2.5">{children}</div>}
+    </section>
+  );
+}
+
+/** A compact label/value chip for the LIVE STATUS dashboard. */
+function StatChip({
+  label,
+  value,
+  tone = "#8EA0B8",
+  pulse,
+}: {
+  label: string;
+  value: React.ReactNode;
+  tone?: string;
+  pulse?: boolean;
+}) {
+  return (
+    <div className="flex flex-col gap-0.5 rounded-xl border border-line/[.08] bg-line/[.03] px-2.5 py-2">
+      <span className="flex items-center gap-1 text-[8.5px] font-bold tracking-[.14em] text-mute-2">
+        {pulse && <span className="w-1.5 h-1.5 rounded-full animate-enc-pulse" style={{ background: tone }} />}
+        {label}
+      </span>
+      <span className="text-[13px] font-black tabular-nums" style={{ color: tone }}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
 interface HostConsoleProps {
   room: RoomDetail;
   scenes: SceneRecord[];
@@ -182,6 +278,12 @@ export function HostConsole({
   const [auctionStartBid, setAuctionStartBid] = useState(500);
   const [scoreFloat, setScoreFloat] = useState<{ id: number; points: number; team: string } | null>(null);
   const [resetOpen, setResetOpen] = useState(false);
+  // Control-room chrome: the rare-tools drawer, the center preview tab, and
+  // which round groups are collapsed in the flow rail + the log filter.
+  const [eventActionsOpen, setEventActionsOpen] = useState(false);
+  const [centerTab, setCenterTab] = useState<"QUESTION" | "ANSWER" | "HINTS" | "MEDIA" | "NOTES">("QUESTION");
+  const [collapsedRounds, setCollapsedRounds] = useState<Set<string>>(new Set());
+  const [logFilter, setLogFilter] = useState<LogFilter>("ALL");
   // Auto-start the timer whenever a question scene goes live, so the host
   // doesn't have to hit Start on every question. Persisted so it survives the
   // router.refresh() that follows each action.
@@ -299,6 +401,13 @@ export function HostConsole({
 
   const questionIndex = round && question ? round.questionIds.indexOf(question.id) + 1 : null;
   const connectedCount = room.onlineDevices || participants.length;
+  // Live-status dashboard figures — captains actually connected, and how many
+  // power requests are still waiting on the host.
+  const captainsConnected = participants.filter(
+    (p) => p.role === "CAPTAIN" && p.connected
+  ).length;
+  const pendingRequestCount = powerRequests.filter((r) => r.status === "REQUESTED").length;
+  const storeOpen = room.storeStatus === "OPEN";
   // Where the host is in the flow — 112 steps is too many to track by memory.
   const stepIndex = current ? scenes.findIndex((scene) => scene.id === current.id) + 1 : 0;
   const stepFraction = scenes.length > 0 && stepIndex > 0 ? stepIndex / scenes.length : 0;
@@ -333,11 +442,6 @@ export function HostConsole({
     return groups;
   }, [scenes, rounds]);
 
-  function sceneIcon(scene: SceneRecord) {
-    if (scene.id === room.currentSceneId) return "LIVE";
-    if (scene.status === "COMPLETED") return "DONE";
-    return "NEXT";
-  }
 
   function formatLog(log: EventLogRecord): string {
     const metadata = log.metadata ?? {};
@@ -467,6 +571,27 @@ export function HostConsole({
     });
   }
 
+  // Preset one-tap adjustment for the current team — a fast manual delta
+  // (reason MANUAL so it never collides with the CORRECT/WRONG "already
+  // judged" guard). The Correct/Wrong buttons remain the way to *judge* an
+  // answer; these are for quick bonuses/penalties without opening the modal.
+  function quickPoints(points: number) {
+    const teamId = assignedTeamId ?? teams[0]?.id;
+    if (!teamId || points === 0) return;
+    setScoreFloat({ id: Date.now(), points, team: teamById.get(teamId)?.name ?? "Team" });
+    play(points >= 0 ? "correct" : "wrong");
+    action(() =>
+      giveMarks({
+        roomId: room.id,
+        teamId,
+        points,
+        reason: "MANUAL",
+        participantId: null,
+        questionId: question?.id ?? null,
+      })
+    );
+  }
+
   function toggleTimer() {
     action(() =>
       timerRunning ? pauseTimer(room.id) : startTimer(room.id, Number(current?.settings?.timer ?? 30))
@@ -474,7 +599,8 @@ export function HostConsole({
   }
 
   function addTime(seconds: number) {
-    action(() => startTimer(room.id, (secondsLeft ?? Number(current?.settings?.timer ?? 30)) + seconds));
+    const next = Math.max(1, (secondsLeft ?? Number(current?.settings?.timer ?? 30)) + seconds);
+    action(() => startTimer(room.id, next));
   }
 
   function jumpToLeaderboard() {
@@ -501,6 +627,23 @@ export function HostConsole({
       setBroadcast("");
     });
   }
+
+  function sendTemplate(message: string) {
+    action(() => sendBroadcast(room.id, message).then(() => undefined));
+  }
+
+  // Emergency Stop — instantly freeze the room by pausing the live timer. A
+  // safe, reversible "hold everything" (the destructive Reset lives in the
+  // drawer's Emergency Actions).
+  function emergencyStop() {
+    if (timerRunning) action(() => pauseTimer(room.id));
+  }
+
+  function undoLastScore() {
+    const last = scoreHistory.find((entry) => !entry.isUndo && !entry.isReverted);
+    if (last) action(() => hostUndoScoreTransaction(last.id));
+  }
+  const canUndo = scoreHistory.some((entry) => !entry.isUndo && !entry.isReverted);
 
   return (
     // Host console is an intentionally dark, OBS-style control room. Pin it to
@@ -548,15 +691,8 @@ export function HostConsole({
           {timerDisplay}
         </span>
         <SoundToggle className="shrink-0" />
-        <Button
-          variant="danger"
-          size="sm"
-          onClick={() => setResetOpen(true)}
-          disabled={pending}
-          className="shrink-0"
-        >
-          Reset Room
-        </Button>
+        {/* Reset Room moved to the Event Actions drawer's Emergency section so a
+            destructive control never sits one stray tap away in the top bar. */}
         {/* Once the room is LIVE the button used to linger as a dead, disabled
             "Live" pill — the status badge already says LIVE, so just hide it. */}
         {room.status !== "LIVE" && (
@@ -595,12 +731,36 @@ export function HostConsole({
             {flowGroups.length === 0 ? (
               <span className="text-[12px] text-mute-2 px-1">No scenes yet.</span>
             ) : (
-              flowGroups.map((group) => (
+              flowGroups.map((group) => {
+                const groupHasLive = group.scenes.some((s) => s.id === room.currentSceneId);
+                const groupDone = group.scenes.every((s) => s.status === "COMPLETED");
+                const collapsed = collapsedRounds.has(group.key);
+                return (
                 <div key={group.key} className="flex flex-col gap-1.5">
-                  <span className="text-[10px] font-mono font-semibold tracking-[.1em] text-dim-2 px-1 uppercase">
-                    {group.label}
-                  </span>
+                  <button
+                    onClick={() =>
+                      setCollapsedRounds((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(group.key)) next.delete(group.key);
+                        else next.add(group.key);
+                        return next;
+                      })
+                    }
+                    className="flex items-center gap-1.5 px-1 cursor-pointer text-left"
+                  >
+                    <Icon name={collapsed ? "chevron-right" : "chevron-down"} size={12} className="text-dim shrink-0" />
+                    <span className="text-[10px] font-mono font-semibold tracking-[.1em] text-dim-2 uppercase truncate">
+                      {group.label}
+                    </span>
+                    {groupHasLive && <span className="w-1.5 h-1.5 rounded-full bg-info animate-enc-pulse shrink-0" />}
+                    {!groupHasLive && groupDone && <span className="text-[9px] text-success shrink-0">✓</span>}
+                  </button>
                   {group.scenes.map((scene, index) => {
+                    const isLive = scene.id === room.currentSceneId;
+                    // Collapsed rounds hide their scenes — but the live scene is
+                    // always kept visible (the host must never lose sight of it).
+                    if (collapsed && !isLive) return null;
+                    const done = scene.status === "COMPLETED";
                     const moveUpDisabled = scene.order === 0 || index === 0;
                     const moveDownDisabled = scene.order === scenes.length - 1 || index === group.scenes.length - 1;
                     const visual = sceneVisual(scene.type);
@@ -615,17 +775,21 @@ export function HostConsole({
                       ? scene.settings.assignedTeamId
                       : null;
                     const sceneAssignedTeam = sceneAssignedTeamId ? teamById.get(sceneAssignedTeamId) : null;
+                    // Status-based row treatment: completed = green, current =
+                    // blue, upcoming = grey.
+                    const rowClass = isLive
+                      ? "border-info/60 bg-info/[.12] ring-1 ring-info/25"
+                      : done
+                        ? "border-success/25 bg-success/[.05] hover:brightness-125"
+                        : "border-line/[.08] bg-line/[.02] hover:brightness-125";
+                    const statusDot = isLive ? "bg-info animate-enc-pulse" : done ? "bg-success" : "bg-line/[.3]";
                     return (
                       <div
                         key={scene.id}
-                        id={scene.id === room.currentSceneId ? "host-live-scene" : undefined}
-                        className={`relative overflow-hidden rounded-xl border pl-3 pr-2 py-2 flex items-center gap-2 ${
-                        scene.id === room.currentSceneId
-                          ? "border-white/55 bg-white/[.11] ring-1 ring-white/15"
-                          : `${visual.row} hover:brightness-125`
-                      }`}
+                        id={isLive ? "host-live-scene" : undefined}
+                        className={`relative overflow-hidden rounded-xl border pl-3 pr-2 py-2 flex items-center gap-2 ${rowClass}`}
                       >
-                        {/* Bold color strip down the left edge — the fastest "what kind of scene" cue. */}
+                        {/* Left edge: scene-type color cue. */}
                         <span className={`absolute left-0 inset-y-0 w-1 ${visual.bar}`} aria-hidden />
                         <button
                           onClick={() => action(() => publishScene(room.id, scene.id).then(() => undefined))}
@@ -635,14 +799,19 @@ export function HostConsole({
                             {marker}
                           </span>
                           <span className="flex flex-col min-w-0">
-                            <span className="text-[12.5px] font-semibold text-ink-2 truncate">{scene.title}</span>
-                            <span className="text-[10px]">
-                              <span className="text-mute-2">{sceneIcon(scene)} · </span>
-                              <span className={`font-bold ${visual.label}`}>{scene.type.replace(/_/g, " ")}</span>
-                              {sceneAssignedTeam ? <span className="text-ink-3"> · 👥 {sceneAssignedTeam.name}</span> : ""}
+                            <span className={`text-[12.5px] font-semibold truncate ${isLive ? "text-ink" : "text-ink-2"}`}>{scene.title}</span>
+                            <span className="flex items-center gap-1 text-[10px]">
+                              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusDot}`} />
+                              <span className={`font-bold ${isLive ? "text-info" : done ? "text-success" : "text-mute-2"}`}>
+                                {isLive ? "LIVE" : done ? "DONE" : "NEXT"}
+                              </span>
+                              <span className="text-mute-2">· {scene.type.replace(/_/g, " ")}</span>
+                              {sceneAssignedTeam ? <span className="text-ink-3 truncate"> · 👥 {sceneAssignedTeam.name}</span> : ""}
                             </span>
                           </span>
                         </button>
+                        {/* Reorder is edit-mode only — locked once the room is
+                            LIVE so a stray tap can't shuffle the run-of-show. */}
                         {room.status !== "LIVE" && (
                           <span className="flex items-center gap-1 shrink-0">
                             <button
@@ -669,7 +838,8 @@ export function HostConsole({
                     );
                   })}
                 </div>
-              ))
+                );
+              })
             )}
           </div>
         </aside>
@@ -846,22 +1016,83 @@ export function HostConsole({
                   )}
                 </div>
 
-                {question && (
-                  <div className="w-full max-w-[720px] rounded-2xl border border-warn/25 bg-warn/[.06] p-4 flex flex-col gap-2 text-left">
-                    <span className="text-[10px] font-mono font-semibold tracking-[.12em] text-warn">
-                      ANSWER — HOST ONLY, HIDDEN FROM PARTICIPANTS
-                    </span>
-                    <span className="text-lg font-bold text-ink">{question.answer}</span>
-                    {question.hostNotes && (
-                      <>
-                        <span className="text-[10px] font-mono font-semibold tracking-[.12em] text-dim-2 mt-2">
-                          HOST NOTES
-                        </span>
-                        <span className="text-[13px] text-mute-2">{question.hostNotes}</span>
-                      </>
-                    )}
-                  </div>
-                )}
+                {question && (() => {
+                  // Tabbed detail below the preview — Question / Answer / Hints
+                  // / Media / Host Notes — instead of one long stacked card, so
+                  // the host jumps straight to what they need mid-question.
+                  const tabs: { id: typeof centerTab; label: string; show: boolean }[] = [
+                    { id: "QUESTION", label: "Question", show: true },
+                    { id: "ANSWER", label: "Answer", show: true },
+                    { id: "HINTS", label: `Hints${question.hints.length ? ` · ${question.hints.length}` : ""}`, show: question.hints.length > 0 },
+                    { id: "MEDIA", label: "Media", show: Boolean(question.media?.url) },
+                    { id: "NOTES", label: "Host Notes", show: Boolean(question.hostNotes) },
+                  ];
+                  const visible = tabs.filter((t) => t.show);
+                  const activeTab = visible.some((t) => t.id === centerTab) ? centerTab : "QUESTION";
+                  return (
+                    <div className="w-full max-w-[720px] rounded-2xl border border-line/[.09] bg-[rgba(18,20,27,.6)] overflow-hidden text-left">
+                      <div className="flex gap-1 border-b border-line/[.07] px-2 pt-2 overflow-x-auto">
+                        {visible.map((t) => (
+                          <button
+                            key={t.id}
+                            onClick={() => setCenterTab(t.id)}
+                            className={`shrink-0 rounded-t-lg px-3 py-2 text-[11.5px] font-bold whitespace-nowrap transition cursor-pointer ${
+                              activeTab === t.id ? "bg-line/[.08] text-ink" : "text-mute-2 hover:text-ink-3"
+                            }`}
+                          >
+                            {t.label}
+                          </button>
+                        ))}
+                      </div>
+                      <div className="p-4">
+                        {activeTab === "QUESTION" && (
+                          <div className="flex flex-col gap-1.5">
+                            <span className="text-[10px] font-mono font-semibold tracking-[.12em] text-mute-2">
+                              {questionIndex ? `QUESTION ${questionIndex}` : "QUESTION"} · {question.type}
+                            </span>
+                            <span className="text-[15px] font-semibold text-ink leading-snug">{question.question}</span>
+                          </div>
+                        )}
+                        {activeTab === "ANSWER" && (
+                          <div className="flex flex-col gap-1.5">
+                            <span className="text-[10px] font-mono font-semibold tracking-[.12em] text-warn">
+                              ANSWER — HOST ONLY, HIDDEN FROM PARTICIPANTS
+                            </span>
+                            <span className="text-lg font-bold text-ink">{question.answer}</span>
+                          </div>
+                        )}
+                        {activeTab === "HINTS" && (
+                          <div className="flex flex-col gap-1.5">
+                            <span className="text-[10px] font-mono font-semibold tracking-[.12em] text-label">HINTS</span>
+                            {question.hints.map((hint, i) => (
+                              <span key={i} className="text-[12.5px] text-ink-3 bg-line/[.04] rounded-lg px-2.5 py-1.5">
+                                Hint {i + 1}: {hint.text} <span className="text-mute-2">(−{hint.penalty})</span>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        {activeTab === "MEDIA" && question.media?.url && (
+                          <div className="rounded-xl border border-line/[.08] bg-line/[.04] p-2">
+                            {question.media.type === "IMAGE" && (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img src={question.media.url} alt={question.media.name} className="w-full max-h-72 object-contain rounded-lg" />
+                            )}
+                            {question.media.type === "AUDIO" && <audio controls src={question.media.url} className="w-full" />}
+                            {question.media.type === "VIDEO" && (
+                              <video controls src={question.media.url} className="w-full max-h-72 rounded-lg" />
+                            )}
+                          </div>
+                        )}
+                        {activeTab === "NOTES" && (
+                          <div className="flex flex-col gap-1.5">
+                            <span className="text-[10px] font-mono font-semibold tracking-[.12em] text-dim-2">HOST NOTES</span>
+                            <span className="text-[13px] text-mute-2 leading-relaxed">{question.hostNotes}</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
               </>
             )}
           </div>
@@ -871,13 +1102,51 @@ export function HostConsole({
         <aside className="flex flex-col border-t xl:border-t-0 xl:border-l border-line/[.07] min-h-[620px] xl:min-h-0">
           <div className="flex items-center gap-2 px-4 py-3 text-[11px] font-mono font-semibold tracking-[.12em] text-label border-b border-line/[.06]">
             <Icon name="sliders-horizontal" size={13} className="text-accent" />
-            CONTROL CENTER
+            QUICK CONTROLS
             <span className="ml-auto flex items-center gap-1 text-[9px] font-bold tracking-[.14em] text-mute-2">
               <span className={`w-1.5 h-1.5 rounded-full ${timerRunning ? "bg-success animate-enc-pulse" : "bg-line/[.3]"}`} />
               {timerRunning ? "TIMER LIVE" : "IDLE"}
             </span>
           </div>
-          <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
+          <div className="flex-1 overflow-y-auto p-3.5 flex flex-col gap-3">
+            {/* LIVE STATUS — the always-on competition-health dashboard: one
+                glance tells the host the whole room's state. */}
+            <section className="rounded-2xl border border-accent/25 bg-accent/[.05] p-3">
+              <div className="flex items-center gap-2 mb-2.5">
+                <span className="flex items-center gap-1.5 rounded-full bg-danger/15 border border-danger/30 px-2 py-0.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-danger animate-enc-pulse" />
+                  <span className="text-[9px] font-black tracking-[.14em] text-danger-soft">
+                    {room.status === "LIVE" ? "LIVE" : room.status}
+                  </span>
+                </span>
+                {round && <span className="text-[11px] text-mute-2 truncate">{round.title}</span>}
+                {pendingRequestCount > 0 && (
+                  <span className="ml-auto flex items-center gap-1 rounded-full bg-warn/15 border border-warn/30 px-2 py-0.5 text-[10px] font-bold text-warn">
+                    {pendingRequestCount} pending
+                  </span>
+                )}
+              </div>
+              <div className="grid grid-cols-3 gap-1.5">
+                <StatChip label="CONNECTED" value={`${connectedCount}`} tone="#3DD68C" pulse={connectedCount > 0} />
+                <StatChip label="CAPTAINS" value={`${captainsConnected}/${teams.length}`} tone="#5EC9E8" />
+                <StatChip label="REQUESTS" value={`${pendingRequestCount}`} tone={pendingRequestCount > 0 ? "#E8A33D" : "#8EA0B8"} />
+                <StatChip label="STORE" value={storeOpen ? "Open" : "Closed"} tone={storeOpen ? "#3DD68C" : "#8EA0B8"} />
+                <StatChip label="AUCTION" value={auction ? "Live" : "Idle"} tone={auction ? "#E8A33D" : "#8EA0B8"} />
+                <StatChip label="QUESTION" value={questionIndex ? `#${questionIndex}` : "—"} tone="#6C7BFA" />
+              </div>
+              {assignedTeam && (
+                <div className="mt-1.5 flex items-center gap-1.5 rounded-lg border border-accent/25 bg-accent/[.06] px-2.5 py-1.5">
+                  <span className="text-[9px] font-bold tracking-[.12em] text-accent">CURRENT TEAM</span>
+                  <span className="w-2 h-2 rounded-full" style={{ background: assignedTeam.color ?? "#6C7BFA" }} />
+                  <span className="text-[12px] font-bold text-ink truncate">{assignedTeam.name}</span>
+                </div>
+              )}
+            </section>
+            {feedback && (
+              <span className="rounded-xl border border-danger/30 bg-danger/[.08] px-3 py-2 text-[12px] font-semibold text-danger-soft">
+                {feedback}
+              </span>
+            )}
             {/* CURRENT QUESTION */}
             <section className="rounded-2xl border border-line/[.08] bg-line/[.03] p-4 flex flex-col gap-2">
               <span className="text-sm font-bold text-ink-2">Current Question</span>
@@ -1018,6 +1287,34 @@ export function HostConsole({
                         </button>
                       </div>
                     )}
+                    {/* Preset quick adjustments to the current team — one tap,
+                        no modal. Custom opens the full Give Marks dialog. */}
+                    <div className="flex flex-col gap-1 pt-1 mt-0.5 border-t border-line/[.06]">
+                      <span className="text-[9px] font-semibold tracking-[.1em] text-dim-2">QUICK POINTS</span>
+                      <div className="flex flex-wrap gap-1.5">
+                        {[5, 10, 20, -5, -10].map((v) => (
+                          <button
+                            key={v}
+                            onClick={() => quickPoints(v)}
+                            disabled={pending || teams.length === 0}
+                            className={`min-w-11 rounded-lg border px-2 py-1.5 text-[12px] font-black tabular-nums cursor-pointer disabled:opacity-40 ${
+                              v > 0
+                                ? "border-success/30 bg-success/[.08] text-success hover:bg-success/[.14]"
+                                : "border-danger/30 bg-danger/[.08] text-danger-soft hover:bg-danger/[.14]"
+                            }`}
+                          >
+                            {v > 0 ? `+${v}` : v}
+                          </button>
+                        ))}
+                        <button
+                          onClick={() => openScoring(assignedTeamId ?? teams[0]?.id ?? "", 10)}
+                          disabled={pending || teams.length === 0}
+                          className="rounded-lg border border-line/[.12] bg-line/[.05] px-2.5 py-1.5 text-[12px] font-bold text-ink-3 hover:bg-line/[.1] cursor-pointer disabled:opacity-40"
+                        >
+                          Custom
+                        </button>
+                      </div>
+                    </div>
                   </div>
                   )}
 
@@ -1046,8 +1343,7 @@ export function HostConsole({
 
             {/* TIMER — the readout shifts green -> amber -> red as it runs
                 down, same ladder as every participant phone. */}
-            <section className="rounded-2xl border border-line/[.08] bg-line/[.03] p-4 flex flex-col gap-3">
-              <span className="text-sm font-bold text-ink-2">Timer</span>
+            <Module title="Timer" icon="timer" accent="#3DD68C" badge={<span className="ml-1.5 font-mono text-[11px] font-black tabular-nums text-ink-3">{timerDisplay}</span>}>
               <span
                 className={`font-mono text-3xl font-black text-center tabular-nums transition-colors duration-500 ${TIMER_URGENCY_TEXT[timerUrgency(secondsLeft, Number(current?.settings?.timer ?? 30))]} ${
                   secondsLeft !== null && secondsLeft <= 5 && timerRunning ? "animate-enc-pulse" : ""
@@ -1074,17 +1370,20 @@ export function HostConsole({
                   </div>
                 );
               })()}
-              <div className="grid grid-cols-2 gap-2">
-                <Button variant="primary" onClick={() => action(() => startTimer(room.id, Number(current?.settings?.timer ?? 30)))} disabled={pending}>
+              <div className="grid grid-cols-3 gap-2">
+                <Button variant="primary" onClick={() => action(() => startTimer(room.id, Number(current?.settings?.timer ?? 30)))} disabled={pending} className="justify-center">
                   Start
                 </Button>
-                <Button variant="subtle" onClick={() => action(() => pauseTimer(room.id))} disabled={pending}>
+                <Button variant="subtle" onClick={() => action(() => pauseTimer(room.id))} disabled={pending} className="justify-center">
                   Pause
                 </Button>
-                <Button variant="subtle" onClick={() => action(() => resetTimer(room.id))} disabled={pending}>
+                <Button variant="subtle" onClick={() => action(() => resetTimer(room.id))} disabled={pending} className="justify-center">
                   Reset
                 </Button>
-                <Button variant="subtle" onClick={() => addTime(10)} disabled={pending}>
+                <Button variant="subtle" onClick={() => addTime(-10)} disabled={pending} className="justify-center">
+                  −10 sec
+                </Button>
+                <Button variant="subtle" onClick={() => addTime(10)} disabled={pending} className="col-span-2 justify-center">
                   +10 sec
                 </Button>
               </div>
@@ -1097,28 +1396,53 @@ export function HostConsole({
                 />
                 Auto-start timer on each question
               </label>
-            </section>
+            </Module>
 
             {/* TEAMS */}
-            <section className="rounded-2xl border border-line/[.08] bg-line/[.03] p-4 flex flex-col gap-2">
-              <span className="text-sm font-bold text-ink-2">Teams</span>
-              {teams.map((team) => {
+            <Module title="Teams" icon="users" accent="#6C7BFA" badge={<span className="ml-1.5 text-[10px] text-dim-2">{teams.length}</span>}>
+              {(() => {
+                const rankOrder = [...teams].sort((a, b) => b.score - a.score).map((t) => t.id);
+                return teams.map((team) => {
                 const owned = ownedByTeam.get(team.id) ?? [];
+                const cardsLeft = owned.reduce((sum, o) => sum + (o.remainingUses ?? 0), 0);
                 const expanded = expandedTeamId === team.id;
                 const maxScore = Math.max(...teams.map((t) => t.score));
                 const isLeader = maxScore > 0 && team.score === maxScore;
+                const rank = rankOrder.indexOf(team.id) + 1;
+                const teamDevices = participants.filter((p) => p.teamId === team.id);
+                const captain = teamDevices.find((p) => p.role === "CAPTAIN");
+                const captainOffline = Boolean(captain && !captain.connected);
+                const anyConnected = teamDevices.some((p) => p.connected);
+                const isTurn = assignedTeamId === team.id;
                 return (
-                  <div key={team.id} className="rounded-xl border border-line/[.07] bg-elev overflow-hidden">
+                  <div
+                    key={team.id}
+                    className={`rounded-xl border bg-elev overflow-hidden ${
+                      isTurn ? "border-accent/45 ring-1 ring-accent/20" : captainOffline ? "border-danger/35" : "border-line/[.07]"
+                    }`}
+                  >
                     <button
                       onClick={() => setExpandedTeamId(expanded ? null : team.id)}
                       className="w-full flex items-center gap-2 px-3 py-2 text-left cursor-pointer"
                     >
+                      <span className="font-mono text-[10px] font-black text-dim-2 w-4 shrink-0">#{rank}</span>
                       <span className="w-2 h-2 rounded-full shrink-0" style={{ background: team.color ?? "#6C7BFA" }} />
+                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${anyConnected ? "bg-success" : "bg-line/[.3]"}`} title={anyConnected ? "Connected" : "No devices connected"} />
                       <span className="text-[12.5px] font-semibold text-ink-2 truncate">
                         {team.name}
                         {isLeader && <span className="ml-1" title="Current leader">👑</span>}
+                        {isTurn && <span className="ml-1 text-[9px] font-black text-accent">· TURN</span>}
                       </span>
+                      {captainOffline && (
+                        <span className="shrink-0 text-[9px] font-bold text-danger-soft" title="Captain disconnected">⚠ CAP</span>
+                      )}
                       <span className="ml-auto flex items-center gap-2 text-[11px] font-mono shrink-0">
+                        {cardsLeft > 0 && (
+                          <span className="flex items-center gap-0.5 text-accent" title="Power cards remaining">
+                            <Icon name="zap" size={10} />
+                            {cardsLeft}
+                          </span>
+                        )}
                         <span className="flex items-center gap-1 text-warn">
                           <Icon name="coins" size={11} />
                           {team.coins}
@@ -1206,9 +1530,240 @@ export function HostConsole({
                     )}
                   </div>
                 );
-              })}
+                });
+              })()}
+            </Module>
+
+
+            {/* ACTIVE EVENTS — live status at a glance; the actual controls
+                live in the Event Actions drawer to keep this rail scroll-free. */}
+            <section className="rounded-2xl border border-line/[.08] bg-line/[.03] p-3.5 flex flex-col gap-2.5">
+              <span className="text-[12px] font-bold tracking-[.06em] text-ink-2 uppercase">Active Events</span>
+              <div className="grid grid-cols-2 gap-1.5">
+                <span className={`flex items-center gap-1 rounded-lg border px-2 py-1.5 text-[10.5px] font-semibold ${storeOpen ? "border-success/30 bg-success/[.08] text-success" : "border-line/[.08] bg-line/[.02] text-mute-2"}`}>🛒 Store · {storeOpen ? "Open" : "Closed"}</span>
+                <span className={`flex items-center gap-1 rounded-lg border px-2 py-1.5 text-[10.5px] font-semibold ${auction ? "border-warn/30 bg-warn/[.08] text-warn" : "border-line/[.08] bg-line/[.02] text-mute-2"}`}>🔨 Auction · {auction ? "Live" : "Idle"}</span>
+                <span className={`flex items-center gap-1 rounded-lg border px-2 py-1.5 text-[10.5px] font-semibold ${room.liveState.flashSaleActive ? "border-warn/30 bg-warn/[.08] text-warn" : "border-line/[.08] bg-line/[.02] text-mute-2"}`}>⚡ Sale · {room.liveState.flashSaleActive ? "On" : "Off"}</span>
+                <span className="flex items-center gap-1 rounded-lg border border-line/[.08] bg-line/[.02] px-2 py-1.5 text-[10.5px] font-semibold text-mute-2">🎁 Rewards</span>
+              </div>
+              <Button variant="primary" onClick={() => setEventActionsOpen(true)} disabled={pending}>
+                <Icon name="wand-sparkles" size={14} />
+                Open Event Actions
+              </Button>
             </section>
 
+            {/* POWER REQUESTS */}
+            <Module
+              title="Power Requests"
+              icon="hand"
+              accent="#5EC9E8"
+              badge={
+                pendingRequestCount > 0 ? (
+                  <span className="ml-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-warn text-black text-[10px] font-black flex items-center justify-center">
+                    {pendingRequestCount}
+                  </span>
+                ) : undefined
+              }
+            >
+              {powerRequests.length === 0 ? (
+                <span className="text-[12px] text-mute-2">No requests yet.</span>
+              ) : (
+                powerRequests.slice(0, 6).map((request) => {
+                  const ageS = Math.max(0, Math.floor((now - new Date(request.createdAt).getTime()) / 1000));
+                  const ago = ageS < 60 ? `${ageS}s ago` : `${Math.floor(ageS / 60)}m ago`;
+                  const owned = ownedByTeam.get(request.teamId)?.find((o) => o.powerCardId === request.powerCardId);
+                  return (
+                  <div
+                    key={request.id}
+                    className={`rounded-xl border p-3 flex flex-col gap-2 animate-[encRise_.3s_ease] ${
+                      request.status === "REQUESTED" ? "border-warn/30 bg-warn/[.05]" : "border-line/[.08] bg-line/[.035]"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-lg shrink-0">{request.powerCardIcon}</span>
+                      <span className="flex flex-col min-w-0 flex-1">
+                        <span className="text-[12px] font-bold text-ink-2 truncate">{request.powerCardName}</span>
+                        <span className="flex items-center gap-1 text-[10.5px] text-mute-2 truncate">
+                          <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: request.teamColor ?? "#6C7BFA" }} />
+                          {request.teamName}
+                          {owned ? ` · ${owned.remainingUses} left` : ""}
+                        </span>
+                      </span>
+                      <span className="shrink-0 flex flex-col items-end">
+                        <span className="text-[9px] font-bold tracking-[.08em] text-dim-2">{request.status}</span>
+                        <span className="text-[9.5px] text-mute-2 tabular-nums">{ago}</span>
+                      </span>
+                    </div>
+                    {request.status === "REQUESTED" && (
+                      <div className="grid grid-cols-3 gap-1.5">
+                        <Button variant="primary" size="sm" onClick={() => action(() => resolvePowerCardRequest(request.id, true).then(() => undefined))} disabled={pending} className="justify-center">
+                          Approve
+                        </Button>
+                        <Button variant="subtle" size="sm" onClick={() => action(() => resolvePowerCardRequest(request.id, false).then(() => undefined))} disabled={pending} className="justify-center">
+                          Reject
+                        </Button>
+                        <Button variant="success" size="sm" onClick={() => action(() => hostForceActivatePowerCard(request.id).then(() => undefined))} disabled={pending} className="justify-center" title="Override — approve and activate now">
+                          Override
+                        </Button>
+                      </div>
+                    )}
+                    {request.status === "APPROVED" && (
+                      <Button variant="primary" size="sm" onClick={() => action(() => hostActivatePowerCard(request.id).then(() => undefined))} disabled={pending}>
+                        Activate
+                      </Button>
+                    )}
+                    {request.status === "ACTIVE" && (
+                      <Button variant="subtle" size="sm" onClick={() => action(() => hostConsumePowerCard(request.id).then(() => undefined))} disabled={pending}>
+                        Mark Consumed
+                      </Button>
+                    )}
+                  </div>
+                  );
+                })
+              )}
+            </Module>
+
+
+            {/* EVENT LOG — a filterable timeline: timestamp + category-tinted
+                entry, newest first. */}
+            <section className="rounded-2xl border border-line/[.08] bg-line/[.03] p-4 flex flex-col gap-2">
+              <span className="text-sm font-bold text-ink-2">Event Log</span>
+              <div className="flex flex-wrap gap-1">
+                {LOG_FILTERS.map((f) => (
+                  <button
+                    key={f}
+                    onClick={() => setLogFilter(f)}
+                    className={`rounded-full px-2 py-0.5 text-[9.5px] font-bold tracking-[.04em] cursor-pointer transition ${
+                      logFilter === f ? "bg-accent text-white" : "bg-line/[.06] text-mute-2 hover:text-ink-3"
+                    }`}
+                  >
+                    {f}
+                  </button>
+                ))}
+              </div>
+              {(() => {
+                const filtered = logs.filter((log) => logFilter === "ALL" || logCategory(log.type) === logFilter);
+                if (filtered.length === 0) {
+                  return <span className="text-[12px] text-mute-2">No matching actions.</span>;
+                }
+                const CAT_TINT: Record<Exclude<LogFilter, "ALL">, string> = {
+                  SCORE: "text-success",
+                  POWER: "text-accent",
+                  STORE: "text-warn",
+                  AUCTION: "text-warn",
+                  BROADCAST: "text-info",
+                  GENERAL: "text-mute-2",
+                };
+                return filtered.slice(0, 16).map((log) => {
+                  const visual = LOG_VISUAL[log.type] ?? { icon: "circle", color: "text-mute-2" };
+                  const cat = logCategory(log.type);
+                  const time = new Date(log.createdAt);
+                  const hhmm = `${String(time.getHours()).padStart(2, "0")}:${String(time.getMinutes()).padStart(2, "0")}`;
+                  return (
+                    <div key={log.id} className="flex items-center gap-2 text-[11.5px] border-b border-line/[.06] pb-1">
+                      <span className="font-mono text-[9.5px] text-dim-2 tabular-nums shrink-0 w-8">{hhmm}</span>
+                      <Icon name={visual.icon} size={12} className={`${visual.color} shrink-0`} />
+                      <span className={`truncate ${CAT_TINT[cat]}`}>{formatLog(log)}</span>
+                    </div>
+                  );
+                });
+              })()}
+            </section>
+          </div>
+        </aside>
+      </div>
+
+      {/* BOTTOM COMMAND BAR — the host's fixed command center. The ten actions
+          they repeat all night, sized large and evenly so nothing is hunted
+          for; rare tools live behind Event Actions. */}
+      <div className="h-[68px] border-t border-line/[.08] bg-[rgba(8,9,12,.96)] px-2.5 flex items-center gap-1.5 shrink-0">
+        <Button variant="subtle" onClick={() => action(() => stepScene(room.id, "previous"))} disabled={pending} className="flex-1 min-w-0 justify-center h-12">
+          <Icon name="skip-back" size={15} />
+          <span className="hidden sm:inline">Previous</span>
+        </Button>
+        <Button variant="primary" onClick={() => action(() => stepScene(room.id, "next"))} disabled={pending} className="flex-[1.3] min-w-0 justify-center h-12 text-[15px]">
+          <span className="hidden sm:inline">Next</span>
+          <Icon name="skip-forward" size={16} />
+        </Button>
+        <Button variant={timerRunning ? "danger" : "success"} onClick={toggleTimer} disabled={pending} className="flex-1 min-w-0 justify-center h-12">
+          <Icon name={timerRunning ? "pause" : "play"} size={15} />
+          <span className="hidden md:inline">{timerRunning ? "Pause" : "Start"}</span>
+        </Button>
+        <Button
+          variant="subtle"
+          onClick={() => {
+            play("reveal");
+            action(() => revealAnswer(room.id));
+          }}
+          disabled={pending || timerRunning}
+          title={timerRunning ? "Stop the timer before revealing the answer." : undefined}
+          className="flex-1 min-w-0 justify-center h-12"
+        >
+          <Icon name="eye" size={15} />
+          <span className="hidden lg:inline">Reveal</span>
+        </Button>
+        <Button
+          variant="subtle"
+          onClick={() => openScoring(assignedTeamId ?? teams[0]?.id ?? "", 10)}
+          disabled={pending || teams.length === 0}
+          className="flex-1 min-w-0 justify-center h-12"
+        >
+          <Icon name="plus-circle" size={15} />
+          <span className="hidden lg:inline">Give Marks</span>
+        </Button>
+        <Button
+          variant="subtle"
+          onClick={jumpToLeaderboard}
+          disabled={pending || !scenes.some((scene) => scene.type === "LEADERBOARD")}
+          className="flex-1 min-w-0 justify-center h-12"
+        >
+          <Icon name="trophy" size={15} />
+          <span className="hidden lg:inline">Leaderboard</span>
+        </Button>
+        <Button
+          variant="subtle"
+          onClick={() => setEventActionsOpen(true)}
+          disabled={pending}
+          className="flex-1 min-w-0 justify-center h-12"
+        >
+          <Icon name="wand-sparkles" size={15} />
+          <span className="hidden lg:inline">Events</span>
+        </Button>
+        <Button
+          variant="plain"
+          onClick={undoLastScore}
+          disabled={pending || !canUndo}
+          className="flex-1 min-w-0 justify-center h-12"
+        >
+          <Icon name="undo-2" size={15} />
+          <span className="hidden lg:inline">Undo</span>
+        </Button>
+        <Button
+          variant="danger"
+          onClick={emergencyStop}
+          disabled={pending || !timerRunning}
+          title="Freeze the room — pauses the live timer"
+          className="flex-1 min-w-0 justify-center h-12"
+        >
+          <Icon name="octagon-x" size={15} />
+          <span className="hidden lg:inline">Stop</span>
+        </Button>
+      </div>
+
+      {/* EVENT ACTIONS DRAWER — the rare tools (store, auction, lucky spin,
+          rewards, broadcast, round access, emergency), off-canvas until the
+          host summons them so the live rail stays scroll-free. */}
+      {eventActionsOpen && (
+        <div className="fixed inset-0 z-[70] flex justify-end" data-theme="dark">
+          <div className="absolute inset-0 bg-black/55 backdrop-blur-[2px]" onClick={() => setEventActionsOpen(false)} />
+          <div className="relative w-full max-w-[400px] h-full bg-shell border-l border-line/[.1] flex flex-col shadow-[0_0_60px_rgba(0,0,0,.6)] animate-[encSlideInRight_.25s_ease]">
+            <div className="flex items-center gap-2 px-4 py-3 border-b border-line/[.08] shrink-0">
+              <Icon name="wand-sparkles" size={15} className="text-accent" />
+              <span className="text-[13px] font-bold text-ink">Event Actions</span>
+              <button onClick={() => setEventActionsOpen(false)} className="ml-auto w-8 h-8 rounded-lg flex items-center justify-center text-mute-2 hover:bg-line/[.08] cursor-pointer">
+                <Icon name="x" size={15} />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
             {/* SURPRISE PANEL */}
             <section className="rounded-2xl border border-accent/25 bg-accent/[.05] p-4 flex flex-col gap-2.5">
               <span className="flex items-center gap-1.5 text-sm font-bold text-ink-2">
@@ -1490,52 +2045,6 @@ export function HostConsole({
                 );
               })()}
             </section>
-
-            {/* POWER REQUESTS */}
-            <section className="rounded-2xl border border-line/[.08] bg-line/[.03] p-4 flex flex-col gap-2">
-              <span className="text-sm font-bold text-ink-2">Power Requests</span>
-              {powerRequests.length === 0 ? (
-                <span className="text-[12px] text-mute-2">No requests yet.</span>
-              ) : (
-                powerRequests.slice(0, 5).map((request) => (
-                  <div key={request.id} className="rounded-xl border border-line/[.08] bg-line/[.035] p-3 flex flex-col gap-2">
-                    <div className="flex items-center gap-2">
-                      <span className="text-lg">{request.powerCardIcon}</span>
-                      <span className="flex flex-col min-w-0">
-                        <span className="text-[12px] font-bold text-ink-2 truncate">{request.powerCardName}</span>
-                        <span className="text-[10.5px] text-mute-2 truncate">
-                          {request.teamName} - {request.status}
-                        </span>
-                      </span>
-                    </div>
-                    {request.status === "REQUESTED" && (
-                      <div className="grid grid-cols-3 gap-1.5">
-                        <Button variant="primary" size="sm" onClick={() => action(() => resolvePowerCardRequest(request.id, true).then(() => undefined))} disabled={pending}>
-                          Approve
-                        </Button>
-                        <Button variant="subtle" size="sm" onClick={() => action(() => resolvePowerCardRequest(request.id, false).then(() => undefined))} disabled={pending}>
-                          Reject
-                        </Button>
-                        <Button variant="success" size="sm" onClick={() => action(() => hostForceActivatePowerCard(request.id).then(() => undefined))} disabled={pending}>
-                          Force
-                        </Button>
-                      </div>
-                    )}
-                    {request.status === "APPROVED" && (
-                      <Button variant="primary" size="sm" onClick={() => action(() => hostActivatePowerCard(request.id).then(() => undefined))} disabled={pending}>
-                        Activate
-                      </Button>
-                    )}
-                    {request.status === "ACTIVE" && (
-                      <Button variant="subtle" size="sm" onClick={() => action(() => hostConsumePowerCard(request.id).then(() => undefined))} disabled={pending}>
-                        Mark Consumed
-                      </Button>
-                    )}
-                  </div>
-                ))
-              )}
-            </section>
-
             {/* POWER STORE CONTROL */}
             <section className="rounded-2xl border border-line/[.08] bg-line/[.03] p-4 flex flex-col gap-2.5">
               {(() => {
@@ -1660,114 +2169,51 @@ export function HostConsole({
             {/* BROADCAST */}
             <section className="rounded-2xl border border-line/[.08] bg-line/[.03] p-4 flex flex-col gap-2">
               <span className="text-sm font-bold text-ink-2">Broadcast</span>
+              {/* One-tap templates for the announcements a host repeats. */}
+              <div className="flex flex-wrap gap-1.5">
+                {BROADCAST_TEMPLATES.map((t) => (
+                  <button
+                    key={t.label}
+                    onClick={() => sendTemplate(t.message)}
+                    disabled={pending}
+                    className="rounded-full border border-line/[.1] bg-line/[.05] px-2.5 py-1 text-[11px] font-semibold text-ink-3 hover:bg-line/[.1] cursor-pointer disabled:opacity-40"
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
               <textarea
                 value={broadcast}
                 onChange={(event) => setBroadcast(event.target.value)}
-                placeholder="Break time, warning, announcement..."
+                placeholder="Custom announcement..."
                 maxLength={180}
                 className="min-h-20 bg-line/[.05] border border-line/[.1] rounded-xl px-3 py-2 text-[12px] text-ink outline-none resize-none"
               />
               <Button variant="primary" onClick={sendCurrentBroadcast} disabled={pending || !broadcast.trim()}>
-                Send Broadcast
+                Send Custom Broadcast
               </Button>
               {feedback && <span className="text-[12px] text-danger-soft">{feedback}</span>}
             </section>
-
-            {/* EVENT LOG */}
-            <section className="rounded-2xl border border-line/[.08] bg-line/[.03] p-4 flex flex-col gap-2">
-              <span className="text-sm font-bold text-ink-2">Event Log</span>
-              {logs.length === 0 ? (
-                <span className="text-[12px] text-mute-2">No actions yet.</span>
-              ) : (
-                logs.slice(0, 12).map((log) => {
-                  const visual = LOG_VISUAL[log.type] ?? { icon: "circle", color: "text-mute-2" };
-                  return (
-                    <div
-                      key={log.id}
-                      className="flex items-center gap-2 text-[11.5px] text-mute-2 border-b border-line/[.06] pb-1"
-                    >
-                      <Icon name={visual.icon} size={12} className={`${visual.color} shrink-0`} />
-                      <span className="truncate">{formatLog(log)}</span>
-                    </div>
-                  );
-                })
-              )}
-            </section>
+              {/* EMERGENCY ACTIONS */}
+              <section className="rounded-2xl border border-danger/25 bg-danger/[.05] p-4 flex flex-col gap-2.5">
+                <span className="flex items-center gap-1.5 text-sm font-bold text-danger-soft">
+                  <Icon name="triangle-alert" size={15} />
+                  Emergency Actions
+                </span>
+                <span className="text-[11.5px] text-mute-2">
+                  Reset wipes this room&apos;s live progress. Use with care.
+                </span>
+                <Button variant="danger" onClick={() => { setEventActionsOpen(false); setResetOpen(true); }} disabled={pending}>
+                  Reset Room
+                </Button>
+              </section>
+              <Button variant="subtle" onClick={() => setEventActionsOpen(false)}>
+                Close Drawer
+              </Button>
+            </div>
           </div>
-        </aside>
-      </div>
-
-      {/* BOTTOM HOST DOCK */}
-      <div className="h-16 border-t border-line/[.08] bg-[rgba(8,9,12,.94)] px-3 flex items-center gap-2 overflow-x-auto shrink-0">
-        <Button variant="subtle" onClick={() => action(() => stepScene(room.id, "previous"))} disabled={pending} className="shrink-0">
-          <Icon name="skip-back" size={14} />
-          Previous
-        </Button>
-        <Button variant="primary" onClick={() => action(() => stepScene(room.id, "next"))} disabled={pending} className="shrink-0">
-          Next
-          <Icon name="skip-forward" size={14} />
-        </Button>
-        <Button variant="subtle" onClick={toggleTimer} disabled={pending} className="shrink-0">
-          {timerRunning ? "Pause Timer" : "Start Timer"}
-        </Button>
-        <Button
-          variant="subtle"
-          onClick={() => {
-            play("reveal");
-            action(() => revealAnswer(room.id));
-          }}
-          disabled={pending || timerRunning}
-          title={timerRunning ? "Stop the timer before revealing the answer." : undefined}
-          className="shrink-0"
-        >
-          Reveal Answer
-        </Button>
-        <Button
-          variant="subtle"
-          onClick={() => openScoring(assignedTeamId ?? teams[0]?.id ?? "", 10)}
-          disabled={pending || teams.length === 0}
-          className="shrink-0"
-        >
-          Give Marks
-        </Button>
-        <Button
-          variant="subtle"
-          onClick={jumpToLeaderboard}
-          disabled={pending || !scenes.some((scene) => scene.type === "LEADERBOARD")}
-          className="shrink-0"
-        >
-          Leaderboard
-        </Button>
-        <Button
-          variant={room.storeStatus === "OPEN" ? "success" : "subtle"}
-          onClick={() => action(() => (room.storeStatus === "OPEN" ? closeStore(room.id) : openStore(room.id)))}
-          disabled={pending}
-          className="shrink-0"
-        >
-          {room.storeStatus === "OPEN" ? (
-            <>
-              <span className="w-1.5 h-1.5 rounded-full bg-white animate-enc-pulse" />
-              Store Open · Close
-            </>
-          ) : (
-            "Open Store"
-          )}
-        </Button>
-        <Button variant="subtle" onClick={sendCurrentBroadcast} disabled={pending || !broadcast.trim()} className="shrink-0">
-          Broadcast
-        </Button>
-        <Button
-          variant="plain"
-          onClick={() => {
-            const last = scoreHistory.find((entry) => !entry.isUndo && !entry.isReverted);
-            if (last) action(() => hostUndoScoreTransaction(last.id));
-          }}
-          disabled={pending || !scoreHistory.some((entry) => !entry.isUndo && !entry.isReverted)}
-          className="shrink-0"
-        >
-          Undo
-        </Button>
-      </div>
+        </div>
+      )}
 
       <ScoringModal
         key={`${scoringOpen}-${scoringTeamId}-${scoringSeed}`}
