@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useState, useTransition, useCallback } from "react";
+import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Icon } from "@/components/ui/Icon";
@@ -15,6 +15,7 @@ import type { QuestionRecord } from "@/data/queries/question.queries";
 import { QUESTION_TYPES, type QuestionDifficulty } from "@/types/db";
 
 const DIFFICULTIES: QuestionDifficulty[] = ["EASY", "MEDIUM", "HARD"];
+const UNASSIGNED_ROUND = "__UNASSIGNED__";
 
 interface QuestionBankBoardProps {
   questions: QuestionRecord[];
@@ -33,14 +34,45 @@ export function QuestionBankBoard({ questions, rounds, usedQuestionIds }: Questi
   const [addingToRound, setAddingToRound] = useState<QuestionRecord | null>(null);
   const [pending, startTransition] = useTransition();
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
 
   // "All Questions" is the flat library; "By Group" / "By Round" each show
-  // tiles first, and opening a tile filters down to just that tile's questions.
-  const [viewMode, setViewMode] = useState<"ALL" | "GROUPS" | "ROUNDS">("ALL");
-  const [openGroup, setOpenGroup] = useState<string | null>(null);
+  // tiles first, and opening a tile filters down to just that tile's
+  // questions. This lives in the URL (not useState) because every save
+  // action calls router.refresh(), and this app's template.tsx intentionally
+  // remounts the whole page on every navigation (including refresh) for its
+  // page-transition animation — plain component state would reset to
+  // defaults on every save, which read as "getting bounced back to All
+  // Questions" after adding/editing something.
+  const rawView = searchParams.get("view");
+  const viewMode: "ALL" | "GROUPS" | "ROUNDS" = rawView === "GROUPS" || rawView === "ROUNDS" ? rawView : "ALL";
+  const openGroup = viewMode === "GROUPS" ? searchParams.get("group") : null;
+  const openRound = viewMode === "ROUNDS" ? searchParams.get("round") : null;
+
+  const setViewParams = useCallback(
+    (next: { view?: "ALL" | "GROUPS" | "ROUNDS"; group?: string | null; round?: string | null }) => {
+      const params = new URLSearchParams(searchParams.toString());
+      const view = next.view ?? viewMode;
+      if (view === "ALL") params.delete("view");
+      else params.set("view", view);
+      const group = "group" in next ? next.group : openGroup;
+      if (group) params.set("group", group);
+      else params.delete("group");
+      const round = "round" in next ? next.round : openRound;
+      if (round) params.set("round", round);
+      else params.delete("round");
+      const qs = params.toString();
+      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+    },
+    [pathname, router, searchParams, viewMode, openGroup, openRound]
+  );
+
   const [addExistingOpen, setAddExistingOpen] = useState(false);
-  const [openRound, setOpenRound] = useState<string | null>(null);
   const [addExistingToRoundOpen, setAddExistingToRoundOpen] = useState(false);
+  const [creatingGroup, setCreatingGroup] = useState(false);
+  const [newGroupName, setNewGroupName] = useState("");
+  const [newGroupError, setNewGroupError] = useState<string | null>(null);
 
   const usedSet = new Set(usedQuestionIds);
   const tags = [...new Set(questions.flatMap((question) => question.tags ?? []))].sort();
@@ -119,6 +151,23 @@ export function QuestionBankBoard({ questions, rounds, usedQuestionIds }: Questi
     });
   }
 
+  // Groups only exist as a value on Question.groupName (no separate Group
+  // collection, same as tags) — so "creating" one here doesn't write
+  // anything by itself. It just opens that (currently empty) group so the
+  // host can immediately use New/Existing Question to populate it, which is
+  // the moment the group actually starts existing for real.
+  function confirmCreateGroup() {
+    const name = newGroupName.trim();
+    if (!name) return setNewGroupError("Enter a group name.");
+    if (name === GENERAL_GROUP || existingGroups.some((g) => g.toLowerCase() === name.toLowerCase())) {
+      return setNewGroupError("A group with this name already exists.");
+    }
+    setCreatingGroup(false);
+    setNewGroupName("");
+    setNewGroupError(null);
+    setViewParams({ group: name });
+  }
+
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -137,11 +186,7 @@ export function QuestionBankBoard({ questions, rounds, usedQuestionIds }: Questi
           duplicated elsewhere. */}
       <div className="flex items-center gap-1 rounded-xl border border-line/[.09] bg-line/[.03] p-1 w-fit">
         <button
-          onClick={() => {
-            setViewMode("ALL");
-            setOpenGroup(null);
-            setOpenRound(null);
-          }}
+          onClick={() => setViewParams({ view: "ALL", group: null, round: null })}
           className={`rounded-lg px-3.5 py-1.5 text-[12.5px] font-bold cursor-pointer transition ${
             viewMode === "ALL" ? "bg-accent text-white" : "text-mute-2 hover:text-ink-3"
           }`}
@@ -149,10 +194,7 @@ export function QuestionBankBoard({ questions, rounds, usedQuestionIds }: Questi
           All Questions · {questions.length}
         </button>
         <button
-          onClick={() => {
-            setViewMode("GROUPS");
-            setOpenRound(null);
-          }}
+          onClick={() => setViewParams({ view: "GROUPS", round: null })}
           className={`rounded-lg px-3.5 py-1.5 text-[12.5px] font-bold cursor-pointer transition ${
             viewMode === "GROUPS" ? "bg-accent text-white" : "text-mute-2 hover:text-ink-3"
           }`}
@@ -160,10 +202,7 @@ export function QuestionBankBoard({ questions, rounds, usedQuestionIds }: Questi
           By Group · {groupTiles.length}
         </button>
         <button
-          onClick={() => {
-            setViewMode("ROUNDS");
-            setOpenGroup(null);
-          }}
+          onClick={() => setViewParams({ view: "ROUNDS", group: null })}
           className={`rounded-lg px-3.5 py-1.5 text-[12.5px] font-bold cursor-pointer transition ${
             viewMode === "ROUNDS" ? "bg-accent text-white" : "text-mute-2 hover:text-ink-3"
           }`}
@@ -178,7 +217,7 @@ export function QuestionBankBoard({ questions, rounds, usedQuestionIds }: Questi
             {groupTiles.map(([name, count]) => (
               <button
                 key={name}
-                onClick={() => setOpenGroup(name)}
+                onClick={() => setViewParams({ group: name })}
                 className="flex flex-col items-start gap-1.5 rounded-2xl border border-line/[.09] bg-line/[.03] p-4 text-left hover:border-accent/50 hover:bg-accent/[.05] cursor-pointer transition-colors"
               >
                 <div className="w-9 h-9 rounded-xl bg-accent/10 border border-accent/25 flex items-center justify-center text-accent">
@@ -188,11 +227,59 @@ export function QuestionBankBoard({ questions, rounds, usedQuestionIds }: Questi
                 <span className="text-[11px] text-mute-2">{count} question{count === 1 ? "" : "s"}</span>
               </button>
             ))}
+            {creatingGroup ? (
+              <div className="flex flex-col items-start gap-2 rounded-2xl border-[1.5px] border-dashed border-accent/45 bg-accent/[.05] p-4">
+                <input
+                  autoFocus
+                  value={newGroupName}
+                  onChange={(event) => {
+                    setNewGroupName(event.target.value);
+                    setNewGroupError(null);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") confirmCreateGroup();
+                    if (event.key === "Escape") {
+                      setCreatingGroup(false);
+                      setNewGroupName("");
+                      setNewGroupError(null);
+                    }
+                  }}
+                  placeholder="Group name"
+                  maxLength={60}
+                  className="w-full bg-line/[.04] border border-line/[.1] rounded-[10px] px-2.5 py-1.5 text-[13px] text-ink outline-none"
+                />
+                {newGroupError && <span className="text-[10.5px] text-danger-soft">{newGroupError}</span>}
+                <div className="flex items-center gap-1.5 w-full">
+                  <Button variant="primary" size="sm" onClick={confirmCreateGroup} className="flex-1 justify-center">
+                    Create
+                  </Button>
+                  <Button
+                    variant="plain"
+                    size="sm"
+                    onClick={() => {
+                      setCreatingGroup(false);
+                      setNewGroupName("");
+                      setNewGroupError(null);
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <button
+                onClick={() => setCreatingGroup(true)}
+                className="flex flex-col items-center justify-center gap-1.5 rounded-2xl border-[1.5px] border-dashed border-line/[.16] bg-line/[.02] p-4 text-mute-2 hover:border-accent hover:text-ink-2 cursor-pointer transition-colors min-h-[104px]"
+              >
+                <Icon name="plus" size={18} />
+                <span className="text-[12.5px] font-bold">New Group</span>
+              </button>
+            )}
           </div>
         ) : (
           <div className="flex items-center gap-3 flex-wrap">
             <button
-              onClick={() => setOpenGroup(null)}
+              onClick={() => setViewParams({ group: null })}
               className="flex items-center gap-1.5 text-[12.5px] font-semibold text-accent hover:brightness-125 cursor-pointer w-fit"
             >
               <Icon name="chevron-left" size={14} />
@@ -225,7 +312,7 @@ export function QuestionBankBoard({ questions, rounds, usedQuestionIds }: Questi
             {roundTiles.map((tile) => (
               <button
                 key={tile.id}
-                onClick={() => setOpenRound(tile.id)}
+                onClick={() => setViewParams({ round: tile.id })}
                 className="flex flex-col items-start gap-1.5 rounded-2xl border border-line/[.09] bg-line/[.03] p-4 text-left hover:border-accent/50 hover:bg-accent/[.05] cursor-pointer transition-colors"
               >
                 <div className="w-9 h-9 rounded-xl bg-accent/10 border border-accent/25 flex items-center justify-center text-accent">
@@ -239,7 +326,7 @@ export function QuestionBankBoard({ questions, rounds, usedQuestionIds }: Questi
         ) : (
           <div className="flex items-center gap-3 flex-wrap">
             <button
-              onClick={() => setOpenRound(null)}
+              onClick={() => setViewParams({ round: null })}
               className="flex items-center gap-1.5 text-[12.5px] font-semibold text-accent hover:brightness-125 cursor-pointer w-fit"
             >
               <Icon name="chevron-left" size={14} />

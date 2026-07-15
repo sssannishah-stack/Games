@@ -43,8 +43,21 @@ export async function updateQuestion(questionId: string, input: UpdateQuestionIn
   await assertQuestionOwnership(questionId, user.id);
   const data = updateQuestionSchema.parse(input);
 
+  // `updateQuestionSchema` is `baseQuestionSchema.partial()` — for any field
+  // that also has a `.default()` (question, tags, hints, difficulty,
+  // scoringMode, timerMode, timer, ...), Zod reintroduces that default when
+  // the key is simply absent from `input`, not just when the caller sends
+  // `undefined`. Blindly `$set`-ing the full parsed object would silently
+  // reset every field the caller never touched — only write the keys the
+  // caller actually provided.
+  const providedKeys = Object.keys(input) as (keyof typeof data)[];
+  const patch: Record<string, unknown> = {};
+  for (const key of providedKeys) {
+    if (key in data) patch[key] = data[key];
+  }
+
   await connectToDatabase();
-  await Question.findByIdAndUpdate(questionId, { $set: data });
+  await Question.findByIdAndUpdate(questionId, { $set: patch });
 
   refreshQuestionPaths();
 }
