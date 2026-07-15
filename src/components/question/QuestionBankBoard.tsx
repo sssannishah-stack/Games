@@ -32,8 +32,23 @@ export function QuestionBankBoard({ questions, rounds, usedQuestionIds }: Questi
   const [pending, startTransition] = useTransition();
   const router = useRouter();
 
+  // "All Questions" is the flat library; "By Group" shows one tile per group
+  // first, and opening a tile filters down to just that group's questions.
+  const [viewMode, setViewMode] = useState<"ALL" | "GROUPS">("ALL");
+  const [openGroup, setOpenGroup] = useState<string | null>(null);
+
   const usedSet = new Set(usedQuestionIds);
   const tags = [...new Set(questions.flatMap((question) => question.tags ?? []))].sort();
+  const existingGroups = [...new Set(questions.map((q) => q.groupName).filter((g): g is string => Boolean(g)))].sort();
+  const GENERAL_GROUP = "General";
+  const groupCounts = new Map<string, number>();
+  for (const question of questions) {
+    const key = question.groupName ?? GENERAL_GROUP;
+    groupCounts.set(key, (groupCounts.get(key) ?? 0) + 1);
+  }
+  const groupTiles = [...groupCounts.entries()].sort((a, b) =>
+    a[0] === GENERAL_GROUP ? 1 : b[0] === GENERAL_GROUP ? -1 : a[0].localeCompare(b[0])
+  );
   const roundsByQuestion = new Map<string, RoundRecord[]>();
   for (const round of rounds) {
     for (const questionId of round.questionIds) {
@@ -46,12 +61,14 @@ export function QuestionBankBoard({ questions, rounds, usedQuestionIds }: Questi
   const filtered = questions.filter((question) => {
     const text = `${question.question} ${question.answer}`.toLowerCase();
     const isUsed = usedSet.has(question.id);
+    const groupKey = question.groupName ?? GENERAL_GROUP;
     return (
       text.includes(query.toLowerCase()) &&
       (typeFilter === "ALL" || question.type === typeFilter) &&
       (difficultyFilter === "ALL" || question.difficulty === difficultyFilter) &&
       (tagFilter === "ALL" || (question.tags ?? []).includes(tagFilter)) &&
-      (usageFilter === "ALL" || (usageFilter === "USED" ? isUsed : !isUsed))
+      (usageFilter === "ALL" || (usageFilter === "USED" ? isUsed : !isUsed)) &&
+      (viewMode === "ALL" || openGroup === null || groupKey === openGroup)
     );
   });
 
@@ -82,6 +99,64 @@ export function QuestionBankBoard({ questions, rounds, usedQuestionIds }: Questi
         </Button>
       </div>
 
+      {/* All Questions (flat, everything) vs By Group (tiles first, then
+          that group's questions) — a pure view toggle, no filtering logic
+          duplicated elsewhere. */}
+      <div className="flex items-center gap-1 rounded-xl border border-line/[.09] bg-line/[.03] p-1 w-fit">
+        <button
+          onClick={() => {
+            setViewMode("ALL");
+            setOpenGroup(null);
+          }}
+          className={`rounded-lg px-3.5 py-1.5 text-[12.5px] font-bold cursor-pointer transition ${
+            viewMode === "ALL" ? "bg-accent text-white" : "text-mute-2 hover:text-ink-3"
+          }`}
+        >
+          All Questions · {questions.length}
+        </button>
+        <button
+          onClick={() => setViewMode("GROUPS")}
+          className={`rounded-lg px-3.5 py-1.5 text-[12.5px] font-bold cursor-pointer transition ${
+            viewMode === "GROUPS" ? "bg-accent text-white" : "text-mute-2 hover:text-ink-3"
+          }`}
+        >
+          By Group · {groupTiles.length}
+        </button>
+      </div>
+
+      {viewMode === "GROUPS" && (
+        openGroup === null ? (
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+            {groupTiles.map(([name, count]) => (
+              <button
+                key={name}
+                onClick={() => setOpenGroup(name)}
+                className="flex flex-col items-start gap-1.5 rounded-2xl border border-line/[.09] bg-line/[.03] p-4 text-left hover:border-accent/50 hover:bg-accent/[.05] cursor-pointer transition-colors"
+              >
+                <div className="w-9 h-9 rounded-xl bg-accent/10 border border-accent/25 flex items-center justify-center text-accent">
+                  <Icon name={name === GENERAL_GROUP ? "inbox" : "folder"} size={16} />
+                </div>
+                <span className="text-[13.5px] font-bold text-ink-2 truncate w-full">{name}</span>
+                <span className="text-[11px] text-mute-2">{count} question{count === 1 ? "" : "s"}</span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <button
+            onClick={() => setOpenGroup(null)}
+            className="flex items-center gap-1.5 text-[12.5px] font-semibold text-accent hover:brightness-125 cursor-pointer w-fit"
+          >
+            <Icon name="chevron-left" size={14} />
+            All Groups
+            <span className="text-mute-2 font-normal">
+              / {openGroup} · {filtered.length} question{filtered.length === 1 ? "" : "s"}
+            </span>
+          </button>
+        )
+      )}
+
+      {(viewMode === "ALL" || openGroup !== null) && (
+      <>
       <Card className="rounded-2xl p-4 grid grid-cols-1 md:grid-cols-5 gap-2">
         <input
           value={query}
@@ -172,8 +247,14 @@ export function QuestionBankBoard({ questions, rounds, usedQuestionIds }: Questi
                 <span className="text-[11.5px] text-mute-2">
                   Answer: {question.answer} - {question.hints.length} hints - {question.timer}s
                 </span>
-                {question.tags.length > 0 && (
+                {(question.groupName || question.tags.length > 0) && (
                   <div className="flex flex-wrap gap-1">
+                    {question.groupName && (
+                      <span className="flex items-center gap-1 rounded-full border border-accent/25 bg-accent/[.08] px-2 py-0.5 text-[10.5px] font-semibold text-accent">
+                        <Icon name="folder" size={10} />
+                        {question.groupName}
+                      </span>
+                    )}
                     {question.tags.map((tag) => (
                       <span key={tag} className="rounded-full border border-line/[.08] bg-line/[.04] px-2 py-0.5 text-[10.5px] text-mute-2">
                         {tag}
@@ -200,14 +281,23 @@ export function QuestionBankBoard({ questions, rounds, usedQuestionIds }: Questi
           })}
         </div>
       )}
+      </>
+      )}
 
-      <QuestionEditorModal rounds={rounds} open={createOpen} onClose={() => setCreateOpen(false)} />
+      <QuestionEditorModal
+        rounds={rounds}
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        existingGroups={existingGroups}
+        defaultGroupName={viewMode === "GROUPS" && openGroup && openGroup !== GENERAL_GROUP ? openGroup : null}
+      />
       {editingQuestion && (
         <QuestionEditorModal
           rounds={rounds}
           question={editingQuestion}
           open={editingQuestion !== null}
           onClose={() => setEditingQuestion(null)}
+          existingGroups={existingGroups}
           usedContext={
             (roundsByQuestion.get(editingQuestion.id)?.length ?? 0) > 0
               ? `${roundsByQuestion.get(editingQuestion.id)?.length} round${

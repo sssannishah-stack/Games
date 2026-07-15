@@ -49,6 +49,7 @@ const QuestionSchema = new Schema<IQuestion>(
       default: "MEDIUM",
     },
     tags: { type: [String], default: [], index: true },
+    groupName: { type: String, default: null, index: true },
   },
   { timestamps: true }
 );

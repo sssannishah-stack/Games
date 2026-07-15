@@ -596,6 +596,11 @@ export interface IQuestion {
   coinReward: number;
   difficulty: QuestionDifficulty;
   tags: string[];
+  /** Library organization only — groups this question under a named folder
+   *  (e.g. "Aadinath") in the Question Bank's group view. Null/empty = the
+   *  implicit "General" bucket. Purely organizational, like `tags`; never
+   *  changes gameplay or scoring. */
+  groupName: string | null;
   createdAt: Date;
   updatedAt: Date;
 }

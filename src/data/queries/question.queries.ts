@@ -38,6 +38,7 @@ export interface QuestionRecord {
   coinReward: number;
   difficulty: QuestionDifficulty;
   tags: string[];
+  groupName: string | null;
 }
 
 function toQuestionRecord(q: {
@@ -62,6 +63,7 @@ function toQuestionRecord(q: {
   coinReward: number;
   difficulty: QuestionDifficulty;
   tags?: string[];
+  groupName?: string | null;
 }): QuestionRecord {
   return serialize<QuestionRecord>({
     id: (q._id as { toString(): string }).toString(),
@@ -85,6 +87,7 @@ function toQuestionRecord(q: {
     coinReward: q.coinReward,
     difficulty: q.difficulty,
     tags: q.tags ?? [],
+    groupName: q.groupName ?? null,
   });
 }
 

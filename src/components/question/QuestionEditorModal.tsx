@@ -77,6 +77,67 @@ interface QuestionEditorModalProps {
   onSaved?: (id: string) => void;
   defaultAttachRoundIds?: string[];
   usedContext?: string;
+  /** Existing group names across the library, for the group picker's dropdown. */
+  existingGroups?: string[];
+  /** Preselect a group when creating from inside a group's filtered view. */
+  defaultGroupName?: string | null;
+}
+
+const NEW_GROUP_VALUE = "__NEW__";
+
+/**
+ * Select an existing group, leave it General (no group), or type a brand new
+ * one inline — the three options the spec calls for when adding a question.
+ */
+function GroupPicker({
+  existingGroups,
+  value,
+  onChange,
+}: {
+  existingGroups: string[];
+  value: string | null;
+  onChange: (value: string | null) => void;
+}) {
+  const isNew = value !== null && !existingGroups.includes(value);
+  const selectValue = value === null ? "" : isNew ? NEW_GROUP_VALUE : value;
+
+  return (
+    <div className="flex flex-col gap-[7px]">
+      <span className="text-xs font-semibold text-ink-3">Group</span>
+      <select
+        value={selectValue}
+        onChange={(event) => {
+          const next = event.target.value;
+          if (next === NEW_GROUP_VALUE) onChange("");
+          else if (next === "") onChange(null);
+          else onChange(next);
+        }}
+        className="bg-line/[.04] border border-line/[.1] rounded-[11px] px-3 py-2 text-sm text-ink outline-none"
+      >
+        <option value="" className="bg-surface">
+          General (no group)
+        </option>
+        {existingGroups.map((group) => (
+          <option key={group} value={group} className="bg-surface">
+            {group}
+          </option>
+        ))}
+        <option value={NEW_GROUP_VALUE} className="bg-surface">
+          + New group…
+        </option>
+      </select>
+      {isNew && (
+        <input
+          autoFocus
+          value={value ?? ""}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder="e.g. Aadinath"
+          maxLength={60}
+          className="bg-line/[.04] border border-line/[.1] rounded-[11px] px-3 py-2 text-sm text-ink outline-none"
+        />
+      )}
+    </div>
+  );
 }
 
 const HAS_MEDIA: Record<QuestionType, boolean> = {
@@ -100,6 +161,8 @@ export function QuestionEditorModal({
   onSaved,
   defaultAttachRoundIds,
   usedContext,
+  existingGroups = [],
+  defaultGroupName = null,
 }: QuestionEditorModalProps) {
   const isEdit = Boolean(question);
   const [step, setStep] = useState<"TYPE" | "FORM">(isEdit ? "FORM" : "TYPE");
@@ -115,6 +178,7 @@ export function QuestionEditorModal({
   const [options, setOptions] = useState<string[]>(question?.options.length ? question.options : ["", ""]);
   const [difficulty, setDifficulty] = useState<QuestionDifficulty>(question?.difficulty ?? "MEDIUM");
   const [tagsText, setTagsText] = useState((question?.tags ?? []).join(", "));
+  const [groupName, setGroupName] = useState<string | null>(question?.groupName ?? defaultGroupName ?? null);
   const [scoringMode, setScoringMode] = useState<RuleOverrideMode>(question?.scoringMode ?? "INHERIT");
   const [timerMode, setTimerMode] = useState<RuleOverrideMode>(question?.timerMode ?? "INHERIT");
   const [timer, setTimer] = useState(question?.timer ?? 20);
@@ -168,6 +232,7 @@ export function QuestionEditorModal({
         .split(",")
         .map((tag) => tag.trim())
         .filter(Boolean),
+      groupName: groupName?.trim() || null,
     };
   }
 
@@ -309,6 +374,7 @@ export function QuestionEditorModal({
             <TextField label="Explanation" value={explanation} onChange={setExplanation} multiline />
             <HintEditor hints={hints} setHints={setHints} />
             <TextField label="Host notes" value={hostNotes} onChange={setHostNotes} multiline />
+            <GroupPicker existingGroups={existingGroups} value={groupName} onChange={setGroupName} />
             <TextField
               label="Tags"
               value={tagsText}

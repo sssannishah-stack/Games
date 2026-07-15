@@ -76,6 +76,7 @@ export async function duplicateQuestion(questionId: string): Promise<{ id: strin
     coinReward: source.coinReward,
     difficulty: source.difficulty,
     tags: source.tags ?? [],
+    groupName: source.groupName ?? null,
   });
 
   refreshQuestionPaths();

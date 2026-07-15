@@ -32,6 +32,14 @@ const baseQuestionSchema = z.object({
   coinReward: z.number().int().min(0).default(0),
   difficulty: z.enum(QUESTION_DIFFICULTIES).default("MEDIUM"),
   tags: z.array(z.string().trim().min(1).max(40)).default([]),
+  // Library organization only (see IQuestion.groupName) — a blank string
+  // means "General", stored as null rather than an empty string.
+  groupName: z
+    .preprocess(
+      (v) => (typeof v === "string" && v.trim() === "" ? null : v),
+      z.string().trim().max(60).nullable()
+    )
+    .default(null),
 });
 
 // `.partial()` isn't available on a schema wrapped in `.refine()` (Zod v4
