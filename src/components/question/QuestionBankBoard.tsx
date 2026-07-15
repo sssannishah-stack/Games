@@ -7,6 +7,8 @@ import { Button } from "@/components/ui/Button";
 import { Icon } from "@/components/ui/Icon";
 import { QuestionEditorModal, QuestionTypeBadge } from "@/components/question/QuestionEditorModal";
 import { AddToRoundModal } from "@/components/question/AddToRoundModal";
+import { AddExistingToGroupModal } from "@/components/question/AddExistingToGroupModal";
+import { QuestionPickerModal } from "@/components/question/QuestionPickerModal";
 import { deleteQuestion, duplicateQuestion } from "@/actions/question.actions";
 import type { RoundRecord } from "@/data/queries/round.queries";
 import type { QuestionRecord } from "@/data/queries/question.queries";
@@ -32,10 +34,13 @@ export function QuestionBankBoard({ questions, rounds, usedQuestionIds }: Questi
   const [pending, startTransition] = useTransition();
   const router = useRouter();
 
-  // "All Questions" is the flat library; "By Group" shows one tile per group
-  // first, and opening a tile filters down to just that group's questions.
-  const [viewMode, setViewMode] = useState<"ALL" | "GROUPS">("ALL");
+  // "All Questions" is the flat library; "By Group" / "By Round" each show
+  // tiles first, and opening a tile filters down to just that tile's questions.
+  const [viewMode, setViewMode] = useState<"ALL" | "GROUPS" | "ROUNDS">("ALL");
   const [openGroup, setOpenGroup] = useState<string | null>(null);
+  const [addExistingOpen, setAddExistingOpen] = useState(false);
+  const [openRound, setOpenRound] = useState<string | null>(null);
+  const [addExistingToRoundOpen, setAddExistingToRoundOpen] = useState(false);
 
   const usedSet = new Set(usedQuestionIds);
   const tags = [...new Set(questions.flatMap((question) => question.tags ?? []))].sort();
@@ -49,6 +54,9 @@ export function QuestionBankBoard({ questions, rounds, usedQuestionIds }: Questi
   const groupTiles = [...groupCounts.entries()].sort((a, b) =>
     a[0] === GENERAL_GROUP ? 1 : b[0] === GENERAL_GROUP ? -1 : a[0].localeCompare(b[0])
   );
+  // The pool "Existing Question" draws from — General questions only, since
+  // that's what "not yet selected in any group" means.
+  const generalQuestions = questions.filter((q) => !q.groupName);
   const roundsByQuestion = new Map<string, RoundRecord[]>();
   for (const round of rounds) {
     for (const questionId of round.questionIds) {
@@ -57,20 +65,45 @@ export function QuestionBankBoard({ questions, rounds, usedQuestionIds }: Questi
       roundsByQuestion.set(questionId, list);
     }
   }
+  // "By Round" tiles: one per round (in library order), plus an Unassigned
+  // bucket for questions not attached to any round yet. Unlike a group, a
+  // question can belong to several rounds at once, so it can appear under
+  // more than one round tile — same as the card's existing "In N rounds" tag.
+  const UNASSIGNED_ROUND = "__UNASSIGNED__";
+  const roundTiles: { id: string; title: string; count: number }[] = rounds.map((round) => ({
+    id: round.id,
+    title: round.title,
+    count: questions.filter((q) => (roundsByQuestion.get(q.id) ?? []).some((r) => r.id === round.id)).length,
+  }));
+  const unassignedCount = questions.filter((q) => (roundsByQuestion.get(q.id)?.length ?? 0) === 0).length;
+  if (unassignedCount > 0) {
+    roundTiles.push({ id: UNASSIGNED_ROUND, title: "Unassigned", count: unassignedCount });
+  }
+  const openRoundRecord = openRound ? rounds.find((r) => r.id === openRound) ?? null : null;
 
   const filtered = questions.filter((question) => {
     const text = `${question.question} ${question.answer}`.toLowerCase();
     const isUsed = usedSet.has(question.id);
     const groupKey = question.groupName ?? GENERAL_GROUP;
+    const inOpenRound =
+      viewMode !== "ROUNDS" || openRound === null
+        ? true
+        : openRound === UNASSIGNED_ROUND
+          ? (roundsByQuestion.get(question.id)?.length ?? 0) === 0
+          : (roundsByQuestion.get(question.id) ?? []).some((r) => r.id === openRound);
     return (
       text.includes(query.toLowerCase()) &&
       (typeFilter === "ALL" || question.type === typeFilter) &&
       (difficultyFilter === "ALL" || question.difficulty === difficultyFilter) &&
       (tagFilter === "ALL" || (question.tags ?? []).includes(tagFilter)) &&
       (usageFilter === "ALL" || (usageFilter === "USED" ? isUsed : !isUsed)) &&
-      (viewMode === "ALL" || openGroup === null || groupKey === openGroup)
+      (viewMode !== "GROUPS" || openGroup === null || groupKey === openGroup) &&
+      inOpenRound
     );
   });
+  // Whether the search/filter bar + question grid should render at all: on
+  // the flat All Questions tab, or once a group/round tile has been opened.
+  const showList = viewMode === "ALL" || (viewMode === "GROUPS" && openGroup !== null) || (viewMode === "ROUNDS" && openRound !== null);
 
   function remove(question: QuestionRecord) {
     startTransition(async () => {
@@ -107,6 +140,7 @@ export function QuestionBankBoard({ questions, rounds, usedQuestionIds }: Questi
           onClick={() => {
             setViewMode("ALL");
             setOpenGroup(null);
+            setOpenRound(null);
           }}
           className={`rounded-lg px-3.5 py-1.5 text-[12.5px] font-bold cursor-pointer transition ${
             viewMode === "ALL" ? "bg-accent text-white" : "text-mute-2 hover:text-ink-3"
@@ -115,12 +149,26 @@ export function QuestionBankBoard({ questions, rounds, usedQuestionIds }: Questi
           All Questions · {questions.length}
         </button>
         <button
-          onClick={() => setViewMode("GROUPS")}
+          onClick={() => {
+            setViewMode("GROUPS");
+            setOpenRound(null);
+          }}
           className={`rounded-lg px-3.5 py-1.5 text-[12.5px] font-bold cursor-pointer transition ${
             viewMode === "GROUPS" ? "bg-accent text-white" : "text-mute-2 hover:text-ink-3"
           }`}
         >
           By Group · {groupTiles.length}
+        </button>
+        <button
+          onClick={() => {
+            setViewMode("ROUNDS");
+            setOpenGroup(null);
+          }}
+          className={`rounded-lg px-3.5 py-1.5 text-[12.5px] font-bold cursor-pointer transition ${
+            viewMode === "ROUNDS" ? "bg-accent text-white" : "text-mute-2 hover:text-ink-3"
+          }`}
+        >
+          By Round · {roundTiles.length}
         </button>
       </div>
 
@@ -142,20 +190,83 @@ export function QuestionBankBoard({ questions, rounds, usedQuestionIds }: Questi
             ))}
           </div>
         ) : (
-          <button
-            onClick={() => setOpenGroup(null)}
-            className="flex items-center gap-1.5 text-[12.5px] font-semibold text-accent hover:brightness-125 cursor-pointer w-fit"
-          >
-            <Icon name="chevron-left" size={14} />
-            All Groups
-            <span className="text-mute-2 font-normal">
-              / {openGroup} · {filtered.length} question{filtered.length === 1 ? "" : "s"}
-            </span>
-          </button>
+          <div className="flex items-center gap-3 flex-wrap">
+            <button
+              onClick={() => setOpenGroup(null)}
+              className="flex items-center gap-1.5 text-[12.5px] font-semibold text-accent hover:brightness-125 cursor-pointer w-fit"
+            >
+              <Icon name="chevron-left" size={14} />
+              All Groups
+              <span className="text-mute-2 font-normal">
+                / {openGroup} · {filtered.length} question{filtered.length === 1 ? "" : "s"}
+              </span>
+            </button>
+            <div className="ml-auto flex items-center gap-2">
+              <Button variant="subtle" size="sm" onClick={() => setCreateOpen(true)}>
+                <Icon name="plus" size={13} />
+                New Question
+              </Button>
+              {/* Adding an "existing" question only makes sense for a named
+                  group — General's own pool is itself. */}
+              {openGroup !== GENERAL_GROUP && (
+                <Button variant="subtle" size="sm" onClick={() => setAddExistingOpen(true)}>
+                  <Icon name="folder-input" size={13} />
+                  Existing Question
+                </Button>
+              )}
+            </div>
+          </div>
         )
       )}
 
-      {(viewMode === "ALL" || openGroup !== null) && (
+      {viewMode === "ROUNDS" && (
+        openRound === null ? (
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+            {roundTiles.map((tile) => (
+              <button
+                key={tile.id}
+                onClick={() => setOpenRound(tile.id)}
+                className="flex flex-col items-start gap-1.5 rounded-2xl border border-line/[.09] bg-line/[.03] p-4 text-left hover:border-accent/50 hover:bg-accent/[.05] cursor-pointer transition-colors"
+              >
+                <div className="w-9 h-9 rounded-xl bg-accent/10 border border-accent/25 flex items-center justify-center text-accent">
+                  <Icon name={tile.id === UNASSIGNED_ROUND ? "inbox" : "list-video"} size={16} />
+                </div>
+                <span className="text-[13.5px] font-bold text-ink-2 truncate w-full">{tile.title}</span>
+                <span className="text-[11px] text-mute-2">{tile.count} question{tile.count === 1 ? "" : "s"}</span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="flex items-center gap-3 flex-wrap">
+            <button
+              onClick={() => setOpenRound(null)}
+              className="flex items-center gap-1.5 text-[12.5px] font-semibold text-accent hover:brightness-125 cursor-pointer w-fit"
+            >
+              <Icon name="chevron-left" size={14} />
+              All Rounds
+              <span className="text-mute-2 font-normal">
+                / {openRoundRecord?.title ?? "Unassigned"} · {filtered.length} question{filtered.length === 1 ? "" : "s"}
+              </span>
+            </button>
+            <div className="ml-auto flex items-center gap-2">
+              <Button variant="subtle" size="sm" onClick={() => setCreateOpen(true)}>
+                <Icon name="plus" size={13} />
+                New Question
+              </Button>
+              {/* Adding an "existing" question only makes sense for a real
+                  round — Unassigned has no round to add it into. */}
+              {openRound !== UNASSIGNED_ROUND && (
+                <Button variant="subtle" size="sm" onClick={() => setAddExistingToRoundOpen(true)}>
+                  <Icon name="folder-input" size={13} />
+                  Existing Question
+                </Button>
+              )}
+            </div>
+          </div>
+        )
+      )}
+
+      {showList && (
       <>
       <Card className="rounded-2xl p-4 grid grid-cols-1 md:grid-cols-5 gap-2">
         <input
@@ -285,11 +396,17 @@ export function QuestionBankBoard({ questions, rounds, usedQuestionIds }: Questi
       )}
 
       <QuestionEditorModal
+        // Remounts on every open (the key flips false<->true) so a fresh
+        // instance always picks up the *current* default group/round instead
+        // of whatever was true the first time this modal ever mounted, and so
+        // leftover field values from a previous create don't linger.
+        key={createOpen ? "create-open" : "create-closed"}
         rounds={rounds}
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         existingGroups={existingGroups}
         defaultGroupName={viewMode === "GROUPS" && openGroup && openGroup !== GENERAL_GROUP ? openGroup : null}
+        defaultAttachRoundIds={viewMode === "ROUNDS" && openRound && openRound !== UNASSIGNED_ROUND ? [openRound] : undefined}
       />
       {editingQuestion && (
         <QuestionEditorModal
@@ -308,6 +425,24 @@ export function QuestionBankBoard({ questions, rounds, usedQuestionIds }: Questi
         />
       )}
       <AddToRoundModal question={addingToRound} rounds={rounds} onClose={() => setAddingToRound(null)} />
+      {openGroup && openGroup !== GENERAL_GROUP && (
+        <AddExistingToGroupModal
+          groupName={openGroup}
+          open={addExistingOpen}
+          onClose={() => setAddExistingOpen(false)}
+          generalQuestions={generalQuestions}
+        />
+      )}
+      {openRoundRecord && (
+        <QuestionPickerModal
+          roundId={openRoundRecord.id}
+          open={addExistingToRoundOpen}
+          onClose={() => setAddExistingToRoundOpen(false)}
+          libraryQuestions={questions}
+          alreadyInRound={openRoundRecord.questionIds}
+          rounds={rounds}
+        />
+      )}
     </div>
   );
 }
