@@ -4,10 +4,14 @@ import { useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
-import { ModalHeader, ErrorText } from "@/components/ui/FormFields";
+import { Icon } from "@/components/ui/Icon";
+import { ModalHeader, ErrorText, NumberField } from "@/components/ui/FormFields";
 import { importQuestions } from "@/actions/question.actions";
 
 const NEW_GROUP = "__NEW__";
+
+type DifficultyMode = "FROM_JSON" | "EASY" | "MEDIUM" | "HARD" | "ALTERNATE";
+type OverrideMode = "INHERIT" | "CUSTOM";
 
 /** A best-effort client-side normalization of one pasted row, purely for the
  * preview. It mirrors the server's `normalizeImportedQuestion` closely enough to
@@ -124,6 +128,22 @@ export function ImportQuestionsModal({
   const [pending, startTransition] = useTransition();
   const router = useRouter();
 
+  // Batch settings applied to the whole import — same knobs as the single
+  // question editor. Defaults match a hand-made question (difficulty from the
+  // JSON, timer/scoring inherited from whatever round they're later placed in).
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [difficultyMode, setDifficultyMode] = useState<DifficultyMode>("FROM_JSON");
+  // Per-question manual difficulty, keyed by row index — overrides the batch/JSON
+  // baseline for just that row.
+  const [perRowDifficulty, setPerRowDifficulty] = useState<Record<number, "EASY" | "MEDIUM" | "HARD">>({});
+  const [timerMode, setTimerMode] = useState<OverrideMode>("INHERIT");
+  const [timer, setTimer] = useState(20);
+  const [scoringMode, setScoringMode] = useState<OverrideMode>("INHERIT");
+  const [positiveMarks, setPositiveMarks] = useState(10);
+  const [negativeMarks, setNegativeMarks] = useState(5);
+  const [bonusMarks, setBonusMarks] = useState(0);
+  const [coinReward, setCoinReward] = useState(0);
+
   // Live parse — the detected count, any parse error, plus normalized preview
   // rows. The authoritative validation still happens server-side on import.
   const parsed = useMemo<{ rows: PreviewRow[]; parseError: string | null }>(() => {
@@ -148,13 +168,35 @@ export function ImportQuestionsModal({
     if (previewIdx > count - 1) setPreviewIdx(Math.max(0, count - 1));
   }, [count, previewIdx]);
 
-  const current = count > 0 ? parsed.rows[Math.min(previewIdx, count - 1)] : null;
+  const safeIdx = count > 0 ? Math.min(previewIdx, count - 1) : 0;
+  const current = count > 0 ? parsed.rows[safeIdx] : null;
+
+  // What difficulty this row will actually be stored as. A per-row manual pick
+  // wins; otherwise it follows the batch mode (FROM_JSON keeps the row's own).
+  function effectiveDifficulty(rowDifficulty: string, index: number): string {
+    if (perRowDifficulty[index]) return perRowDifficulty[index];
+    if (difficultyMode === "FROM_JSON") return rowDifficulty;
+    if (difficultyMode === "ALTERNATE") return index % 2 === 0 ? "EASY" : "MEDIUM";
+    return difficultyMode;
+  }
+  const shownDifficulty = current ? effectiveDifficulty(current.difficulty, safeIdx) : "MEDIUM";
+  const isManualDifficulty = current ? Boolean(perRowDifficulty[safeIdx]) : false;
 
   function close() {
     if (pending) return;
     setText("");
     setError(null);
     setPreviewIdx(0);
+    setSettingsOpen(false);
+    setDifficultyMode("FROM_JSON");
+    setPerRowDifficulty({});
+    setTimerMode("INHERIT");
+    setTimer(20);
+    setScoringMode("INHERIT");
+    setPositiveMarks(10);
+    setNegativeMarks(5);
+    setBonusMarks(0);
+    setCoinReward(0);
     onClose();
   }
 
@@ -173,7 +215,22 @@ export function ImportQuestionsModal({
 
     startTransition(async () => {
       try {
-        const res = await importQuestions({ groupName: resolvedGroup, questions: arr });
+        const res = await importQuestions({
+          groupName: resolvedGroup,
+          questions: arr,
+          defaults: {
+            difficultyMode,
+            // Fold batch + JSON + manual picks into one final difficulty per row.
+            difficultyOverrides: parsed.rows.map((r, i) => effectiveDifficulty(r.difficulty, i)),
+            timerMode,
+            timer,
+            scoringMode,
+            positiveMarks,
+            negativeMarks,
+            bonusMarks,
+            coinReward,
+          },
+        });
         close();
         onImported(resolvedGroup);
         router.refresh();
@@ -184,10 +241,7 @@ export function ImportQuestionsModal({
     });
   }
 
-  const diffColor =
-    current?.difficulty === "EASY" ? "text-success border-success/30 bg-success/[.1]"
-      : current?.difficulty === "HARD" ? "text-danger-soft border-danger/30 bg-danger/[.08]"
-        : "text-warn border-warn/30 bg-warn/[.08]";
+  const manualCount = Object.keys(perRowDifficulty).length;
 
   return (
     <Modal open={open} onClose={close} className="max-w-[640px]">
@@ -244,6 +298,99 @@ export function ImportQuestionsModal({
           </span>
         )}
 
+        {/* Batch settings — the same knobs the single-question editor exposes,
+            applied to every imported row. Collapsed by default so a plain paste
+            stays one click. */}
+        {count > 0 && (
+          <div className="rounded-2xl border border-line/[.09] bg-line/[.02] overflow-hidden">
+            <button
+              onClick={() => setSettingsOpen((v) => !v)}
+              className="w-full flex items-center gap-2 px-3.5 py-2.5 text-left cursor-pointer hover:bg-line/[.03]"
+            >
+              <Icon name="sliders-horizontal" size={14} className="text-accent" />
+              <span className="text-[12.5px] font-semibold text-ink">Batch settings</span>
+              <span className="text-[11px] text-mute-2 truncate">
+                · {difficultyMode === "FROM_JSON" ? "difficulty from JSON" : difficultyMode === "ALTERNATE" ? "alternating E/M" : `all ${difficultyMode}`}
+                {manualCount > 0 ? ` (${manualCount} hand-set)` : ""}
+                {timerMode === "CUSTOM" ? ` · ${timer}s` : ""}
+                {scoringMode === "CUSTOM" ? ` · +${positiveMarks}/−${Math.abs(negativeMarks)}` : ""}
+                {coinReward > 0 ? ` · ${coinReward}🪙` : ""}
+              </span>
+              <Icon name={settingsOpen ? "chevron-up" : "chevron-down"} size={15} className="ml-auto text-mute-2" />
+            </button>
+            {settingsOpen && (
+              <div className="px-3.5 pb-3.5 pt-1 flex flex-col gap-3 border-t border-line/[.06]">
+                {/* Difficulty */}
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-[11px] font-semibold text-ink-3">Difficulty</span>
+                  <div className="grid grid-cols-5 gap-1.5">
+                    {([
+                      { key: "FROM_JSON", label: "From JSON" },
+                      { key: "EASY", label: "Easy" },
+                      { key: "MEDIUM", label: "Medium" },
+                      { key: "HARD", label: "Hard" },
+                      { key: "ALTERNATE", label: "Alt E/M" },
+                    ] as const).map((opt) => (
+                      <button
+                        key={opt.key}
+                        onClick={() => setDifficultyMode(opt.key)}
+                        className={`rounded-lg py-1.5 text-[11px] font-bold cursor-pointer transition-colors ${
+                          difficultyMode === opt.key
+                            ? "bg-accent/15 border border-accent/40 text-ink"
+                            : "border border-line/[.09] bg-line/[.02] text-mute-2 hover:text-ink-3"
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Timer */}
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-[11px] font-semibold text-ink-3">Timer</span>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button variant={timerMode === "INHERIT" ? "primary" : "subtle"} size="sm" onClick={() => setTimerMode("INHERIT")}>
+                      Use round&apos;s timer
+                    </Button>
+                    <Button variant={timerMode === "CUSTOM" ? "primary" : "subtle"} size="sm" onClick={() => setTimerMode("CUSTOM")}>
+                      Custom timer
+                    </Button>
+                  </div>
+                  {timerMode === "CUSTOM" ? (
+                    <NumberField label="Timer (seconds)" value={timer} onChange={setTimer} />
+                  ) : (
+                    <span className="text-[11px] text-mute-2">Follows whichever round these questions are later placed under.</span>
+                  )}
+                </div>
+
+                {/* Scoring */}
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-[11px] font-semibold text-ink-3">Marks</span>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button variant={scoringMode === "INHERIT" ? "primary" : "subtle"} size="sm" onClick={() => setScoringMode("INHERIT")}>
+                      Use round default marks
+                    </Button>
+                    <Button variant={scoringMode === "CUSTOM" ? "primary" : "subtle"} size="sm" onClick={() => setScoringMode("CUSTOM")}>
+                      Custom marks
+                    </Button>
+                  </div>
+                  {scoringMode === "CUSTOM" && (
+                    <div className="grid grid-cols-3 gap-2">
+                      <NumberField label="Correct" value={positiveMarks} onChange={setPositiveMarks} />
+                      <NumberField label="Wrong" value={negativeMarks} onChange={setNegativeMarks} />
+                      <NumberField label="Bonus" value={bonusMarks} onChange={setBonusMarks} />
+                    </div>
+                  )}
+                </div>
+
+                {/* Coins */}
+                <NumberField label="Coin reward (per correct answer)" value={coinReward} onChange={setCoinReward} />
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Live MCQ preview — flip through every question exactly as it'll look. */}
         {current && (
           <div className="flex flex-col gap-2.5">
@@ -275,11 +422,47 @@ export function ImportQuestionsModal({
                   data-theme="dark"
                   className="rounded-[22px] border border-line/[.12] bg-[linear-gradient(180deg,#0C0D13,#08090C)] p-4 flex flex-col gap-3"
                 >
-                  <div className="flex items-center justify-between">
-                    <span className={`rounded-full border px-2 py-0.5 text-[9.5px] font-bold tracking-wide ${diffColor}`}>
-                      {current.difficulty}
-                    </span>
-                    <span className="text-[10px] text-mute-2">{current.isMCQ ? "Multiple choice" : "Open / host-marked"}</span>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5">
+                      {(["EASY", "MEDIUM", "HARD"] as const).map((lvl) => {
+                        const active = shownDifficulty === lvl;
+                        const activeCls =
+                          lvl === "EASY" ? "border-success/45 bg-success/[.14] text-success"
+                            : lvl === "HARD" ? "border-danger/45 bg-danger/[.12] text-danger-soft"
+                              : "border-warn/45 bg-warn/[.12] text-warn";
+                        return (
+                          <button
+                            key={lvl}
+                            onClick={() => setPerRowDifficulty((prev) => ({ ...prev, [safeIdx]: lvl }))}
+                            className={`rounded-full border px-2 py-0.5 text-[9.5px] font-bold tracking-wide cursor-pointer transition-colors ${
+                              active ? activeCls : "border-line/[.1] bg-line/[.03] text-mute-2 hover:text-ink-3"
+                            }`}
+                          >
+                            {lvl}
+                          </button>
+                        );
+                      })}
+                      {isManualDifficulty ? (
+                        <button
+                          onClick={() =>
+                            setPerRowDifficulty((prev) => {
+                              const next = { ...prev };
+                              delete next[safeIdx];
+                              return next;
+                            })
+                          }
+                          className="text-[9px] text-mute-2 hover:text-ink-3 cursor-pointer underline decoration-dotted"
+                          title="Revert this question to the batch / JSON difficulty"
+                        >
+                          reset
+                        </button>
+                      ) : (
+                        <span className="text-[9px] text-dim-2">
+                          {difficultyMode === "FROM_JSON" ? "from JSON" : "batch"}
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-[10px] text-mute-2 shrink-0">{current.isMCQ ? "Multiple choice" : "Open / host-marked"}</span>
                   </div>
 
                   <h1 className="text-[16px] leading-tight font-black text-ink">{current.question}</h1>
@@ -311,6 +494,29 @@ export function ImportQuestionsModal({
                   ) : (
                     <p className="text-[12px] text-mute-2">Discuss with your team. The host gives marks.</p>
                   )}
+
+                  {/* Reward chips — reflect the batch settings (or note inherited). */}
+                  <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                    {scoringMode === "CUSTOM" ? (
+                      <>
+                        <span className="rounded-full border border-success/30 bg-success/[.1] px-2 py-0.5 text-[10px] font-bold text-success">✓ +{positiveMarks}</span>
+                        {negativeMarks !== 0 && (
+                          <span className="rounded-full border border-danger/30 bg-danger/[.08] px-2 py-0.5 text-[10px] font-bold text-danger-soft">✗ −{Math.abs(negativeMarks)}</span>
+                        )}
+                        {bonusMarks > 0 && (
+                          <span className="rounded-full border border-accent/30 bg-accent/[.1] px-2 py-0.5 text-[10px] font-bold text-accent">★ +{bonusMarks}</span>
+                        )}
+                      </>
+                    ) : (
+                      <span className="rounded-full border border-line/[.12] bg-line/[.04] px-2 py-0.5 text-[10px] font-semibold text-mute-2">Marks: round default</span>
+                    )}
+                    <span className="rounded-full border border-line/[.12] bg-line/[.04] px-2 py-0.5 text-[10px] font-semibold text-mute-2">
+                      ⏱ {timerMode === "CUSTOM" ? `${timer}s` : "round timer"}
+                    </span>
+                    {coinReward > 0 && (
+                      <span className="rounded-full border border-warn/30 bg-warn/[.08] px-2 py-0.5 text-[10px] font-bold text-warn">🪙 {coinReward}</span>
+                    )}
+                  </div>
                 </div>
 
                 {/* Host-only strip — answer, rationales, hint. */}

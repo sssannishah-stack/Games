@@ -279,6 +279,28 @@ export interface ImportQuestionsInput {
   groupName: string | null;
   /** The parsed `questions` array (or a bare array) from the pasted JSON. */
   questions: unknown[];
+  /**
+   * Batch settings applied to every imported row, mirroring the manual editor's
+   * per-question controls. Anything omitted falls back to the same defaults a
+   * hand-made question gets (INHERIT modes, difficulty from the JSON).
+   */
+  defaults?: {
+    /** FROM_JSON keeps each row's own difficulty; ALTERNATE cycles EASY/MEDIUM. */
+    difficultyMode?: "FROM_JSON" | "EASY" | "MEDIUM" | "HARD" | "ALTERNATE";
+    /**
+     * Per-row difficulty, index-aligned to `questions`. When an entry is set it
+     * wins over `difficultyMode` for that row, so the host can hand-set a few
+     * questions while the rest follow the batch/JSON baseline.
+     */
+    difficultyOverrides?: (string | null | undefined)[];
+    timerMode?: "INHERIT" | "CUSTOM";
+    timer?: number;
+    scoringMode?: "INHERIT" | "CUSTOM";
+    positiveMarks?: number;
+    negativeMarks?: number;
+    bonusMarks?: number;
+    coinReward?: number;
+  };
 }
 
 /**
@@ -299,11 +321,23 @@ export async function importQuestions(
   if (input.questions.length > 500) throw new Error("Import is limited to 500 questions at a time.");
 
   const groupName = input.groupName?.trim() || null;
+  const d = input.defaults ?? {};
+  const difficultyMode = d.difficultyMode ?? "FROM_JSON";
 
   // Normalize + validate every row first; abort the whole import on the first
   // bad row so a paste is all-or-nothing.
   const docs = input.questions.map((raw, i) => {
     const n = normalizeImportedQuestion(raw, i);
+    const override = d.difficultyOverrides?.[i];
+    const difficulty = override
+      ? override
+      : difficultyMode === "FROM_JSON"
+        ? n.difficulty
+        : difficultyMode === "ALTERNATE"
+          ? i % 2 === 0
+            ? "EASY"
+            : "MEDIUM"
+          : difficultyMode;
     const parsed = createQuestionSchema.parse({
       type: "TEXT",
       question: n.question,
@@ -312,8 +346,15 @@ export async function importQuestions(
       optionRationales: n.optionRationales,
       answer: n.answer,
       hints: n.hints,
-      difficulty: n.difficulty,
+      difficulty,
       groupName,
+      timerMode: d.timerMode ?? "INHERIT",
+      timer: d.timer ?? 20,
+      scoringMode: d.scoringMode ?? "INHERIT",
+      positiveMarks: d.positiveMarks ?? 10,
+      negativeMarks: d.negativeMarks ?? 5,
+      bonusMarks: d.bonusMarks ?? 0,
+      coinReward: d.coinReward ?? 0,
     });
     return { ownerId: user.id, ...parsed };
   });
