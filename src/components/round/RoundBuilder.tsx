@@ -351,6 +351,30 @@ function RoundPowerCardsTab({
     saveAllowed([], "DEFAULT", "UPDATE_SHARED");
   }
 
+  // Checks every card while staying in CUSTOM mode — unlike "Allow all
+  // (reset)" this pins the allow-list to today's catalog, so a card added to
+  // the library later is NOT automatically allowed here.
+  function selectAll() {
+    const next = powerCards.map((card) => card.id);
+    if (roomUsageCount > 0) {
+      setPendingAllowedCards(next);
+      setPendingMode("CUSTOM");
+      setSafetyOpen(true);
+      return;
+    }
+    saveAllowed(next, "CUSTOM", "UPDATE_SHARED");
+  }
+
+  function clearAll() {
+    if (roomUsageCount > 0) {
+      setPendingAllowedCards([]);
+      setPendingMode("CUSTOM");
+      setSafetyOpen(true);
+      return;
+    }
+    saveAllowed([], "CUSTOM", "UPDATE_SHARED");
+  }
+
   return (
     <Card className="rounded-2xl p-5 flex flex-col gap-3.5">
       <div className="flex items-center gap-2 flex-wrap">
@@ -362,7 +386,13 @@ function RoundPowerCardsTab({
         >
           {isRestricted ? "RESTRICTED" : "ALLOWS EVERYTHING"}
         </span>
-        <Link href="/admin/power-cards" className="ml-auto">
+        <Button variant="plain" size="sm" onClick={selectAll} disabled={pending || powerCards.length === 0} className="ml-auto">
+          Select all
+        </Button>
+        <Button variant="plain" size="sm" onClick={clearAll} disabled={pending || allowed.size === 0}>
+          Clear all
+        </Button>
+        <Link href="/admin/power-cards">
           <Button variant="subtle" size="sm">Manage Library</Button>
         </Link>
         {isRestricted && (
@@ -523,15 +553,28 @@ function RoundQuestionsTab({
   const questionIds = useMemo(() => questions.map((q) => q.id), [questions]);
   const preview = useAssignmentPreview(round, questionIds, teamCount);
 
-  function move(index: number, direction: -1 | 1) {
-    const target = index + direction;
-    if (target < 0 || target >= questions.length) return;
-    const next = [...questions];
-    [next[index], next[target]] = [next[target], next[index]];
+  // Local order shown while a drag is in progress / a reorder request is
+  // in-flight, so the list doesn't jump back and forth waiting on the server.
+  const [localOrder, setLocalOrder] = useState<QuestionRecord[] | null>(null);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const displayed = localOrder ?? questions;
+
+  function commitOrder(next: QuestionRecord[]) {
+    setLocalOrder(next);
     startTransition(async () => {
       await reorderRoundQuestions(round.id, next.map((q) => q.id));
       router.refresh();
+      setLocalOrder(null);
     });
+  }
+
+  function move(index: number, direction: -1 | 1) {
+    const target = index + direction;
+    if (target < 0 || target >= displayed.length) return;
+    const next = [...displayed];
+    [next[index], next[target]] = [next[target], next[index]];
+    commitOrder(next);
   }
 
   function remove(questionId: string) {
@@ -591,14 +634,46 @@ function RoundQuestionsTab({
         </Card>
       ) : (
         <div className="flex flex-col gap-2">
-          {questions.map((question, index) => {
+          {displayed.map((question, index) => {
             const entry = preview?.get(question.id);
             const color = entry && entry.teamIndex !== null ? TEAM_PREVIEW_COLORS[entry.teamIndex % TEAM_PREVIEW_COLORS.length] : null;
             const teamName = entry && entry.teamIndex !== null
               ? (hasRoomTeams ? roomTeams![entry.teamIndex].name : `Team ${entry.teamIndex + 1}`)
               : null;
             return (
-              <Card key={question.id} className="rounded-xl p-3 flex items-center gap-3">
+              <Card
+                key={question.id}
+                onDragOver={(event) => {
+                  if (dragIndex === null) return;
+                  event.preventDefault();
+                  if (dragOverIndex !== index) setDragOverIndex(index);
+                }}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  if (dragIndex === null || dragIndex === index) return;
+                  const next = [...displayed];
+                  const [moved] = next.splice(dragIndex, 1);
+                  next.splice(index, 0, moved);
+                  setDragIndex(null);
+                  setDragOverIndex(null);
+                  commitOrder(next);
+                }}
+                className={`rounded-xl p-3 flex items-center gap-3 transition-colors ${
+                  dragOverIndex === index && dragIndex !== null && dragIndex !== index ? "border-accent/50 bg-accent/[.04]" : ""
+                } ${dragIndex === index ? "opacity-40" : ""}`}
+              >
+                <span
+                  draggable
+                  onDragStart={() => setDragIndex(index)}
+                  onDragEnd={() => {
+                    setDragIndex(null);
+                    setDragOverIndex(null);
+                  }}
+                  title="Drag to reorder"
+                  className="cursor-grab active:cursor-grabbing text-dim hover:text-ink-3 shrink-0 -ml-1 touch-none"
+                >
+                  <Icon name="grip-vertical" size={15} />
+                </span>
                 <span className="font-mono text-[11px] font-bold text-accent bg-accent/10 border border-accent/25 rounded-lg px-2 py-1">
                   {index + 1}
                 </span>
@@ -627,7 +702,7 @@ function RoundQuestionsTab({
                     variant="plain"
                     size="sm"
                     onClick={() => move(index, 1)}
-                    disabled={index === questions.length - 1 || pending}
+                    disabled={index === displayed.length - 1 || pending}
                   >
                     Down
                   </Button>

@@ -16,6 +16,7 @@ import { startRoomEvent, startRoomTestMode, setRoomSelectedRounds, updateRoom, r
 import { RoomResetModal } from "@/components/room/RoomResetModal";
 import { setRoomEconomyMode, setStartingCoins } from "@/actions/competition.actions";
 import { sceneVisual } from "@/lib/sceneVisual";
+import { RoundsRoadmap, RoundProgress, readRoadmap } from "@/components/scene/RoundScenes";
 import { openStore, closeStore } from "@/actions/powerCard.actions";
 import {
   generateScenes,
@@ -976,6 +977,13 @@ function RoundPicker({
   const selected = room.selectedRounds
     .map((id) => roundById.get(id))
     .filter((round): round is RoundRecord => Boolean(round));
+
+  // Local order shown while a drag / reorder request is in-flight, so the list
+  // doesn't jump back and forth waiting on the server round-trip.
+  const [localOrder, setLocalOrder] = useState<RoundRecord[] | null>(null);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const displayed = localOrder ?? selected;
   const categories = [...new Set(libraryRounds.map((round) => round.category || "Custom"))].sort();
   const available = libraryRounds.filter((round) => {
     const matchesSearch = `${round.title} ${round.description ?? ""}`.toLowerCase().includes(query.toLowerCase());
@@ -986,6 +994,7 @@ function RoundPicker({
   function apply(nextIds: string[]) {
     startTransition(async () => {
       await setRoomSelectedRounds(room.id, nextIds);
+      setLocalOrder(null);
     });
   }
 
@@ -999,10 +1008,11 @@ function RoundPicker({
 
   function move(index: number, direction: -1 | 1) {
     const target = index + direction;
-    if (target < 0 || target >= selected.length) return;
-    const next = [...room.selectedRounds];
+    if (target < 0 || target >= displayed.length) return;
+    const next = [...displayed];
     [next[index], next[target]] = [next[target], next[index]];
-    apply(next);
+    setLocalOrder(next);
+    apply(next.map((round) => round.id));
   }
 
   return (
@@ -1063,14 +1073,47 @@ function RoundPicker({
 
       <div className="flex flex-col gap-3">
         <span className="text-[15px] font-bold text-ink-2">Selected rounds</span>
-        {selected.length === 0 ? (
+        {displayed.length === 0 ? (
           <Card className="rounded-2xl p-6 text-center text-mute-2 text-[13px]">
             No rounds selected yet — this room has nothing to run.
           </Card>
         ) : (
           <div className="flex flex-col gap-2">
-            {selected.map((round, index) => (
-              <Card key={round.id} className="rounded-xl p-3 flex items-center gap-3">
+            {displayed.map((round, index) => (
+              <Card
+                key={round.id}
+                onDragOver={(event) => {
+                  if (dragIndex === null) return;
+                  event.preventDefault();
+                  if (dragOverIndex !== index) setDragOverIndex(index);
+                }}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  if (dragIndex === null || dragIndex === index) return;
+                  const next = [...displayed];
+                  const [moved] = next.splice(dragIndex, 1);
+                  next.splice(index, 0, moved);
+                  setDragIndex(null);
+                  setDragOverIndex(null);
+                  setLocalOrder(next);
+                  apply(next.map((r) => r.id));
+                }}
+                className={`rounded-xl p-3 flex items-center gap-3 transition-colors ${
+                  dragOverIndex === index && dragIndex !== null && dragIndex !== index ? "border-accent/50 bg-accent/[.04]" : ""
+                } ${dragIndex === index ? "opacity-40" : ""}`}
+              >
+                <span
+                  draggable
+                  onDragStart={() => setDragIndex(index)}
+                  onDragEnd={() => {
+                    setDragIndex(null);
+                    setDragOverIndex(null);
+                  }}
+                  title="Drag to reorder"
+                  className="cursor-grab active:cursor-grabbing text-dim hover:text-ink-3 shrink-0 -ml-1 touch-none"
+                >
+                  <Icon name="grip-vertical" size={15} />
+                </span>
                 <span className="font-mono text-[11px] font-bold text-accent bg-accent/10 border border-accent/25 rounded-lg px-2 py-1">
                   {index + 1}
                 </span>
@@ -1093,7 +1136,7 @@ function RoundPicker({
                     variant="plain"
                     size="sm"
                     onClick={() => move(index, 1)}
-                    disabled={index === selected.length - 1 || pending}
+                    disabled={index === displayed.length - 1 || pending}
                   >
                     Down
                   </Button>
@@ -1222,7 +1265,7 @@ function SceneBuilder({
         )}
       </Card>
 
-      <ScenePreview scene={selected} questions={questions} />
+      <ScenePreview scene={selected} questions={questions} rounds={rounds} teams={teams} room={room} />
       <SceneInspector
         roomId={room.id}
         scene={selected}
@@ -1234,37 +1277,261 @@ function SceneBuilder({
   );
 }
 
+const DIFF_PILL: Record<string, string> = {
+  EASY: "text-success border-success/30 bg-success/[.1]",
+  MEDIUM: "text-warn border-warn/30 bg-warn/[.08]",
+  HARD: "text-danger-soft border-danger/30 bg-danger/[.08]",
+};
+
+/**
+ * Renders one scene the way it will actually appear to players — a real MCQ card
+ * with options, an answer-reveal that highlights the correct choice, round
+ * intros/roadmaps and leaderboards — rather than just printing the title. Shared
+ * between the phone frame and the big-screen frame via the `compact` flag, which
+ * only scales the type sizes.
+ */
+function SceneStage({
+  scene,
+  question,
+  round,
+  teams,
+  room,
+  compact,
+}: {
+  scene: SceneRecord;
+  question: QuestionRecord | null;
+  round: RoundRecord | null;
+  teams: TeamRecord[];
+  room: RoomDetail;
+  compact: boolean;
+}) {
+  const h1 = compact ? "text-[17px]" : "text-[26px]";
+  const body = compact ? "text-[12.5px]" : "text-[15px]";
+  const opt = compact ? "text-[12.5px]" : "text-[15px]";
+  const roundIndex = round ? room.selectedRounds.indexOf(round.id) : -1;
+  const roadmap = readRoadmap(scene.content as Record<string, unknown> | undefined);
+  const leaderboard = teams.map((t) => ({ id: t.id, name: t.name, score: t.score, color: t.color }));
+
+  switch (scene.type) {
+    case "WELCOME":
+      return (
+        <div className="flex-1 flex flex-col items-center justify-center text-center gap-2.5">
+          <span className="text-[10px] font-black tracking-[.18em] text-accent">LIVE COMPETITION</span>
+          <h1 className={`${h1} font-black text-ink leading-tight`}>{room.competitionTitle}</h1>
+          <p className={`${body} text-mute-2`}>{room.name}</p>
+          <div className="mt-2 rounded-xl border border-accent/25 bg-accent/[.06] px-4 py-2 flex flex-col items-center gap-0.5">
+            <span className="text-[9px] font-semibold tracking-[.14em] text-mute-2">JOIN CODE</span>
+            <span className="text-[18px] font-black tracking-[.2em] text-accent tabular-nums">{room.roomCode}</span>
+          </div>
+          <p className="text-[10.5px] text-dim mt-1">Waiting for the host to begin…</p>
+        </div>
+      );
+
+    case "RULES":
+      return (
+        <div className="flex-1 flex flex-col justify-center gap-3">
+          <h1 className={`${h1} font-black text-ink`}>{scene.title || "Rules"}</h1>
+          <ul className={`${body} text-ink-3 flex flex-col gap-1.5`}>
+            <li>• The host controls every screen — wait for each step.</li>
+            <li>• Answer out loud when it&apos;s your team&apos;s turn.</li>
+            <li>• Power cards can be played during questions.</li>
+          </ul>
+        </div>
+      );
+
+    case "ROUND_OVERVIEW":
+      return roadmap.length > 0 ? (
+        <div className="flex-1 overflow-y-auto">
+          <RoundsRoadmap roadmap={roadmap} economy={room.economyEnabled} />
+        </div>
+      ) : (
+        <div className="flex-1 flex items-center justify-center text-center text-mute-2 text-[12px]">
+          Roadmap builds when you generate the event flow.
+        </div>
+      );
+
+    case "ROUND_INTRO": {
+      const timerSummary = (scene.content as Record<string, unknown> | undefined)?.timerSummary;
+      const timerText =
+        typeof timerSummary === "number"
+          ? `${timerSummary}s`
+          : timerSummary && typeof timerSummary === "object"
+            ? `${(timerSummary as { min: number }).min}–${(timerSummary as { max: number }).max}s`
+            : `${round?.defaultTimer ?? 30}s`;
+      return (
+        <div className="flex-1 flex flex-col items-center justify-center text-center gap-2.5">
+          <span className="text-[10px] font-black tracking-[.18em] text-info">
+            ROUND {roundIndex >= 0 ? roundIndex + 1 : ""}
+          </span>
+          <h1 className={`${h1} font-black text-ink leading-tight`}>{round?.title ?? scene.title}</h1>
+          <div className="flex flex-wrap items-center justify-center gap-2 mt-1">
+            <Metric label="Questions" value={String(round?.questionCount ?? 0)} />
+            <Metric label="Timer" value={timerText} />
+            <Metric label="Correct" value={`+${round?.positiveMarks ?? 0}`} tone="success" />
+            <Metric label="Wrong" value={`−${Math.abs(round?.negativeMarks ?? 0)}`} tone="danger" />
+          </div>
+        </div>
+      );
+    }
+
+    case "QUESTION":
+    case "ANSWER_REVEAL": {
+      if (!question) {
+        return (
+          <div className="flex-1 flex items-center justify-center text-center text-mute-2 text-[12px]">
+            No question linked — pick one in Step Settings.
+          </div>
+        );
+      }
+      const reveal = scene.type === "ANSWER_REVEAL";
+      const answerIdx = question.options.findIndex((o) => o.trim() === question.answer.trim());
+      const pos = question.positiveMarks;
+      const neg = Math.abs(question.negativeMarks);
+      return (
+        <div className="flex-1 flex flex-col gap-3 overflow-y-auto">
+          <div className="flex items-center justify-between gap-2">
+            <span className={`rounded-full border px-2 py-0.5 text-[9.5px] font-bold tracking-wide ${DIFF_PILL[question.difficulty] ?? DIFF_PILL.MEDIUM}`}>
+              {question.difficulty}
+            </span>
+            {reveal ? (
+              <span className="text-[9.5px] font-black tracking-[.12em] text-success">✓ ANSWER REVEAL</span>
+            ) : (
+              <span className="text-[10px] text-mute-2">{question.isMCQ ? "Multiple choice" : "Host-marked"}</span>
+            )}
+          </div>
+          <h1 className={`${h1} font-black text-ink leading-tight`}>{question.question}</h1>
+          {question.media?.url && (
+            <span className="text-[11px] text-mute-2">📎 {question.media.type}: {question.media.name}</span>
+          )}
+          {question.isMCQ ? (
+            <div className="flex flex-col gap-2">
+              {question.options.map((option, i) => {
+                const isAns = reveal && i === answerIdx;
+                return (
+                  <div
+                    key={i}
+                    className={`flex items-center gap-2.5 rounded-2xl border px-3 py-2 ${
+                      isAns ? "border-success/50 bg-success/[.14]" : "border-line/[.08] bg-line/[.04]"
+                    }`}
+                  >
+                    <span
+                      className={`w-6 h-6 rounded-full border flex items-center justify-center text-[11px] font-bold shrink-0 ${
+                        isAns ? "border-success/50 bg-success/20 text-success" : "border-line/[.12] bg-line/[.06] text-ink-3"
+                      }`}
+                    >
+                      {String.fromCharCode(65 + i)}
+                    </span>
+                    <span className={`${opt} font-semibold ${isAns ? "text-success" : "text-ink"}`}>{option}</span>
+                    {isAns && <span className="ml-auto text-[10px] font-bold text-success shrink-0">✓ CORRECT</span>}
+                  </div>
+                );
+              })}
+            </div>
+          ) : reveal ? (
+            <div className="rounded-2xl border border-success/40 bg-success/[.12] px-3.5 py-3">
+              <span className="text-[9.5px] font-bold tracking-[.12em] text-success">CORRECT ANSWER</span>
+              <p className={`${opt} font-bold text-ink mt-0.5`}>{question.answer}</p>
+            </div>
+          ) : (
+            <p className={`${body} text-mute-2`}>Discuss with your team — the host awards marks.</p>
+          )}
+          <div className="flex flex-wrap items-center gap-1.5 mt-auto pt-1">
+            <span className="rounded-full border border-success/30 bg-success/[.1] px-2 py-0.5 text-[10px] font-bold text-success">✓ +{pos}</span>
+            {neg > 0 && <span className="rounded-full border border-danger/30 bg-danger/[.08] px-2 py-0.5 text-[10px] font-bold text-danger-soft">✗ −{neg}</span>}
+            {!reveal && (
+              <span className="rounded-full border border-line/[.12] bg-line/[.04] px-2 py-0.5 text-[10px] font-semibold text-mute-2">
+                ⏱ {question.timerMode === "CUSTOM" ? question.timer : round?.defaultTimer ?? 30}s
+              </span>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    case "LEADERBOARD":
+    case "ROUND_COMPLETE":
+      return roadmap.length > 0 ? (
+        <div className="flex-1 overflow-y-auto">
+          <RoundProgress roadmap={roadmap} roundIndex={roundIndex} leaderboard={leaderboard} economy={room.economyEnabled} />
+        </div>
+      ) : (
+        <div className="flex-1 flex flex-col gap-2">
+          <span className="text-[11px] font-black tracking-[.14em] text-warn">🏆 LEADERBOARD</span>
+          {leaderboard.length === 0 ? (
+            <span className="text-[12px] text-mute-2">Add teams to preview standings.</span>
+          ) : (
+            [...leaderboard].sort((a, b) => b.score - a.score).map((t, i) => (
+              <div key={t.id} className="flex items-center gap-2 rounded-lg border border-line/[.08] bg-line/[.03] px-3 py-1.5">
+                <span className="text-[12px] font-black text-mute-2 w-5">{["🥇", "🥈", "🥉"][i] ?? i + 1}</span>
+                <span className={`${body} font-semibold text-ink truncate flex-1`}>{t.name}</span>
+                <span className={`${body} font-black text-accent tabular-nums`}>{t.score}</span>
+              </div>
+            ))
+          )}
+        </div>
+      );
+
+    default:
+      return (
+        <div className="flex-1 flex flex-col items-center justify-center text-center gap-2">
+          <h1 className={`${h1} font-black text-ink`}>{scene.title}</h1>
+          <span className="text-[11px] text-mute-2">{scene.type.replace(/_/g, " ")}</span>
+        </div>
+      );
+  }
+}
+
+function Metric({ label, value, tone }: { label: string; value: string; tone?: "success" | "danger" }) {
+  const color = tone === "success" ? "text-success" : tone === "danger" ? "text-danger-soft" : "text-ink";
+  return (
+    <span className="flex flex-col items-center rounded-xl border border-line/[.1] bg-line/[.04] px-3 py-1.5 min-w-[64px]">
+      <span className={`text-[15px] font-black tabular-nums ${color}`}>{value}</span>
+      <span className="text-[8.5px] font-semibold tracking-[.12em] text-mute-2">{label.toUpperCase()}</span>
+    </span>
+  );
+}
+
 function ScenePreview({
   scene,
   questions,
+  rounds,
+  teams,
+  room,
 }: {
   scene: SceneRecord | null;
   questions: QuestionRecord[];
+  rounds: RoundRecord[];
+  teams: TeamRecord[];
+  room: RoomDetail;
 }) {
-  const question = scene?.questionId ? questions.find((item) => item.id === scene.questionId) : null;
+  const question = scene?.questionId ? questions.find((item) => item.id === scene.questionId) ?? null : null;
+  const round = scene?.roundId ? rounds.find((item) => item.id === scene.roundId) ?? null : null;
   const typeLabel = scene?.type?.replace(/_/g, " ") ?? "NO STEP";
+
   return (
     <Card className="rounded-2xl p-5 flex flex-col gap-4 h-[680px]">
       <div className="flex items-center justify-between">
         <span className="text-[11px] font-mono font-semibold tracking-[.12em] text-label">EVENT FLOW PREVIEW</span>
-        <span className="text-[11px] text-mute-2">Mobile / Desktop</span>
+        <span className="text-[11px] text-mute-2">Player screen</span>
       </div>
-      <div className="grid grid-cols-1 lg:grid-cols-[280px_minmax(0,1fr)] gap-4">
-        <div className="rounded-[28px] border-[6px] border-[#232634] bg-[#11131d] p-4 min-h-[460px] flex flex-col">
-          <span className="self-center text-[10px] text-accent bg-accent/15 rounded-full px-3 py-1">
-            {typeLabel}
-          </span>
-          <div className="flex-1 flex flex-col items-center justify-center text-center gap-3">
-            <div className="text-2xl font-bold text-ink">{question?.question || scene?.title || "Create your event flow"}</div>
-            {question?.media?.url && <div className="text-sm text-mute-2">{question.media.type}: {question.media.name}</div>}
+      {!scene ? (
+        <div className="flex-1 flex flex-col items-center justify-center text-center gap-2 text-mute-2">
+          <Icon name="monitor-play" size={26} className="text-dim" />
+          <span className="text-[13px]">Select a step to preview it, or generate the event flow.</span>
+        </div>
+      ) : (
+        <div className="flex-1 min-h-0 flex justify-center">
+          {/* Single player screen. */}
+          <div data-theme="dark" className="w-full max-w-[440px] rounded-2xl border border-line/[.1] bg-[linear-gradient(180deg,#0C0D13,#08090C)] p-6 flex flex-col min-h-0">
+            <span className="self-center text-[9px] font-bold tracking-[.14em] text-accent bg-accent/15 rounded-full px-3 py-1 shrink-0">
+              {typeLabel}
+            </span>
+            <div className="flex-1 flex flex-col mt-4 min-h-0">
+              <SceneStage scene={scene} question={question} round={round} teams={teams} room={room} compact={false} />
+            </div>
           </div>
         </div>
-        <div className="rounded-2xl border border-line/[.08] bg-line/[.03] p-6 flex flex-col justify-center gap-3">
-          <span className="text-[11px] font-mono text-label">DESKTOP PREVIEW</span>
-          <div className="text-3xl font-bold text-ink">{question?.question || scene?.title || "No scene selected"}</div>
-          <div className="text-sm text-mute-2">{scene ? typeLabel : "Generate event flow from rounds."}</div>
-        </div>
-      </div>
+      )}
     </Card>
   );
 }
