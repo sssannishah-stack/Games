@@ -170,6 +170,25 @@ async function consumeTeamPowerCardUse(teamPowerCardId: unknown): Promise<void> 
 }
 
 /**
+ * Freeze the live countdown and capture the remaining time, so the host's
+ * Resume can continue from here instead of restarting the full duration. Used
+ * when a judged/auto-graded answer stops the clock — mirrors pauseTimer so
+ * every pause path stays resumable. No-op if already paused (keeps the earlier
+ * capture rather than recomputing against the now-frozen end time).
+ */
+async function freezeTimerRemaining(roomId: string): Promise<void> {
+  const room = await Room.findById(roomId)
+    .select("liveState.timerEndsAt liveState.timerPaused")
+    .lean();
+  if (!room || room.liveState?.timerPaused) return;
+  const endsAt = room.liveState?.timerEndsAt ? new Date(room.liveState.timerEndsAt).getTime() : null;
+  const remainingMs = endsAt !== null ? Math.max(0, endsAt - Date.now()) : null;
+  await Room.findByIdAndUpdate(roomId, {
+    $set: { "liveState.timerPaused": true, "liveState.timerRemainingMs": remainingMs },
+  });
+}
+
+/**
  * Apply a mark through the power-card modifiers (Insurance void, Shield,
  * Double Points, Gamble) and write it to the ledger + stats. The host's
  * manual giveMarks and MCQ auto-grading both funnel through here so the
@@ -340,7 +359,7 @@ export async function giveMarks(input: {
   // A Correct/Wrong call is the host judging the live question — stop the
   // clock the instant that happens so the phones get a clean result signal.
   if (!isTest && (input.reason === "CORRECT" || input.reason === "WRONG")) {
-    await Room.findByIdAndUpdate(input.roomId, { $set: { "liveState.timerPaused": true } });
+    await freezeTimerRemaining(input.roomId);
   }
 
   await resolveAndApplyMark({
@@ -470,7 +489,7 @@ export async function submitMcqAnswer(input: {
 
   if (!isTest && assignedTeamId) {
     // A single assigned answerer just resolved this question — stop the clock.
-    await Room.findByIdAndUpdate(input.roomId, { $set: { "liveState.timerPaused": true } });
+    await freezeTimerRemaining(input.roomId);
   }
 
   const { finalPoints } = await resolveAndApplyMark({

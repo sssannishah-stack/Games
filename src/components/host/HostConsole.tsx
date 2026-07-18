@@ -8,6 +8,7 @@ import {
   publishScene,
   reorderScenes,
   resetTimer,
+  resumeTimer,
   revealAnswer,
   startEvent,
   startTimer,
@@ -24,6 +25,7 @@ import {
   hostActivatePowerCard,
   hostConsumePowerCard,
   hostForceActivatePowerCard,
+  hostPlayTeamPowerCard,
   hostRemoveTeamPowerCard,
   openStore,
   resolvePowerCardRequest,
@@ -36,6 +38,7 @@ import { setTeamDeviceRole } from "@/actions/team.actions";
 import { giveMarks, hostUndoScoreTransaction } from "@/actions/score.actions";
 import { setDrawer } from "@/actions/drawing.actions";
 import { LiveDrawBoard } from "@/components/draw/LiveDrawBoard";
+import { RoundsRoadmap, RoundProgress, readRoadmap } from "@/components/scene/RoundScenes";
 import { useSound } from "@/lib/sound/useSound";
 import { SoundToggle } from "@/components/sound/SoundToggle";
 import { awardAchievement, dismissAchievement, giveManualAchievement } from "@/actions/achievement.actions";
@@ -592,22 +595,43 @@ export function HostConsole({
     );
   }
 
+  // A timer is "paused with time on it" when the host hit Pause — Start should
+  // resume from there, not restart the full duration (that was the "Pause acts
+  // like Reset" bug). A fully idle/reset clock (no remaining) starts fresh.
+  const timerPausedWithTime =
+    room.liveState.timerPaused && (room.liveState.timerRemainingMs ?? 0) > 0;
+
+  function startOrResume() {
+    if (timerPausedWithTime) action(() => resumeTimer(room.id));
+    else action(() => startTimer(room.id, Number(current?.settings?.timer ?? 30)));
+  }
+
   function toggleTimer() {
-    action(() =>
-      timerRunning ? pauseTimer(room.id) : startTimer(room.id, Number(current?.settings?.timer ?? 30))
-    );
+    if (timerRunning) action(() => pauseTimer(room.id));
+    else startOrResume();
   }
 
   function addTime(seconds: number) {
-    const next = Math.max(1, (secondsLeft ?? Number(current?.settings?.timer ?? 30)) + seconds);
+    // Base off whatever's actually left — the live countdown when running, the
+    // frozen remaining when paused — not the scene default (which discarded the
+    // real remaining time while paused).
+    const base = timerRunning
+      ? secondsLeft ?? Number(current?.settings?.timer ?? 30)
+      : room.liveState.timerPaused
+        ? Math.ceil((room.liveState.timerRemainingMs ?? 0) / 1000)
+        : Number(current?.settings?.timer ?? 30);
+    const next = Math.max(1, base + seconds);
     action(() => startTimer(room.id, next));
   }
 
   function jumpToLeaderboard() {
+    // Generated flows now end each round on ROUND_COMPLETE (standings + progress)
+    // rather than a bare LEADERBOARD; jump to whichever standings scene is next.
+    const isStandings = (t: string) => t === "ROUND_COMPLETE" || t === "LEADERBOARD";
     const currentOrder = current?.order ?? -1;
     const target =
-      scenes.find((scene) => scene.type === "LEADERBOARD" && scene.order >= currentOrder) ??
-      scenes.find((scene) => scene.type === "LEADERBOARD");
+      scenes.find((scene) => isStandings(scene.type) && scene.order >= currentOrder) ??
+      scenes.find((scene) => isStandings(scene.type));
     if (target) action(() => publishScene(room.id, target.id).then(() => undefined));
   }
 
@@ -1014,6 +1038,28 @@ export function HostConsole({
                         })}
                     </div>
                   )}
+
+                  {/* Roadmap + round-complete previews — the host sees exactly
+                      what's on every phone for these scenes. */}
+                  {current?.type === "ROUND_OVERVIEW" && (
+                    <div className="w-full max-w-[520px] mt-1 text-left">
+                      <RoundsRoadmap
+                        roadmap={readRoadmap(current.content)}
+                        totalQuestions={Number(current.content?.totalQuestions ?? 0) || undefined}
+                        economy={room.economyEnabled}
+                      />
+                    </div>
+                  )}
+                  {current?.type === "ROUND_COMPLETE" && (
+                    <div className="w-full max-w-[520px] mt-1 text-left">
+                      <RoundProgress
+                        roadmap={readRoadmap(current.content)}
+                        roundIndex={Number(current.content?.roundIndex ?? 0)}
+                        leaderboard={teams.map((t) => ({ id: t.id, name: t.name, score: t.score, color: t.color }))}
+                        economy={room.economyEnabled}
+                      />
+                    </div>
+                  )}
                 </div>
 
                 {question && (() => {
@@ -1054,11 +1100,37 @@ export function HostConsole({
                           </div>
                         )}
                         {activeTab === "ANSWER" && (
-                          <div className="flex flex-col gap-1.5">
+                          <div className="flex flex-col gap-2">
                             <span className="text-[10px] font-mono font-semibold tracking-[.12em] text-warn">
                               ANSWER — HOST ONLY, HIDDEN FROM PARTICIPANTS
                             </span>
                             <span className="text-lg font-bold text-ink">{question.answer}</span>
+                            {/* MCQ: every option with a right/wrong mark and its
+                                rationale, so the host can explain the answer
+                                without having authored it themselves. */}
+                            {question.isMCQ && question.options.length > 0 && (
+                              <div className="flex flex-col gap-1.5 mt-1">
+                                {question.options.map((option, i) => {
+                                  const correct = option === question.answer;
+                                  const rationale = question.optionRationales?.[i];
+                                  return (
+                                    <div
+                                      key={i}
+                                      className={`rounded-lg border px-2.5 py-2 ${
+                                        correct ? "border-success/30 bg-success/[.06]" : "border-line/[.08] bg-line/[.02]"
+                                      }`}
+                                    >
+                                      <span className={`flex items-center gap-1.5 text-[12.5px] font-semibold ${correct ? "text-success" : "text-ink-3"}`}>
+                                        {correct ? "✓" : "✗"} {option}
+                                      </span>
+                                      {rationale && (
+                                        <span className="block mt-0.5 text-[11px] text-mute-2 leading-snug">{rationale}</span>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
                           </div>
                         )}
                         {activeTab === "HINTS" && (
@@ -1371,10 +1443,10 @@ export function HostConsole({
                 );
               })()}
               <div className="grid grid-cols-3 gap-2">
-                <Button variant="primary" onClick={() => action(() => startTimer(room.id, Number(current?.settings?.timer ?? 30)))} disabled={pending} className="justify-center">
-                  Start
+                <Button variant="primary" onClick={startOrResume} disabled={pending} className="justify-center">
+                  {timerPausedWithTime ? "Resume" : "Start"}
                 </Button>
-                <Button variant="subtle" onClick={() => action(() => pauseTimer(room.id))} disabled={pending} className="justify-center">
+                <Button variant="subtle" onClick={() => action(() => pauseTimer(room.id))} disabled={pending || !timerRunning} className="justify-center">
                   Pause
                 </Button>
                 <Button variant="subtle" onClick={() => action(() => resetTimer(room.id))} disabled={pending} className="justify-center">
@@ -1504,20 +1576,43 @@ export function HostConsole({
                         {owned.length > 0 && (
                           <div className="flex flex-col gap-1 mt-1">
                             <span className="text-[10px] font-semibold text-dim-2 tracking-[.1em]">OWNED CARDS</span>
-                            {owned.map((o) => (
-                              <div key={o.powerCardId} className="flex items-center gap-2 text-[11.5px] text-ink-3">
-                                <span className="truncate flex-1">
-                                  {cardById.get(o.powerCardId)?.name ?? "Card"} · {o.status}
-                                </span>
-                                <button
-                                  onClick={() => action(() => hostRemoveTeamPowerCard(team.id, o.powerCardId))}
-                                  disabled={pending}
-                                  className="text-danger-soft hover:text-danger text-[10.5px] font-semibold cursor-pointer shrink-0"
-                                >
-                                  Remove
-                                </button>
-                              </div>
-                            ))}
+                            {owned.map((o) => {
+                              const catalog = cardById.get(o.powerCardId);
+                              // A card is playable-on-behalf when the team has an
+                              // available copy left and it's actually a card that
+                              // gets "played" (Mystery opens on purchase, not in play).
+                              const playable =
+                                o.status === "AVAILABLE" && o.remainingUses > 0 && catalog?.effectType !== "MYSTERY";
+                              const inPlayScene = current?.type === "QUESTION" || current?.type === "DRAWING";
+                              return (
+                                <div key={o.powerCardId} className="flex items-center gap-2 text-[11.5px] text-ink-3">
+                                  <span className="truncate flex-1">
+                                    {catalog?.name ?? "Card"} · {o.status}
+                                    {o.remainingUses > 1 ? ` ×${o.remainingUses}` : ""}
+                                  </span>
+                                  {playable && (
+                                    <button
+                                      onClick={() => {
+                                        play("card");
+                                        action(() => hostPlayTeamPowerCard(room.id, team.id, o.powerCardId).then(() => undefined));
+                                      }}
+                                      disabled={pending || !inPlayScene}
+                                      title={inPlayScene ? "Play this card for the team" : "Only playable during a live question"}
+                                      className="text-success hover:brightness-125 text-[10.5px] font-bold cursor-pointer shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
+                                    >
+                                      Use
+                                    </button>
+                                  )}
+                                  <button
+                                    onClick={() => action(() => hostRemoveTeamPowerCard(team.id, o.powerCardId))}
+                                    disabled={pending}
+                                    className="text-danger-soft hover:text-danger text-[10.5px] font-semibold cursor-pointer shrink-0"
+                                  >
+                                    Remove
+                                  </button>
+                                </div>
+                              );
+                            })}
                           </div>
                         )}
                         <TeamDevicesPanel
@@ -1686,7 +1781,7 @@ export function HostConsole({
         </Button>
         <Button variant={timerRunning ? "danger" : "success"} onClick={toggleTimer} disabled={pending} className="flex-1 min-w-0 justify-center h-12">
           <Icon name={timerRunning ? "pause" : "play"} size={15} />
-          <span className="hidden md:inline">{timerRunning ? "Pause" : "Start"}</span>
+          <span className="hidden md:inline">{timerRunning ? "Pause" : timerPausedWithTime ? "Resume" : "Start"}</span>
         </Button>
         <Button
           variant="subtle"
@@ -1771,7 +1866,17 @@ export function HostConsole({
                 Surprise Panel
               </span>
               <div className="grid grid-cols-2 gap-2">
-                <Button variant="primary" size="sm" onClick={() => setSpinOpen(true)} disabled={pending || !teams.length}>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={() => {
+                    // The drawer sits at z-[70]; the spin modal at z-50. Close
+                    // the drawer first or the wheel opens hidden behind it.
+                    setEventActionsOpen(false);
+                    setSpinOpen(true);
+                  }}
+                  disabled={pending || !teams.length}
+                >
                   <Icon name="disc-3" size={14} />
                   Lucky Spin
                 </Button>

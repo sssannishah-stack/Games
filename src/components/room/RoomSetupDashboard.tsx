@@ -1321,7 +1321,7 @@ function SceneInspector({
       <label className="flex flex-col gap-[7px]">
         <span className="text-xs font-semibold text-ink-3">Type</span>
         <select value={type} onChange={(event) => setType(event.target.value as SceneType)} className="bg-line/[.04] border border-line/[.1] rounded-[11px] px-3 py-2 text-sm text-ink outline-none">
-          {(["WAITING","WELCOME","RULES","ROUND_INTRO","QUESTION","HINT","ANSWER_REVEAL","DRAWING","LEADERBOARD","BREAK","BROADCAST","WINNER"] as SceneType[]).map((item) => (
+          {(["WAITING","WELCOME","RULES","ROUND_OVERVIEW","ROUND_INTRO","QUESTION","HINT","ANSWER_REVEAL","DRAWING","LEADERBOARD","ROUND_COMPLETE","BREAK","BROADCAST","WINNER"] as SceneType[]).map((item) => (
             <option key={item} value={item}>{item}</option>
           ))}
         </select>

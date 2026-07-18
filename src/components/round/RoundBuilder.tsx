@@ -299,9 +299,14 @@ function RoundPowerCardsTab({
 }) {
   const [safetyOpen, setSafetyOpen] = useState(false);
   const [pendingAllowedCards, setPendingAllowedCards] = useState<string[] | null>(null);
+  // Tracks whether the pending change is a normal toggle (stays CUSTOM) or the
+  // "Allow all" reset (goes back to DEFAULT) — both flow through the same
+  // save-with-confirmation path when the round is already in use by a room.
+  const [pendingMode, setPendingMode] = useState<"CUSTOM" | "DEFAULT">("CUSTOM");
   const [pending, startTransition] = useTransition();
   const router = useRouter();
   const allowed = useMemo(() => new Set(round.allowedPowerCards), [round.allowedPowerCards]);
+  const isRestricted = round.powerCardMode === "CUSTOM";
 
   function toggle(cardId: string) {
     const next = allowed.has(cardId)
@@ -309,20 +314,21 @@ function RoundPowerCardsTab({
       : [...round.allowedPowerCards, cardId];
     if (roomUsageCount > 0) {
       setPendingAllowedCards(next);
+      setPendingMode("CUSTOM");
       setSafetyOpen(true);
       return;
     }
-    saveAllowed(next, "UPDATE_SHARED");
+    saveAllowed(next, "CUSTOM", "UPDATE_SHARED");
   }
 
-  function saveAllowed(next: string[], strategy: "UPDATE_SHARED" | "DUPLICATE") {
+  function saveAllowed(next: string[], mode: "CUSTOM" | "DEFAULT", strategy: "UPDATE_SHARED" | "DUPLICATE") {
     startTransition(async () => {
       if (strategy === "DUPLICATE") {
         const { id } = await duplicateRound(round.id);
-        await updateRound(id, { allowedPowerCards: next, powerCardMode: "CUSTOM" });
+        await updateRound(id, { allowedPowerCards: next, powerCardMode: mode });
         router.push(`/admin/rounds/${id}`);
       } else {
-        await updateRound(round.id, { allowedPowerCards: next, powerCardMode: "CUSTOM" });
+        await updateRound(round.id, { allowedPowerCards: next, powerCardMode: mode });
       }
       setPendingAllowedCards(null);
       setSafetyOpen(false);
@@ -330,15 +336,47 @@ function RoundPowerCardsTab({
     });
   }
 
+  // Once any checkbox is toggled the round is locked into CUSTOM mode — there
+  // was previously no way back to "allow everything by default" short of
+  // manually re-checking every card in the catalog (which also silently
+  // excludes any card added to the library later, unlike true DEFAULT mode).
+  // This restores that: clears the allow-list and flips the mode back.
+  function resetToUnrestricted() {
+    if (roomUsageCount > 0) {
+      setPendingAllowedCards([]);
+      setPendingMode("DEFAULT");
+      setSafetyOpen(true);
+      return;
+    }
+    saveAllowed([], "DEFAULT", "UPDATE_SHARED");
+  }
+
   return (
     <Card className="rounded-2xl p-5 flex flex-col gap-3.5">
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         <span className="text-[13px] font-bold text-ink-2">Allowed power cards</span>
-        <span className="text-[11.5px] text-mute-2">Rounds only select reusable cards from the library.</span>
+        <span
+          className={`rounded-full border px-2 py-0.5 text-[10px] font-bold tracking-[.04em] ${
+            isRestricted ? "border-warn/35 bg-warn/[.08] text-warn" : "border-success/30 bg-success/[.08] text-success"
+          }`}
+        >
+          {isRestricted ? "RESTRICTED" : "ALLOWS EVERYTHING"}
+        </span>
         <Link href="/admin/power-cards" className="ml-auto">
           <Button variant="subtle" size="sm">Manage Library</Button>
         </Link>
+        {isRestricted && (
+          <Button variant="subtle" size="sm" onClick={resetToUnrestricted} disabled={pending}>
+            <Icon name="rotate-ccw" size={13} />
+            Allow all (reset)
+          </Button>
+        )}
       </div>
+      <span className="text-[11.5px] text-mute-2 -mt-2">
+        {isRestricted
+          ? "This round only allows the cards checked below — everything else is off, including any new card you add to the library later."
+          : "Every power card in your library is allowed by default, including ones you add later. Check a box to switch this round to a fixed allow-list instead."}
+      </span>
 
       {powerCards.length === 0 ? (
         <span className="text-xs text-mute-2">No power cards in your library yet. Create cards from Build - Power Cards.</span>
@@ -374,8 +412,8 @@ function RoundPowerCardsTab({
           roomUsageCount={roomUsageCount}
           pending={pending}
           onClose={() => setSafetyOpen(false)}
-          onDuplicate={() => saveAllowed(pendingAllowedCards, "DUPLICATE")}
-          onUpdateShared={() => saveAllowed(pendingAllowedCards, "UPDATE_SHARED")}
+          onDuplicate={() => saveAllowed(pendingAllowedCards, pendingMode, "DUPLICATE")}
+          onUpdateShared={() => saveAllowed(pendingAllowedCards, pendingMode, "UPDATE_SHARED")}
         />
       )}
     </Card>

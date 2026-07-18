@@ -17,6 +17,7 @@ import {
   TeamAchievement,
   Auction,
   AuctionBid,
+  DrawingStroke,
 } from "@/models";
 import { requireUser } from "@/lib/auth/getCurrentUser";
 import { assertCompetitionOwnership, assertRoomOwnership } from "@/lib/authz";
@@ -334,9 +335,12 @@ export async function startRoomTestMode(roomId: string): Promise<void> {
       "liveState.timerStartedAt": null,
       "liveState.timerEndsAt": null,
       "liveState.timerPaused": false,
+      "liveState.timerRemainingMs": null,
       "liveState.showAnswer": false,
+      "liveState.drawerTeamId": null,
     },
   });
+  await DrawingStroke.deleteMany({ roomId });
 
   revalidatePath(`/admin/rooms/${roomId}`);
   revalidatePath(`/host/${roomId}`);
@@ -374,6 +378,10 @@ export async function resetRoom(
     TeamAchievement.deleteMany({ roomId }),
     AuctionBid.deleteMany({ roomId }),
     Auction.deleteMany({ roomId }),
+    // Otherwise a replayed Drawing question shows whatever was drawn on it
+    // before the reset — the strokes are keyed by roomId+questionId, which
+    // resetting the room's other live state doesn't touch on its own.
+    DrawingStroke.deleteMany({ roomId }),
     removeTeams
       ? Promise.all([
           TeamPowerCard.deleteMany({ teamId: { $in: teamIds } }),
@@ -418,11 +426,13 @@ export async function resetRoom(
         "liveState.timerStartedAt": null,
         "liveState.timerEndsAt": null,
         "liveState.timerPaused": false,
+        "liveState.timerRemainingMs": null,
         "liveState.showAnswer": false,
         "liveState.storeStatus": "CLOSED",
         "liveState.flashSaleActive": false,
         "liveState.flashSalePercent": 0,
         "liveState.flashSaleEndsAt": null,
+        "liveState.drawerTeamId": null,
       },
     }),
   ]);

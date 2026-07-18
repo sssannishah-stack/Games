@@ -21,6 +21,7 @@ import { useMotionEnabled } from "@/components/motion/useMotionEnabled";
 import { StoreOpenNotification } from "@/components/store/StoreOpenNotification";
 import { PowerStoreExperience } from "@/components/store/PowerStoreExperience";
 import { LiveDrawBoard } from "@/components/draw/LiveDrawBoard";
+import { RoundsRoadmap, RoundProgress, readRoadmap } from "@/components/scene/RoundScenes";
 import { useSound } from "@/lib/sound/useSound";
 import { SoundToggle } from "@/components/sound/SoundToggle";
 import type { PublicRoomInfo } from "@/data/queries/room.queries";
@@ -147,6 +148,8 @@ type LivePayload = {
     assignedTeamName: string | null;
     isMyTurn: boolean;
     frozen: boolean;
+    /** The host's verdict on the assigned team, visible to every team. */
+    judgment: { reason: "CORRECT" | "WRONG"; points: number } | null;
   };
   /** Drawing board context (DRAWING scenes only). */
   drawing: {
@@ -253,6 +256,8 @@ const CHIP_VARIANTS = {
 
 function sceneAccent(type: SceneType) {
   if (type === "LEADERBOARD" || type === "WINNER") return "#F2C94C";
+  if (type === "ROUND_COMPLETE") return "#3DD68C";
+  if (type === "ROUND_OVERVIEW") return "#B98AE8";
   if (type === "QUESTION" || type === "DRAWING") return "#6C7BFA";
   if (type === "WELCOME" || type === "ROUND_INTRO") return "#3DD68C";
   return "#8EA0B8";
@@ -937,6 +942,23 @@ function LiveStatusCard({ live }: { live: LivePayload }) {
 
   if (onQuestion && live.turn.frozen) {
     status = { icon: "❄️", title: "Your Team Is Frozen", tone: "info", subtitle: "An opponent froze you — no power cards on this question." };
+  } else if (onQuestion && live.turn.assignedTeamId && live.turn.judgment && !live.turn.isMyTurn) {
+    // The assigned team has been judged — every other team gets told the
+    // result here instead of staying stuck on "Team X is answering" until the
+    // host manually moves the scene forward. (My own team's judgment already
+    // gets a louder, dedicated full-screen burst elsewhere, so this branch is
+    // watchers-only — isMyTurn falls through to the plain "Your Turn" case,
+    // which yields to that overlay.)
+    const correct = live.turn.judgment.reason === "CORRECT";
+    const blocked = !correct && live.turn.judgment.points === 0;
+    status = {
+      icon: correct ? "✅" : blocked ? "🛡" : "❌",
+      title: `${live.turn.assignedTeamName ?? "They"} ${correct ? "Answered Correctly" : "Answered Wrong"}`,
+      tone: correct ? "success" : blocked ? "info" : "danger",
+      subtitle: blocked
+        ? "A shield or insurance saved their marks."
+        : `${correct ? "+" : ""}${live.turn.judgment.points} points.`,
+    };
   } else if (onQuestion && live.turn.assignedTeamId && !live.turn.isMyTurn) {
     status = {
       icon: "⏳",
@@ -1662,9 +1684,11 @@ function SceneScreen({
       )}
       {type === "DRAWING" && <DrawingScene live={live} participantId={participantId} />}
       {type === "ANSWER_REVEAL" && <AnswerRevealScene live={live} />}
+      {type === "ROUND_OVERVIEW" && <RoundOverviewScene live={live} />}
+      {type === "ROUND_COMPLETE" && <RoundCompleteScene live={live} />}
       {type === "LEADERBOARD" && <LeaderboardScene live={live} />}
       {type === "WINNER" && <WinnerScene live={live} />}
-      {!["WAITING", "WELCOME", "ROUND_INTRO", "QUESTION", "DRAWING", "ANSWER_REVEAL", "LEADERBOARD", "WINNER"].includes(type) && (
+      {!["WAITING", "WELCOME", "ROUND_INTRO", "QUESTION", "DRAWING", "ANSWER_REVEAL", "ROUND_OVERVIEW", "ROUND_COMPLETE", "LEADERBOARD", "WINNER"].includes(type) && (
         <FallbackScene live={live} />
       )}
     </motion.section>
@@ -1713,6 +1737,20 @@ function WelcomeScene({ live }: { live: LivePayload }) {
   );
 }
 
+/** Format the round's embedded timer summary (a single seconds value, or a
+ *  {min,max} range when questions in the round use different CUSTOM timers) —
+ *  falls back to the round's raw defaultTimer for scenes generated before this
+ *  field existed. */
+function formatTimerSummary(content: Record<string, unknown> | undefined, fallback: number | undefined): string {
+  const summary = content?.timerSummary;
+  if (summary && typeof summary === "object" && "min" in summary && "max" in summary) {
+    const { min, max } = summary as { min: number; max: number };
+    return `${min}-${max}s`;
+  }
+  if (typeof summary === "number") return `${summary}s`;
+  return fallback != null ? `${fallback}s` : "--";
+}
+
 function RoundIntroScene({ live }: { live: LivePayload }) {
   const mode = live.round?.specialMode ?? "NONE";
   const modeMeta = mode !== "NONE" ? ROUND_MODE_META[mode] : null;
@@ -1743,7 +1781,7 @@ function RoundIntroScene({ live }: { live: LivePayload }) {
         </div>
       )}
       <div className="grid grid-cols-3 gap-2">
-        <Metric label="Timer" value={`${live.round?.defaultTimer ?? "--"}s`} />
+        <Metric label="Timer" value={formatTimerSummary(live.currentScene.content, live.round?.defaultTimer)} />
         <Metric label="Correct" value={`+${live.round?.positiveMarks ?? "-"}`} />
         <Metric label="Wrong" value={`${live.round?.negativeMarks ?? "-"}`} />
       </div>
@@ -2364,6 +2402,44 @@ function AnswerRevealScene({ live }: { live: LivePayload }) {
           {live.question?.answer ?? "Revealed by the host"}
         </span>
       </div>
+    </div>
+  );
+}
+
+function RoundOverviewScene({ live }: { live: LivePayload }) {
+  const roadmap = readRoadmap(live.currentScene.content);
+  return (
+    <div className="flex-1 flex flex-col gap-3 pt-4">
+      <h1 className="text-2xl font-black tracking-[-.03em]">What&apos;s ahead</h1>
+      <RoundsRoadmap
+        roadmap={roadmap}
+        totalQuestions={Number(live.currentScene.content?.totalQuestions ?? 0) || undefined}
+        economy={live.powers.economyEnabled}
+      />
+    </div>
+  );
+}
+
+function RoundCompleteScene({ live }: { live: LivePayload }) {
+  const play = useSound();
+  const playedRef = useRef(false);
+  useEffect(() => {
+    if (!playedRef.current) {
+      playedRef.current = true;
+      play("reveal");
+    }
+  }, [play]);
+  const roadmap = readRoadmap(live.currentScene.content);
+  const roundIndex = Number(live.currentScene.content?.roundIndex ?? 0);
+  return (
+    <div className="flex-1 flex flex-col pt-4">
+      <RoundProgress
+        roadmap={roadmap}
+        roundIndex={roundIndex}
+        leaderboard={live.leaderboard.map((t) => ({ id: t.id, name: t.name, score: t.score, color: t.color }))}
+        economy={live.powers.economyEnabled}
+        myTeamId={live.team?.id ?? null}
+      />
     </div>
   );
 }

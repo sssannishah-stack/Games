@@ -177,7 +177,11 @@ async function extendRoomTimer(roomId: string, seconds: number): Promise<void> {
   if (!endsAt) return;
   const base = Math.max(new Date(endsAt).getTime(), Date.now());
   await Room.findByIdAndUpdate(roomId, {
-    $set: { "liveState.timerEndsAt": new Date(base + seconds * 1000), "liveState.timerPaused": false },
+    $set: {
+      "liveState.timerEndsAt": new Date(base + seconds * 1000),
+      "liveState.timerPaused": false,
+      "liveState.timerRemainingMs": null,
+    },
   });
 }
 
@@ -1061,4 +1065,108 @@ export async function hostRemoveTeamPowerCard(teamId: string, powerCardId: strin
 
   revalidatePath(`/host/${team.roomId.toString()}`);
   revalidatePath(`/admin/rooms/${team.roomId.toString()}`);
+}
+
+/**
+ * Host plays a card a team already OWNS, on the team's behalf — for when a team
+ * answers/asks out loud instead of tapping the app (the normal case in this
+ * host-directed product), or a captain's phone is offline. Same effect and
+ * consume as the team playing it themselves (Insurance/Hint/Freeze/Peek/Extra
+ * Time resolve now; Shield/Double/Gamble/Second Chance arm as ACTIVE for the
+ * next mark) — the only difference is host authorization and that approval is
+ * implicit. Enforces the exact same playability rulebook the participant does,
+ * so a host-play can never land a card in an invalid state (e.g. Extra Time
+ * with no clock, Peek on a non-MCQ, or a card the round doesn't allow).
+ */
+export async function hostPlayTeamPowerCard(
+  roomId: string,
+  teamId: string,
+  powerCardId: string
+): Promise<{ status: PowerCardRequestStatus }> {
+  const user = await requireUser();
+  await connectToDatabase();
+  await assertRoomOwnership(roomId, user.id);
+
+  const room = await Room.findById(roomId).lean();
+  if (!room) throw new Error("Room not found.");
+  const team = await Team.findOne({ _id: teamId, roomId })
+    .select("frozenQuestionIds hintsRevealed peeks")
+    .lean();
+  if (!team) throw new Error("Team does not belong to this room.");
+  await assertPowerCardAllowedForRoom(room, powerCardId);
+  const card = await getEnabledPowerCardForRoom(room, powerCardId);
+
+  const currentScene = room.currentSceneId
+    ? await Scene.findById(room.currentSceneId)
+        .select("type settings")
+        .lean<{ type: string; settings?: Record<string, unknown> }>()
+    : null;
+  const timerRunning =
+    Boolean(room.liveState?.timerEndsAt) &&
+    !room.liveState?.timerPaused &&
+    new Date(room.liveState.timerEndsAt as unknown as string).getTime() > Date.now();
+  const currentQid = room.currentQuestionId?.toString() ?? null;
+  const frozen = Boolean(currentQid && team.frozenQuestionIds?.includes(currentQid));
+  const currentQuestion = currentQid
+    ? await Question.findById(currentQid).select("isMCQ options hints").lean()
+    : null;
+  const hintsRevealed = currentQid
+    ? (team.hintsRevealed?.find((h) => h.questionId === currentQid)?.count ?? 0)
+    : 0;
+  const alreadyPeeked = Boolean(currentQid && team.peeks?.some((p) => p.questionId === currentQid));
+  const assignedTeamId =
+    typeof currentScene?.settings?.assignedTeamId === "string" ? currentScene.settings.assignedTeamId : null;
+
+  const playability = powerCardPlayability(card.effectType, {
+    sceneType: currentScene?.type ?? null,
+    timerRunning,
+    assignedTeamId,
+    actingTeamId: teamId,
+    frozen,
+    hintsTotal: currentQuestion?.hints?.length ?? 0,
+    hintsRevealed,
+    isMCQ: currentQuestion?.isMCQ ?? false,
+    optionsCount: currentQuestion?.options?.length ?? 0,
+    alreadyPeeked,
+  });
+  if (!playability.usable) throw new Error(playability.reason ?? "This card can't be played right now.");
+
+  const owned = await TeamPowerCard.findOneAndUpdate(
+    { teamId, powerCardId, status: "AVAILABLE", remainingUses: { $gt: 0 } },
+    { $set: { status: "ACTIVE" } },
+    { new: true }
+  );
+  if (!owned) throw new Error("This team doesn't own an available copy of that card.");
+
+  let instantlyConsumed = false;
+  try {
+    await applyImmediatePowerEffect(roomId, teamId, card.effectType);
+    if (INSTANT_CONSUME_EFFECTS.has(card.effectType)) {
+      await consumeTeamPowerCardUse(owned._id);
+      instantlyConsumed = true;
+    }
+  } catch (error) {
+    await TeamPowerCard.findByIdAndUpdate(owned._id, { $set: { status: "AVAILABLE" } });
+    throw error;
+  }
+
+  const effectiveTargetTeamId = card.effectType === "FREEZE" ? assignedTeamId : null;
+  const request = await PowerCardRequest.create({
+    roomId,
+    teamId,
+    powerCardId,
+    targetTeamId: effectiveTargetTeamId,
+    status: instantlyConsumed ? "CONSUMED" : "ACTIVE",
+    approvedBy: user.id as unknown as IPowerCardRequest["approvedBy"],
+  });
+
+  await EventLog.create({
+    roomId,
+    type: "POWER_CARD_USED",
+    metadata: { teamId, powerCardId, targetTeamId: effectiveTargetTeamId, source: "HOST_PLAYED" },
+  });
+
+  revalidatePath(`/host/${roomId}`);
+  revalidatePath(`/admin/rooms/${roomId}`);
+  return { status: request.status };
 }

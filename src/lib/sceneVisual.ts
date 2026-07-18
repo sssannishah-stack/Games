@@ -23,12 +23,14 @@ const NEUTRAL_ROW = "border-line/[.09] bg-line/[.025]";
 
 const SCENE_VISUAL: Partial<Record<SceneType, SceneVisual>> = {
   WELCOME:       { marker: "WELCOME", row: NEUTRAL_ROW, badge: "bg-violet-400/15 text-violet-200 border border-violet-400/25", bar: "bg-violet-400/70", label: "text-violet-200/90" },
+  ROUND_OVERVIEW:{ marker: "MAP",     row: NEUTRAL_ROW, badge: "bg-violet-400/15 text-violet-200 border border-violet-400/25", bar: "bg-violet-400/70", label: "text-violet-200/90" },
   ROUND_INTRO:   { marker: "ROUND",   row: NEUTRAL_ROW, badge: "bg-info/15 text-info border border-info/25",                 bar: "bg-info/70",       label: "text-info/90" },
   QUESTION:      { marker: "Q",       row: NEUTRAL_ROW, badge: "bg-accent/15 text-accent border border-accent/30",           bar: "bg-accent/80",     label: "text-accent/90" },
   DRAWING:       { marker: "DRAW",    row: NEUTRAL_ROW, badge: "bg-pink/15 text-pink border border-pink/30",                 bar: "bg-pink/75",       label: "text-pink/90" },
   HINT:          { marker: "HINT",    row: NEUTRAL_ROW, badge: "bg-warn/15 text-warn border border-warn/25",                 bar: "bg-warn/70",       label: "text-warn/90" },
   ANSWER_REVEAL: { marker: "A",       row: NEUTRAL_ROW, badge: "bg-success/15 text-success border border-success/30",        bar: "bg-success/80",    label: "text-success/90" },
   LEADERBOARD:   { marker: "RANK",    row: NEUTRAL_ROW, badge: "bg-amber/15 text-amber border border-amber/30",             bar: "bg-amber/75",      label: "text-amber/90" },
+  ROUND_COMPLETE:{ marker: "DONE",    row: NEUTRAL_ROW, badge: "bg-success/15 text-success border border-success/30",       bar: "bg-success/80",    label: "text-success/90" },
   RULES:         { marker: "RULES",   row: NEUTRAL_ROW, badge: "bg-info/12 text-info border border-info/20",                bar: "bg-info/55",       label: "text-info/80" },
   WAITING:       { marker: "WAIT",    row: NEUTRAL_ROW, badge: "bg-line/[.08] text-mute-2 border border-line/[.12]",        bar: "bg-line/[.25]",    label: "text-mute-2" },
   BREAK:         { marker: "BREAK",   row: NEUTRAL_ROW, badge: "bg-line/[.08] text-mute-2 border border-line/[.12]",        bar: "bg-line/[.25]",    label: "text-mute-2" },

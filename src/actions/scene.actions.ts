@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { connectToDatabase } from "@/lib/database/mongodb";
-import { Competition, EventLog, Question, Room, Round, Scene, Team } from "@/models";
+import { Competition, DrawingStroke, EventLog, Question, Room, Round, Scene, Team } from "@/models";
 import { requireUser } from "@/lib/auth/getCurrentUser";
 import { assertRoomOwnership } from "@/lib/authz";
 import {
@@ -259,19 +259,36 @@ export async function generateScenes(roomId: string): Promise<{ count: number }>
     settings: {},
   });
 
-  for (const round of rounds) {
-    scenes.push({
-      roomId,
-      type: "ROUND_INTRO",
-      title: `${round.title} Intro`,
-      roundId: round._id.toString(),
-      questionId: null,
-      order: order++,
-      status: "UPCOMING",
-      isActive: false,
-      content: { title: round.title, rules: round.rules },
-      settings: {},
-    });
+  // A compact snapshot of every round in play — title, how many questions, and
+  // what each is worth. Embedded on the overview + each round-complete scene so
+  // the roadmap renders from scene content without extra live queries. Built to
+  // stay readable whether there are 3 rounds or 20.
+  const roadmap = rounds.map((r) => ({
+    title: r.title,
+    questionCount: r.questions.length,
+    positiveMarks: r.positiveMarks,
+    negativeMarks: r.negativeMarks,
+    coinReward: r.coinReward ?? 0,
+    specialMode: r.specialMode ?? "NONE",
+  }));
+  const totalQuestions = roadmap.reduce((sum, r) => sum + r.questionCount, 0);
+
+  // Roadmap page — shown right after Welcome so everyone sees the whole plan.
+  scenes.push({
+    roomId,
+    type: "ROUND_OVERVIEW",
+    title: "Competition Roadmap",
+    roundId: null,
+    questionId: null,
+    order: order++,
+    status: "UPCOMING",
+    isActive: false,
+    content: { roadmap, totalQuestions, totalRounds: rounds.length },
+    settings: {},
+  });
+
+  for (let roundIndex = 0; roundIndex < rounds.length; roundIndex++) {
+    const round = rounds[roundIndex];
 
     const questionIds = round.questions.map((id) => id.toString());
     const questionDocs = questionIds.length
@@ -281,11 +298,38 @@ export async function generateScenes(roomId: string): Promise<{ count: number }>
     const questions = questionIds
       .map((id) => questionById.get(id))
       .filter((q): q is NonNullable<typeof q> => Boolean(q));
-    for (const question of questions) {
-      // A question left on "INHERIT" follows whichever round it's placed
-      // under (it may be reused across several rounds with different
-      // timers); "CUSTOM" always uses the question's own timer.
-      const effectiveTimer = question.timerMode === "CUSTOM" ? question.timer : round.defaultTimer;
+
+    // A question left on "INHERIT" follows the round's defaultTimer; "CUSTOM"
+    // always uses the question's own timer. Computed once here (not the round's
+    // raw defaultTimer) so the Round Intro can promise the number that will
+    // actually run — the intro used to always show defaultTimer even when
+    // every question in the round overrode it with CUSTOM, which is what
+    // produced a "says 20s, actually runs 30s" mismatch.
+    const effectiveTimers = questions.map((q) => (q.timerMode === "CUSTOM" ? q.timer : round.defaultTimer));
+    const uniqueTimers = [...new Set(effectiveTimers)];
+    const timerSummary =
+      uniqueTimers.length === 0
+        ? round.defaultTimer
+        : uniqueTimers.length === 1
+          ? uniqueTimers[0]
+          : { min: Math.min(...uniqueTimers), max: Math.max(...uniqueTimers) };
+
+    scenes.push({
+      roomId,
+      type: "ROUND_INTRO",
+      title: `${round.title} Intro`,
+      roundId: round._id.toString(),
+      questionId: null,
+      order: order++,
+      status: "UPCOMING",
+      isActive: false,
+      content: { title: round.title, rules: round.rules, timerSummary },
+      settings: {},
+    });
+
+    for (let qi = 0; qi < questions.length; qi++) {
+      const question = questions[qi];
+      const effectiveTimer = effectiveTimers[qi];
       scenes.push({
         roomId,
         type: question.type === "DRAWING" ? "DRAWING" : "QUESTION",
@@ -312,16 +356,20 @@ export async function generateScenes(roomId: string): Promise<{ count: number }>
       });
     }
 
+    // End-of-round page: progress through the competition + the standings.
+    // Replaces the old plain per-round LEADERBOARD; the roadmap + this round's
+    // index let it render "Round N of M complete · which are left" alongside
+    // the live leaderboard.
     scenes.push({
       roomId,
-      type: "LEADERBOARD",
-      title: `${round.title} Leaderboard`,
+      type: "ROUND_COMPLETE",
+      title: `${round.title} Complete`,
       roundId: round._id.toString(),
       questionId: null,
       order: order++,
       status: "UPCOMING",
       isActive: false,
-      content: {},
+      content: { roadmap, totalRounds: rounds.length, roundIndex, roundTitle: round.title },
       settings: { mode: "TOP_3", animation: true },
     });
   }
@@ -341,6 +389,11 @@ export async function generateScenes(roomId: string): Promise<{ count: number }>
 
   await Scene.deleteMany({ roomId });
   await Scene.insertMany(scenes);
+  // Regenerating the run-of-show is a fresh start — any drawing strokes left
+  // over from an earlier generation of this room (e.g. a rehearsal) would
+  // otherwise still be sitting there under the same roomId+questionId and
+  // reappear the instant a Drawing question goes live again.
+  await DrawingStroke.deleteMany({ roomId });
   await applyQuestionTeamAssignments(roomId, room.competitionId);
   if (room.status === "DRAFT") {
     await Room.findByIdAndUpdate(roomId, { $set: { status: "READY" } });
@@ -379,7 +432,16 @@ export async function publishScene(roomId: string, sceneId: string): Promise<ISc
       currentSceneId: scene._id,
       currentRoundId: scene.roundId ?? null,
       currentQuestionId: scene.questionId ?? null,
-      "liveState.showAnswer": false,
+      // The answer should be visible whenever the live scene actually IS the
+      // Answer Reveal scene — regardless of how the host got there (the
+      // dedicated Reveal Answer button, Next/Previous, or clicking the scene
+      // directly in the Event Flow list). Deriving this from the scene type
+      // here, instead of only setting it true from revealAnswer(), is what
+      // makes it hold structurally: previously Next/Previous or a direct
+      // Event Flow click could land on ANSWER_REVEAL with the flag still
+      // false, showing every phone the "Revealed by the host" placeholder
+      // instead of the real answer.
+      "liveState.showAnswer": scene.type === "ANSWER_REVEAL",
       // Every scene starts with a fresh clock. Without this the previous
       // scene's timer state carried over — the countdown looked stuck/expired
       // and, because it still read as "running", the host's auto-start (and a
@@ -387,6 +449,13 @@ export async function publishScene(roomId: string, sceneId: string): Promise<ISc
       "liveState.timerStartedAt": null,
       "liveState.timerEndsAt": null,
       "liveState.timerPaused": false,
+      "liveState.timerRemainingMs": null,
+      // Same reasoning as the timer above: without this, whichever team last
+      // held the pen on some earlier Drawing question stayed the assigned
+      // drawer on every later Drawing question too — silently, with no host
+      // action — instead of each new drawing question starting with the host
+      // holding the pen by default.
+      "liveState.drawerTeamId": null,
     },
   });
   await log(roomId, "SCENE_CHANGED", { sceneId, sceneType: scene.type, title: scene.title });
@@ -434,6 +503,7 @@ export async function startTimer(roomId: string, seconds: number): Promise<void>
       "liveState.timerStartedAt": now,
       "liveState.timerEndsAt": new Date(now.getTime() + seconds * 1000),
       "liveState.timerPaused": false,
+      "liveState.timerRemainingMs": null,
     },
   });
   await log(roomId, "TIMER_STARTED", { seconds });
@@ -444,8 +514,41 @@ export async function pauseTimer(roomId: string): Promise<void> {
   const user = await requireUser();
   await assertRoomOwnership(roomId, user.id);
   await connectToDatabase();
-  await Room.findByIdAndUpdate(roomId, { $set: { "liveState.timerPaused": true } });
+  // Capture how much time was left so Resume can continue from here instead of
+  // restarting the full duration. `timerEndsAt`/`timerStartedAt` are left as-is
+  // so the frozen readout keeps showing where the clock stopped.
+  const room = await Room.findById(roomId).select("liveState.timerEndsAt liveState.timerPaused").lean();
+  const endsAt = room?.liveState?.timerEndsAt ? new Date(room.liveState.timerEndsAt).getTime() : null;
+  const remainingMs = endsAt !== null ? Math.max(0, endsAt - Date.now()) : null;
+  await Room.findByIdAndUpdate(roomId, {
+    $set: { "liveState.timerPaused": true, "liveState.timerRemainingMs": remainingMs },
+  });
   await log(roomId, "TIMER_STOPPED");
+  refreshRoom(roomId);
+}
+
+/**
+ * Continue a paused timer from the time that was left when it was paused. If
+ * there's no captured remaining time (e.g. nothing was ever started), this is
+ * a no-op — the caller should use startTimer for a fresh countdown.
+ */
+export async function resumeTimer(roomId: string): Promise<void> {
+  const user = await requireUser();
+  await assertRoomOwnership(roomId, user.id);
+  await connectToDatabase();
+  const room = await Room.findById(roomId).select("liveState.timerRemainingMs").lean();
+  const remainingMs = room?.liveState?.timerRemainingMs ?? null;
+  if (remainingMs === null) return;
+  const now = new Date();
+  await Room.findByIdAndUpdate(roomId, {
+    $set: {
+      "liveState.timerStartedAt": now,
+      "liveState.timerEndsAt": new Date(now.getTime() + remainingMs),
+      "liveState.timerPaused": false,
+      "liveState.timerRemainingMs": null,
+    },
+  });
+  await log(roomId, "TIMER_STARTED", { resumed: true });
   refreshRoom(roomId);
 }
 
@@ -458,6 +561,7 @@ export async function resetTimer(roomId: string): Promise<void> {
       "liveState.timerStartedAt": null,
       "liveState.timerEndsAt": null,
       "liveState.timerPaused": false,
+      "liveState.timerRemainingMs": null,
     },
   });
   await log(roomId, "TIMER_STOPPED", { reset: true });

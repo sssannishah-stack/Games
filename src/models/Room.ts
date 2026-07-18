@@ -61,6 +61,7 @@ const RoomSchema = new Schema<IRoom>(
       timerStartedAt: { type: Date, default: null },
       timerEndsAt: { type: Date, default: null },
       timerPaused: { type: Boolean, default: false },
+      timerRemainingMs: { type: Number, default: null },
       showAnswer: { type: Boolean, default: false },
       storeStatus: { type: String, enum: ["OPEN", "CLOSED"], default: "CLOSED" },
       flashSaleActive: { type: Boolean, default: false },

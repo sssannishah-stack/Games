@@ -48,6 +48,7 @@ export interface RoomDetail extends RoomSummary {
     timerStartedAt: string | null;
     timerEndsAt: string | null;
     timerPaused: boolean;
+    timerRemainingMs: number | null;
     showAnswer: boolean;
     flashSaleActive: boolean;
     flashSaleEndsAt: string | null;
@@ -182,6 +183,7 @@ export async function getRoomById(
       timerStartedAt: room.liveState?.timerStartedAt ? room.liveState.timerStartedAt.toISOString() : null,
       timerEndsAt: room.liveState?.timerEndsAt ? room.liveState.timerEndsAt.toISOString() : null,
       timerPaused: room.liveState?.timerPaused ?? false,
+      timerRemainingMs: room.liveState?.timerRemainingMs ?? null,
       showAnswer: room.liveState?.showAnswer ?? false,
       flashSaleActive: room.liveState?.flashSaleActive ?? false,
       flashSaleEndsAt: room.liveState?.flashSaleEndsAt ? room.liveState.flashSaleEndsAt.toISOString() : null,

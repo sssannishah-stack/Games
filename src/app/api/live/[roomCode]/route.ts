@@ -145,7 +145,7 @@ export async function GET(
   // 20-event feed window, which can roll it out of range in a busy room before
   // the host moves on — this backs a persistent "you got it right/wrong"
   // banner that must not silently disappear).
-  const [mcqGraded, mcqRetry, judgmentLog] = await Promise.all([
+  const [mcqGraded, mcqRetry, judgmentLog, turnJudgmentLog] = await Promise.all([
     selectedTeam && room.currentQuestionId
       ? EventLog.findOne({
           roomId: room._id,
@@ -167,6 +167,25 @@ export async function GET(
           roomId: room._id,
           type: { $in: ["SCORE_CHANGED", "POWER_CARD_USED"] },
           "metadata.teamId": id(selectedTeam._id),
+          "metadata.questionId": id(room.currentQuestionId),
+          "metadata.reason": { $in: ["CORRECT", "WRONG"] },
+          "metadata.isUndo": { $ne: true },
+        })
+          .sort({ createdAt: -1 })
+          .lean<IEventLog>()
+      : null,
+    // Same lookup as judgmentLog above, but for whichever team the current
+    // question is assigned to — not just my own team. `turn.assignedTeamId` is
+    // already public (every phone sees whose turn it is), so the verdict on
+    // that turn should be too: without this, a team watching another team
+    // answer had no way to learn the result short of opening the Activity
+    // feed by hand — the status card just stayed on "Team X is answering"
+    // forever, even after the host had already judged them.
+    assignedTeamId && room.currentQuestionId
+      ? EventLog.findOne({
+          roomId: room._id,
+          type: { $in: ["SCORE_CHANGED", "POWER_CARD_USED"] },
+          "metadata.teamId": assignedTeamId,
           "metadata.questionId": id(room.currentQuestionId),
           "metadata.reason": { $in: ["CORRECT", "WRONG"] },
           "metadata.isUndo": { $ne: true },
@@ -457,6 +476,16 @@ export async function GET(
             room.currentQuestionId &&
             selectedTeam.frozenQuestionIds?.includes(id(room.currentQuestionId))
         ),
+        // The host's verdict on whoever's turn this is — visible to every team
+        // in the room (not just the assigned one), so watching teams see "Team
+        // X answered correctly" instead of staying stuck on "Team X is
+        // answering" until the host manually advances the scene.
+        judgment: turnJudgmentLog
+          ? {
+              reason: turnJudgmentLog.metadata?.reason as "CORRECT" | "WRONG",
+              points: Number(turnJudgmentLog.metadata?.points ?? 0),
+            }
+          : null,
       },
       // Drawing board context (DRAWING scenes only). Tells this phone whether
       // it holds the pen — the strokes themselves come from the dedicated
