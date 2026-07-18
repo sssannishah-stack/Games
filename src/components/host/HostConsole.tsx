@@ -284,6 +284,9 @@ export function HostConsole({
   // Control-room chrome: the rare-tools drawer, the center preview tab, and
   // which round groups are collapsed in the flow rail + the log filter.
   const [eventActionsOpen, setEventActionsOpen] = useState(false);
+  // On phones the three console columns become one-at-a-time tabs; on lg+ the
+  // full three-column layout always renders, so this only affects < 1024px.
+  const [mobileView, setMobileView] = useState<"flow" | "preview" | "controls">("preview");
   const [centerTab, setCenterTab] = useState<"QUESTION" | "ANSWER" | "HINTS" | "MEDIA" | "NOTES">("QUESTION");
   const [collapsedRounds, setCollapsedRounds] = useState<Set<string>>(new Set());
   const [logFilter, setLogFilter] = useState<LogFilter>("ALL");
@@ -732,9 +735,43 @@ export function HostConsole({
         )}
       </div>
 
+      {/* MOBILE VIEW SWITCHER — phones show one console panel at a time; hidden
+          on lg+ where all three columns render side by side. */}
+      <div className="lg:hidden flex items-stretch gap-1 border-b border-line/[.07] px-2 py-1.5 shrink-0">
+        {([
+          { key: "flow", label: "Flow", icon: "list-ordered" },
+          { key: "preview", label: "Preview", icon: "monitor-play" },
+          { key: "controls", label: "Controls", icon: "sliders-horizontal" },
+        ] as const).map((tab) => {
+          const isActive = mobileView === tab.key;
+          return (
+            <button
+              key={tab.key}
+              onClick={() => setMobileView(tab.key)}
+              className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-2 text-[12px] font-bold cursor-pointer transition-colors ${
+                isActive
+                  ? "bg-accent/15 border border-accent/40 text-ink"
+                  : "border border-line/[.08] bg-line/[.02] text-mute-2"
+              }`}
+            >
+              <Icon name={tab.icon} size={14} />
+              {tab.label}
+              {tab.key === "flow" && room.currentSceneId && (
+                <span className="w-1.5 h-1.5 rounded-full bg-info animate-enc-pulse" />
+              )}
+              {tab.key === "controls" && pendingRequestCount > 0 && (
+                <span className="min-w-4 h-4 px-1 rounded-full bg-warn/20 border border-warn/40 text-warn text-[9px] font-bold flex items-center justify-center">
+                  {pendingRequestCount}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-[260px_minmax(0,1fr)] xl:grid-cols-[260px_minmax(0,1fr)_360px] flex-1 min-h-0 overflow-y-auto xl:overflow-hidden">
         {/* LEFT PANEL — EVENT FLOW */}
-        <aside className="hidden lg:flex flex-col border-r border-line/[.07] min-h-0">
+        <aside className={`${mobileView === "flow" ? "flex" : "hidden"} lg:flex flex-col border-r border-line/[.07] min-h-0`}>
           <div className="px-4 py-3 flex items-center gap-2 text-[11px] font-mono font-semibold tracking-[.12em] text-label">
             EVENT FLOW
             {scenes.length > 0 && <span className="text-dim-2">· {scenes.length}</span>}
@@ -869,7 +906,7 @@ export function HostConsole({
         </aside>
 
         {/* CENTER PANEL — LIVE PREVIEW */}
-        <main className="min-h-0 flex flex-col">
+        <main className={`${mobileView === "preview" ? "flex" : "hidden"} lg:flex min-h-0 flex-col`}>
           <div className="px-4 py-3 border-b border-line/[.07] flex items-center gap-2 text-[11px] font-mono font-semibold tracking-[.12em] text-label">
             LIVE PREVIEW
             {scenes.length > 0 && (
@@ -1171,7 +1208,7 @@ export function HostConsole({
         </main>
 
         {/* RIGHT PANEL — CONTROL CENTER */}
-        <aside className="flex flex-col border-t xl:border-t-0 xl:border-l border-line/[.07] min-h-[620px] xl:min-h-0">
+        <aside className={`${mobileView === "controls" ? "flex" : "hidden"} lg:flex flex-col border-t xl:border-t-0 xl:border-l border-line/[.07] min-h-[620px] xl:min-h-0`}>
           <div className="flex items-center gap-2 px-4 py-3 text-[11px] font-mono font-semibold tracking-[.12em] text-label border-b border-line/[.06]">
             <Icon name="sliders-horizontal" size={13} className="text-accent" />
             QUICK CONTROLS
@@ -1770,7 +1807,7 @@ export function HostConsole({
       {/* BOTTOM COMMAND BAR — the host's fixed command center. The ten actions
           they repeat all night, sized large and evenly so nothing is hunted
           for; rare tools live behind Event Actions. */}
-      <div className="h-[68px] border-t border-line/[.08] bg-[rgba(8,9,12,.96)] px-2.5 flex items-center gap-1.5 shrink-0">
+      <div className="border-t border-line/[.08] bg-[rgba(8,9,12,.96)] px-2.5 shrink-0 grid grid-cols-5 gap-1.5 py-2 lg:flex lg:items-center lg:h-[68px] lg:py-0">
         <Button variant="subtle" onClick={() => action(() => stepScene(room.id, "previous"))} disabled={pending} className="flex-1 min-w-0 justify-center h-12">
           <Icon name="skip-back" size={15} />
           <span className="hidden sm:inline">Previous</span>
