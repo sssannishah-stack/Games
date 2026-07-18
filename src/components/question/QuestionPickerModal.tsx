@@ -35,11 +35,15 @@ export function QuestionPickerModal({
   const [query, setQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState("ALL");
   const [difficultyFilter, setDifficultyFilter] = useState("ALL");
+  const [groupFilter, setGroupFilter] = useState("ALL");
   const [selected, setSelected] = useState<string[]>([]);
   const [createOpen, setCreateOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
   const router = useRouter();
+
+  const NO_GROUP = "__NONE__";
+  const groups = [...new Set(libraryQuestions.map((q) => q.groupName).filter((g): g is string => Boolean(g)))].sort();
 
   const inRoundSet = new Set(alreadyInRound);
   const available = libraryQuestions.filter((question) => {
@@ -48,7 +52,8 @@ export function QuestionPickerModal({
     return (
       text.includes(query.toLowerCase()) &&
       (typeFilter === "ALL" || question.type === typeFilter) &&
-      (difficultyFilter === "ALL" || question.difficulty === difficultyFilter)
+      (difficultyFilter === "ALL" || question.difficulty === difficultyFilter) &&
+      (groupFilter === "ALL" || (groupFilter === NO_GROUP ? !question.groupName : question.groupName === groupFilter))
     );
   });
 
@@ -83,7 +88,7 @@ export function QuestionPickerModal({
       <Modal open={open} onClose={() => !pending && onClose()} className="max-w-[720px]">
         <ModalHeader title="Add questions" onClose={onClose} />
         <div className="px-6 py-5 flex flex-col gap-3 max-h-[70dvh] overflow-y-auto">
-          <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_150px_150px_auto] gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_140px_130px_140px_auto] gap-2">
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
@@ -114,6 +119,19 @@ export function QuestionPickerModal({
                 </option>
               ))}
             </select>
+            <select
+              value={groupFilter}
+              onChange={(event) => setGroupFilter(event.target.value)}
+              className="bg-line/[.04] border border-line/[.09] rounded-[10px] px-2 py-2 text-sm text-ink outline-none"
+            >
+              <option value="ALL">All groups</option>
+              <option value={NO_GROUP}>No group</option>
+              {groups.map((group) => (
+                <option key={group} value={group}>
+                  {group}
+                </option>
+              ))}
+            </select>
             <Button variant="subtle" onClick={() => setCreateOpen(true)}>
               <Icon name="plus" size={13} />
               Create Question
@@ -139,6 +157,30 @@ export function QuestionPickerModal({
             </span>
           ) : (
             <div className="flex flex-col gap-1.5">
+              <label className="flex items-center gap-2.5 rounded-xl border border-dashed border-line/[.12] bg-line/[.02] px-3 py-2 cursor-pointer hover:border-accent/40">
+                <input
+                  type="checkbox"
+                  checked={available.every((question) => selected.includes(question.id))}
+                  ref={(el) => {
+                    if (el) {
+                      const allSelected = available.every((question) => selected.includes(question.id));
+                      const someSelected = available.some((question) => selected.includes(question.id));
+                      el.indeterminate = someSelected && !allSelected;
+                    }
+                  }}
+                  onChange={(event) => {
+                    if (event.target.checked) selectVisible();
+                    else {
+                      const visibleIds = new Set(available.map((question) => question.id));
+                      setSelected((current) => current.filter((id) => !visibleIds.has(id)));
+                    }
+                  }}
+                  className="accent-accent"
+                />
+                <span className="text-[12px] font-semibold text-ink-3">
+                  Select all ({available.length})
+                </span>
+              </label>
               {available.map((question) => (
                 <label
                   key={question.id}
@@ -154,7 +196,10 @@ export function QuestionPickerModal({
                   <span className="text-[12.5px] text-ink-2 truncate flex-1">
                     {question.question || question.media?.name || "Untitled"}
                   </span>
-                  <span className="text-[10.5px] text-dim">{question.difficulty}</span>
+                  {question.groupName && (
+                    <span className="text-[10.5px] text-mute-2 truncate max-w-[120px] shrink-0">{question.groupName}</span>
+                  )}
+                  <span className="text-[10.5px] text-dim shrink-0">{question.difficulty}</span>
                 </label>
               ))}
             </div>
