@@ -25,6 +25,7 @@ export interface QuestionRecord {
   media?: QuestionMedia | null;
   isMCQ: boolean;
   options: string[];
+  optionRationales: string[];
   answer: string;
   explanation?: string;
   hints: QuestionHint[];
@@ -50,6 +51,7 @@ function toQuestionRecord(q: {
   media?: QuestionMedia | null;
   isMCQ?: boolean;
   options?: string[];
+  optionRationales?: string[];
   answer: string;
   explanation?: string;
   hints: QuestionHint[];
@@ -74,6 +76,7 @@ function toQuestionRecord(q: {
     media: q.media ?? null,
     isMCQ: q.isMCQ ?? false,
     options: q.options ?? [],
+    optionRationales: q.optionRationales ?? [],
     answer: q.answer,
     explanation: q.explanation,
     hints: q.hints,

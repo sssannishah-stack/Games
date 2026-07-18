@@ -30,36 +30,61 @@ const DIFFICULTIES: QuestionDifficulty[] = ["EASY", "MEDIUM", "HARD"];
 
 function OptionsEditor({
   options,
-  setOptions,
+  rationales,
+  onChange,
 }: {
   options: string[];
-  setOptions: (updater: (options: string[]) => string[]) => void;
+  /** Host-only "why", index-aligned to `options` — may be shorter than
+   *  `options` for older/partial data; missing entries read as "". */
+  rationales: string[];
+  onChange: (options: string[], rationales: string[]) => void;
 }) {
   return (
     <div className="flex flex-col gap-[7px]">
       <span className="text-xs font-semibold text-ink-3">Answer options</span>
       {options.map((option, index) => (
-        <div key={index} className="flex gap-1.5">
+        <div key={index} className="flex flex-col gap-1 rounded-[10px] border border-line/[.08] bg-line/[.02] p-2">
+          <div className="flex gap-1.5">
+            <input
+              value={option}
+              onChange={(event) =>
+                onChange(
+                  options.map((item, i) => (i === index ? event.target.value : item)),
+                  rationales
+                )
+              }
+              placeholder={`Option ${index + 1}`}
+              className="flex-1 bg-line/[.04] border border-line/[.09] rounded-[10px] px-3 py-2 text-sm text-ink outline-none"
+            />
+            {options.length > 2 && (
+              <button
+                onClick={() =>
+                  onChange(
+                    options.filter((_, i) => i !== index),
+                    rationales.filter((_, i) => i !== index)
+                  )
+                }
+                className="w-9 h-9 rounded-[10px] flex items-center justify-center text-dim hover:text-danger-soft hover:bg-line/[.06]"
+              >
+                <Icon name="x" size={14} />
+              </button>
+            )}
+          </div>
           <input
-            value={option}
+            value={rationales[index] ?? ""}
             onChange={(event) =>
-              setOptions((current) => current.map((item, i) => (i === index ? event.target.value : item)))
+              onChange(
+                options,
+                options.map((_, i) => (i === index ? event.target.value : rationales[i] ?? ""))
+              )
             }
-            placeholder={`Option ${index + 1}`}
-            className="flex-1 bg-line/[.04] border border-line/[.09] rounded-[10px] px-3 py-2 text-sm text-ink outline-none"
+            placeholder="Why is this right/wrong? (host-only, optional)"
+            className="bg-transparent px-3 py-1 text-[11.5px] text-mute-2 outline-none placeholder:text-dim"
           />
-          {options.length > 2 && (
-            <button
-              onClick={() => setOptions((current) => current.filter((_, i) => i !== index))}
-              className="w-9 h-9 rounded-[10px] flex items-center justify-center text-dim hover:text-danger-soft hover:bg-line/[.06]"
-            >
-              <Icon name="x" size={14} />
-            </button>
-          )}
         </div>
       ))}
       <button
-        onClick={() => setOptions((current) => [...current, ""])}
+        onClick={() => onChange([...options, ""], [...rationales, ""])}
         className="flex items-center justify-center gap-1.5 border-[1.5px] border-dashed border-line/[.14] rounded-[10px] py-2 text-mute-2 text-[11.5px] hover:border-accent hover:text-ink-2 cursor-pointer transition-colors"
       >
         <Icon name="plus" size={12} />
@@ -176,6 +201,7 @@ export function QuestionEditorModal({
   const [hostNotes, setHostNotes] = useState(question?.hostNotes ?? "");
   const [isMCQ, setIsMCQ] = useState(question?.isMCQ ?? false);
   const [options, setOptions] = useState<string[]>(question?.options.length ? question.options : ["", ""]);
+  const [optionRationales, setOptionRationales] = useState<string[]>(question?.optionRationales ?? []);
   const [difficulty, setDifficulty] = useState<QuestionDifficulty>(question?.difficulty ?? "MEDIUM");
   const [tagsText, setTagsText] = useState((question?.tags ?? []).join(", "));
   const [groupName, setGroupName] = useState<string | null>(question?.groupName ?? defaultGroupName ?? null);
@@ -210,13 +236,28 @@ export function QuestionEditorModal({
   }
 
   function buildPayload() {
+    // Trim options and drop blanks, but keep each surviving option's
+    // rationale aligned to its new index (a blank option skipped here must
+    // skip its rationale too, or every later rationale would shift by one).
+    const isRealMCQ = type === "TEXT" && isMCQ;
+    const keptOptions: string[] = [];
+    const keptRationales: string[] = [];
+    if (isRealMCQ) {
+      options.forEach((o, i) => {
+        const trimmed = o.trim();
+        if (!trimmed) return;
+        keptOptions.push(trimmed);
+        keptRationales.push((optionRationales[i] ?? "").trim());
+      });
+    }
     return {
       type: SUPPORTED_TYPES.has(type) ? type : "TEXT",
       question: text.trim(),
       mediaUrl: media?.url,
       media,
-      isMCQ: type === "TEXT" && isMCQ,
-      options: type === "TEXT" && isMCQ ? options.map((o) => o.trim()).filter(Boolean) : [],
+      isMCQ: isRealMCQ,
+      options: keptOptions,
+      optionRationales: keptRationales,
       answer: answer.trim(),
       explanation: explanation.trim() || undefined,
       hints: hints.filter((hint) => hint.text.trim()),
@@ -341,7 +382,14 @@ export function QuestionEditorModal({
               </label>
             )}
             {type === "TEXT" && isMCQ && (
-              <OptionsEditor options={options} setOptions={setOptions} />
+              <OptionsEditor
+                options={options}
+                rationales={optionRationales}
+                onChange={(nextOptions, nextRationales) => {
+                  setOptions(nextOptions);
+                  setOptionRationales(nextRationales);
+                }}
+              />
             )}
 
             {type === "TEXT" && isMCQ && options.filter((o) => o.trim()).length > 0 ? (

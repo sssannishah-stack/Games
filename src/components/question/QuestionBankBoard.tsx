@@ -9,7 +9,17 @@ import { QuestionEditorModal, QuestionTypeBadge } from "@/components/question/Qu
 import { AddToRoundModal } from "@/components/question/AddToRoundModal";
 import { AddExistingToGroupModal } from "@/components/question/AddExistingToGroupModal";
 import { QuestionPickerModal } from "@/components/question/QuestionPickerModal";
-import { deleteQuestion, duplicateQuestion } from "@/actions/question.actions";
+import { ImportQuestionsModal } from "@/components/question/ImportQuestionsModal";
+import { QuestionPreviewModal } from "@/components/question/QuestionPreviewModal";
+import {
+  deleteQuestion,
+  duplicateQuestion,
+  setQuestionsGroup,
+  setQuestionsDifficulty,
+  deleteQuestions,
+  addQuestionsToRoundBulk,
+} from "@/actions/question.actions";
+import { createRoundWithQuestions } from "@/actions/round.actions";
 import type { RoundRecord } from "@/data/queries/round.queries";
 import type { QuestionRecord } from "@/data/queries/question.queries";
 import { QUESTION_TYPES, type QuestionDifficulty } from "@/types/db";
@@ -73,6 +83,16 @@ export function QuestionBankBoard({ questions, rounds, usedQuestionIds }: Questi
   const [creatingGroup, setCreatingGroup] = useState(false);
   const [newGroupName, setNewGroupName] = useState("");
   const [newGroupError, setNewGroupError] = useState<string | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
+  const [previewQuestion, setPreviewQuestion] = useState<QuestionRecord | null>(null);
+
+  // Bulk selection: a "Select" mode that adds checkboxes and a sticky action
+  // bar, so the host can group/retag/delete many questions in one go.
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkGroupChoice, setBulkGroupChoice] = useState("");
+  const [makeRoundOpen, setMakeRoundOpen] = useState(false);
+  const [makeRoundTitle, setMakeRoundTitle] = useState("");
 
   const usedSet = new Set(usedQuestionIds);
   const tags = [...new Set(questions.flatMap((question) => question.tags ?? []))].sort();
@@ -101,7 +121,6 @@ export function QuestionBankBoard({ questions, rounds, usedQuestionIds }: Questi
   // bucket for questions not attached to any round yet. Unlike a group, a
   // question can belong to several rounds at once, so it can appear under
   // more than one round tile — same as the card's existing "In N rounds" tag.
-  const UNASSIGNED_ROUND = "__UNASSIGNED__";
   const roundTiles: { id: string; title: string; count: number }[] = rounds.map((round) => ({
     id: round.id,
     title: round.title,
@@ -168,6 +187,45 @@ export function QuestionBankBoard({ questions, rounds, usedQuestionIds }: Questi
     setViewParams({ group: name });
   }
 
+  // The questions currently shown (respecting search/filters + the open
+  // group/round) — the pool bulk-select and "Make Round from group" act on.
+  const filteredIds = filtered.map((q) => q.id);
+
+  function toggleSelect(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  function exitSelect() {
+    setSelectMode(false);
+    setSelected(new Set());
+    setBulkGroupChoice("");
+  }
+  function runBulk(fn: (ids: string[]) => Promise<void>) {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    startTransition(async () => {
+      await fn(ids);
+      exitSelect();
+      router.refresh();
+    });
+  }
+
+  // "Make Round from group" — turn the open group's questions into a new round.
+  function confirmMakeRound() {
+    const title = makeRoundTitle.trim();
+    if (!title || filteredIds.length === 0) return;
+    startTransition(async () => {
+      const { id } = await createRoundWithQuestions(title, filteredIds);
+      setMakeRoundOpen(false);
+      setMakeRoundTitle("");
+      router.push(`/admin/rounds/${id}`);
+    });
+  }
+
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -175,10 +233,22 @@ export function QuestionBankBoard({ questions, rounds, usedQuestionIds }: Questi
           <span className="text-[22px] font-bold text-ink-2 tracking-[-.02em]">Question Bank</span>
           <span className="text-[13px] text-mute-2">Create reusable questions once — attach them to any round.</span>
         </div>
-        <Button variant="primary" onClick={() => setCreateOpen(true)}>
-          <Icon name="plus" size={14} />
-          Create Question
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="subtle" onClick={() => setImportOpen(true)}>
+            <Icon name="upload" size={14} />
+            Import
+          </Button>
+          {questions.length > 0 && (
+            <Button variant={selectMode ? "primary" : "subtle"} onClick={() => (selectMode ? exitSelect() : setSelectMode(true))}>
+              <Icon name={selectMode ? "x" : "list-checks"} size={14} />
+              {selectMode ? "Cancel" : "Select"}
+            </Button>
+          )}
+          <Button variant="primary" onClick={() => setCreateOpen(true)}>
+            <Icon name="plus" size={14} />
+            Create Question
+          </Button>
+        </div>
       </div>
 
       {/* All Questions (flat, everything) vs By Group (tiles first, then
@@ -289,6 +359,42 @@ export function QuestionBankBoard({ questions, rounds, usedQuestionIds }: Questi
               </span>
             </button>
             <div className="ml-auto flex items-center gap-2">
+              {/* Turn this whole group into a round in one click. */}
+              {filteredIds.length > 0 &&
+                (makeRoundOpen ? (
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      autoFocus
+                      value={makeRoundTitle}
+                      onChange={(e) => setMakeRoundTitle(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") confirmMakeRound();
+                        if (e.key === "Escape") setMakeRoundOpen(false);
+                      }}
+                      placeholder="Round title"
+                      maxLength={120}
+                      className="bg-line/[.04] border border-line/[.1] rounded-lg px-2.5 py-1.5 text-[12.5px] text-ink outline-none w-44"
+                    />
+                    <Button variant="primary" size="sm" onClick={confirmMakeRound} disabled={pending || !makeRoundTitle.trim()}>
+                      Create
+                    </Button>
+                    <Button variant="plain" size="sm" onClick={() => setMakeRoundOpen(false)} disabled={pending}>
+                      Cancel
+                    </Button>
+                  </div>
+                ) : (
+                  <Button
+                    variant="subtle"
+                    size="sm"
+                    onClick={() => {
+                      setMakeRoundTitle(openGroup === GENERAL_GROUP ? "" : openGroup ?? "");
+                      setMakeRoundOpen(true);
+                    }}
+                  >
+                    <Icon name="list-video" size={13} />
+                    Make Round
+                  </Button>
+                ))}
               <Button variant="subtle" size="sm" onClick={() => setCreateOpen(true)}>
                 <Icon name="plus" size={13} />
                 New Question
@@ -419,9 +525,25 @@ export function QuestionBankBoard({ questions, rounds, usedQuestionIds }: Questi
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
           {filtered.map((question) => {
             const inRounds = roundsByQuestion.get(question.id) ?? [];
+            const isSelected = selected.has(question.id);
             return (
-              <Card key={question.id} className="rounded-2xl p-4 flex flex-col gap-3">
+              <Card
+                key={question.id}
+                onClick={selectMode ? () => toggleSelect(question.id) : undefined}
+                className={`rounded-2xl p-4 flex flex-col gap-3 transition ${
+                  selectMode ? "cursor-pointer" : ""
+                } ${isSelected ? "ring-2 ring-accent border-accent/50" : ""}`}
+              >
                 <div className="flex items-center gap-2 flex-wrap">
+                  {selectMode && (
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => toggleSelect(question.id)}
+                      onClick={(e) => e.stopPropagation()}
+                      className="accent-accent w-4 h-4 shrink-0"
+                    />
+                  )}
                   <QuestionTypeBadge type={question.type} />
                   <span className="text-[11px] text-dim">{question.difficulty}</span>
                   {question.isMCQ && (
@@ -460,20 +582,25 @@ export function QuestionBankBoard({ questions, rounds, usedQuestionIds }: Questi
                     ))}
                   </div>
                 )}
-                <div className="flex flex-wrap gap-2">
-                  <Button variant="subtle" size="sm" onClick={() => setEditingQuestion(question)}>
-                    Edit
-                  </Button>
-                  <Button variant="subtle" size="sm" onClick={() => duplicate(question)} disabled={pending}>
-                    Duplicate
-                  </Button>
-                  <Button variant="subtle" size="sm" onClick={() => setAddingToRound(question)}>
-                    Add to Round
-                  </Button>
-                  <Button variant="danger" size="sm" onClick={() => remove(question)} disabled={pending}>
-                    Delete
-                  </Button>
-                </div>
+                {!selectMode && (
+                  <div className="flex flex-wrap gap-2">
+                    <Button variant="subtle" size="sm" onClick={() => setPreviewQuestion(question)}>
+                      Preview
+                    </Button>
+                    <Button variant="subtle" size="sm" onClick={() => setEditingQuestion(question)}>
+                      Edit
+                    </Button>
+                    <Button variant="subtle" size="sm" onClick={() => duplicate(question)} disabled={pending}>
+                      Duplicate
+                    </Button>
+                    <Button variant="subtle" size="sm" onClick={() => setAddingToRound(question)}>
+                      Add to Round
+                    </Button>
+                    <Button variant="danger" size="sm" onClick={() => remove(question)} disabled={pending}>
+                      Delete
+                    </Button>
+                  </div>
+                )}
               </Card>
             );
           })}
@@ -529,6 +656,114 @@ export function QuestionBankBoard({ questions, rounds, usedQuestionIds }: Questi
           alreadyInRound={openRoundRecord.questionIds}
           rounds={rounds}
         />
+      )}
+
+      <ImportQuestionsModal
+        key={importOpen ? "import-open" : "import-closed"}
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        existingGroups={existingGroups}
+        defaultGroupName={viewMode === "GROUPS" && openGroup && openGroup !== GENERAL_GROUP ? openGroup : null}
+        onImported={(group) => setViewParams({ view: "GROUPS", group: group ?? GENERAL_GROUP })}
+      />
+      <QuestionPreviewModal question={previewQuestion} onClose={() => setPreviewQuestion(null)} />
+
+      {/* Bulk action bar — appears while selecting; spacer keeps it from
+          covering the last card. */}
+      {selectMode && (
+        <>
+          <div className="h-20" aria-hidden />
+          <div className="fixed inset-x-0 bottom-0 z-40 border-t border-line/[.1] bg-[rgba(12,13,18,.97)] backdrop-blur px-4 py-3">
+            <div className="mx-auto max-w-[1100px] flex items-center gap-2 flex-wrap">
+              <span className="text-[13px] font-bold text-ink">{selected.size} selected</span>
+              <button
+                onClick={() => setSelected(new Set(filteredIds))}
+                className="text-[12px] font-semibold text-accent hover:brightness-125 cursor-pointer"
+              >
+                Select all ({filteredIds.length})
+              </button>
+              <button
+                onClick={() => setSelected(new Set())}
+                disabled={selected.size === 0}
+                className="text-[12px] font-semibold text-mute-2 hover:text-ink-3 cursor-pointer disabled:opacity-40"
+              >
+                Clear
+              </button>
+
+              <div className="ml-auto flex items-center gap-2 flex-wrap">
+                <select
+                  value={bulkGroupChoice}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setBulkGroupChoice("");
+                    if (v === "") return;
+                    const target = v === "__GENERAL__" ? null : v;
+                    runBulk((ids) => setQuestionsGroup(ids, target));
+                  }}
+                  disabled={pending || selected.size === 0}
+                  className="bg-line/[.05] border border-line/[.12] rounded-lg px-2 py-1.5 text-[12px] text-ink outline-none disabled:opacity-40"
+                >
+                  <option value="" className="bg-surface">Assign group…</option>
+                  <option value="__GENERAL__" className="bg-surface">General (no group)</option>
+                  {existingGroups.map((g) => (
+                    <option key={g} value={g} className="bg-surface">{g}</option>
+                  ))}
+                </select>
+
+                <select
+                  value=""
+                  onChange={(e) => {
+                    const v = e.target.value as QuestionDifficulty | "";
+                    if (!v) return;
+                    runBulk((ids) => setQuestionsDifficulty(ids, v));
+                  }}
+                  disabled={pending || selected.size === 0}
+                  className="bg-line/[.05] border border-line/[.12] rounded-lg px-2 py-1.5 text-[12px] text-ink outline-none disabled:opacity-40"
+                >
+                  <option value="" className="bg-surface">Set difficulty…</option>
+                  {DIFFICULTIES.map((d) => (
+                    <option key={d} value={d} className="bg-surface">{d}</option>
+                  ))}
+                </select>
+
+                {rounds.length > 0 && (
+                  <select
+                    value=""
+                    onChange={(e) => {
+                      const roundId = e.target.value;
+                      if (!roundId) return;
+                      runBulk((ids) => addQuestionsToRoundBulk(roundId, ids));
+                    }}
+                    disabled={pending || selected.size === 0}
+                    className="bg-line/[.05] border border-line/[.12] rounded-lg px-2 py-1.5 text-[12px] text-ink outline-none disabled:opacity-40 max-w-[180px]"
+                  >
+                    <option value="" className="bg-surface">Add to round…</option>
+                    {rounds.map((r) => (
+                      <option key={r.id} value={r.id} className="bg-surface">{r.title}</option>
+                    ))}
+                  </select>
+                )}
+
+                <Button
+                  variant="danger"
+                  size="sm"
+                  onClick={() => {
+                    if (selected.size === 0) return;
+                    if (window.confirm(`Delete ${selected.size} question${selected.size === 1 ? "" : "s"}? This cannot be undone.`)) {
+                      runBulk((ids) => deleteQuestions(ids));
+                    }
+                  }}
+                  disabled={pending || selected.size === 0}
+                >
+                  Delete
+                </Button>
+                <Button variant="plain" size="sm" onClick={exitSelect} disabled={pending}>
+                  Done
+                </Button>
+              </div>
+            </div>
+          </div>
+        </>
       )}
     </div>
   );

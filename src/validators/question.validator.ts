@@ -19,6 +19,8 @@ const baseQuestionSchema = z.object({
   media: questionMediaSchema.nullable().optional(),
   isMCQ: z.boolean().default(false),
   options: z.array(z.string()).default([]),
+  // Host-only "why", index-aligned to `options` — see IQuestion.optionRationales.
+  optionRationales: z.array(z.string()).default([]),
   answer: z.string().min(1, "Answer is required"),
   explanation: z.string().optional(),
   hints: z.array(questionHintSchema).default([]),

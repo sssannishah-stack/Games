@@ -26,12 +26,14 @@ export const SCENE_TYPES = [
   "WAITING",
   "WELCOME",
   "RULES",
+  "ROUND_OVERVIEW",
   "ROUND_INTRO",
   "QUESTION",
   "HINT",
   "ANSWER_REVEAL",
   "DRAWING",
   "LEADERBOARD",
+  "ROUND_COMPLETE",
   "BROADCAST",
   "BREAK",
   "WINNER",
@@ -289,6 +291,10 @@ export interface RoomLiveState {
   timerStartedAt: Date | null;
   timerEndsAt: Date | null;
   timerPaused: boolean;
+  /** Milliseconds left on the clock, captured the moment the host paused, so
+   *  Resume can continue from where it stopped instead of restarting the full
+   *  duration (which made Pause behave like Reset). Null when not paused. */
+  timerRemainingMs: number | null;
   showAnswer: boolean;
   /** Live toggle for whether teams can buy from the store right now. */
   storeStatus: StoreStatus;
@@ -582,6 +588,13 @@ export interface IQuestion {
    *  other question type. */
   isMCQ: boolean;
   options: string[];
+  /** Host-only "why" per option, index-aligned to `options` (optionRationales[i]
+   *  explains options[i]) — never sent to participants, shown to the host
+   *  alongside the answer. Kept as a parallel array rather than turning
+   *  `options` into objects, since `options[i] === answer` string equality is
+   *  load-bearing in MCQ scoring (submitMcqAnswer) and Peek's elimination
+   *  logic — this stays purely additive to both. */
+  optionRationales?: string[];
   answer: string;
   explanation?: string;
   hints: QuestionHint[];

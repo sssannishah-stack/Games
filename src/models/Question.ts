@@ -32,6 +32,7 @@ const QuestionSchema = new Schema<IQuestion>(
     media: { type: MediaSchema, default: null },
     isMCQ: { type: Boolean, default: false },
     options: { type: [String], default: [] },
+    optionRationales: { type: [String], default: [] },
     answer: { type: String, required: true },
     explanation: { type: String },
     hints: { type: [HintSchema], default: [] },

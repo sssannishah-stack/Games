@@ -93,6 +93,30 @@ export async function deleteRound(roundId: string): Promise<void> {
   refreshRoundPaths();
 }
 
+/**
+ * Create a fresh round and attach the given library questions to it in order —
+ * the "turn a whole group into a round" shortcut. The questions stay shared
+ * library items (referenced, not cloned), same as adding them by hand.
+ */
+export async function createRoundWithQuestions(
+  title: string,
+  questionIds: string[]
+): Promise<{ id: string }> {
+  const user = await requireUser();
+  const clean = title.trim();
+  if (!clean) throw new Error("Round title is required.");
+  await connectToDatabase();
+
+  // Preserve the caller's order, keep only this host's real questions.
+  const owned = await Question.find({ _id: { $in: questionIds }, ownerId: user.id }).select("_id").lean();
+  const ownedSet = new Set(owned.map((q) => q._id.toString()));
+  const orderedIds = questionIds.filter((id) => ownedSet.has(id));
+
+  const round = await Round.create({ ownerId: user.id, title: clean, questions: orderedIds });
+  refreshRoundPaths();
+  return { id: round._id.toString() };
+}
+
 /** Appends the given questions to a round's ordered list, skipping any already attached. */
 export async function addQuestionsToRound(roundId: string, questionIds: string[]): Promise<void> {
   const user = await requireUser();
