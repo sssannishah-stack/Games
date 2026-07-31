@@ -13,6 +13,15 @@ import {
   getTeamPowerCardsByRoom,
 } from "@/data/queries/powerCard.queries";
 import { seedDefaultPowerCards } from "@/actions/powerCard.actions";
+import {
+  getOverviewRows,
+  getRoundBreakdown,
+  getTimeline,
+  getEconomyBreakdown,
+  getPowerCardUsage,
+  getCompetitionStatistics,
+} from "@/data/queries/analytics.queries";
+import { getAchievementsByRoom } from "@/data/queries/achievement.queries";
 
 export default async function AdminRoomSetupPage({
   params,
@@ -38,6 +47,21 @@ export default async function AdminRoomSetupPage({
   // Room — re-running that find+bulkWrite here on every render (i.e. every
   // save, since this page re-executes on router.refresh()) was redundant.
   const ownedCards = await getTeamPowerCardsByRoom(teams.map((team) => team.id));
+
+  // Competition Analytics Center — fetched unconditionally alongside
+  // everything else (matches this page's existing pattern of always fetching
+  // every tab's data up front), so the Leaderboard tab has no extra
+  // client-side fetch/loading state.
+  const [overview, roundBreakdown, timeline, economy, powerCardUsage, statistics, achievements] = await Promise.all([
+    getOverviewRows(roomId),
+    getRoundBreakdown(roomId),
+    getTimeline(roomId),
+    getEconomyBreakdown(roomId),
+    getPowerCardUsage(roomId),
+    getCompetitionStatistics(roomId),
+    getAchievementsByRoom(roomId),
+  ]);
+  const analytics = { overview, roundBreakdown, timeline, economy, powerCardUsage, statistics, achievements };
 
   const joinUrl = `${baseUrl}/play/${room.roomCode}`;
 
@@ -71,6 +95,7 @@ export default async function AdminRoomSetupPage({
       scenes={scenes}
       cards={cards}
       ownedCards={ownedCards}
+      analytics={analytics}
       joinUrl={joinUrl}
       localOnly={localOnly}
       lanJoinUrl={lanJoinUrl}
