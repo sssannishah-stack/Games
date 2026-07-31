@@ -321,3 +321,30 @@ export async function setTeamDeviceRole(
 
   revalidatePath(`/host/${roomId}`);
 }
+
+/**
+ * Host disconnects a connected phone from the room. This deletes the live
+ * Participant row (not the team's host-authored member roster) — the device
+ * would need to rejoin with the room code to reconnect, and doing so creates
+ * a fresh row (first phone of a team becomes CAPTAIN again, same as any
+ * other new join).
+ */
+export async function removeConnectedParticipant(roomId: string, participantId: string): Promise<void> {
+  const user = await requireUser();
+  await assertRoomOwnership(roomId, user.id);
+  await connectToDatabase();
+
+  const participant = await Participant.findOneAndDelete({ _id: participantId, roomId });
+  if (!participant) throw new Error("That device is not connected to this room.");
+
+  await EventLog.create({
+    roomId,
+    type: "PARTICIPANT_REMOVED",
+    metadata: {
+      teamId: participant.teamId.toString(),
+      text: `${participant.name} was removed from the room by the host`,
+    },
+  });
+
+  revalidatePath(`/host/${roomId}`);
+}

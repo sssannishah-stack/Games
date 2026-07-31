@@ -34,7 +34,7 @@ import {
   toggleRoomPowerCardExclusion,
 } from "@/actions/powerCard.actions";
 import { giveCoins } from "@/actions/coin.actions";
-import { setTeamDeviceRole } from "@/actions/team.actions";
+import { setTeamDeviceRole, removeConnectedParticipant } from "@/actions/team.actions";
 import { giveMarks, hostUndoScoreTransaction } from "@/actions/score.actions";
 import { setDrawer } from "@/actions/drawing.actions";
 import { LiveDrawBoard } from "@/components/draw/LiveDrawBoard";
@@ -284,6 +284,7 @@ export function HostConsole({
   // Control-room chrome: the rare-tools drawer, the center preview tab, and
   // which round groups are collapsed in the flow rail + the log filter.
   const [eventActionsOpen, setEventActionsOpen] = useState(false);
+  const [connectedPanelOpen, setConnectedPanelOpen] = useState(false);
   // On phones the three console columns become one-at-a-time tabs; on lg+ the
   // full three-column layout always renders, so this only affects < 1024px.
   const [mobileView, setMobileView] = useState<"flow" | "preview" | "controls">("preview");
@@ -700,11 +701,27 @@ export function HostConsole({
           {room.status === "LIVE" && <span className="w-1.5 h-1.5 rounded-full bg-live animate-enc-pulse" />}
           {STATUS_LABEL[room.status]}
         </Badge>
-        <span className="hidden sm:flex items-center gap-1.5 text-[12px] text-mute-2 shrink-0">
-          <span className={`w-1.5 h-1.5 rounded-full ${connectedCount > 0 ? "bg-success animate-enc-pulse" : "bg-line/[.3]"}`} />
-          <Icon name="users" size={13} />
-          {connectedCount} Connected
-        </span>
+        <div className="relative hidden sm:block shrink-0">
+          <button
+            onClick={() => setConnectedPanelOpen((v) => !v)}
+            className="flex items-center gap-1.5 text-[12px] text-mute-2 hover:text-ink-3 cursor-pointer"
+          >
+            <span className={`w-1.5 h-1.5 rounded-full ${connectedCount > 0 ? "bg-success animate-enc-pulse" : "bg-line/[.3]"}`} />
+            <Icon name="users" size={13} />
+            {connectedCount} Connected
+            <Icon name={connectedPanelOpen ? "chevron-up" : "chevron-down"} size={11} className="text-dim" />
+          </button>
+          {connectedPanelOpen && (
+            <ConnectedDevicesPopover
+              roomId={room.id}
+              participants={participants}
+              teamById={teamById}
+              pending={pending}
+              action={action}
+              onClose={() => setConnectedPanelOpen(false)}
+            />
+          )}
+        </div>
         {stepIndex > 0 && (
           <span className="ml-auto hidden md:inline font-mono text-[11px] text-mute-2 bg-line/[.05] border border-line/[.08] rounded-md px-2 py-1 shrink-0">
             STEP {stepIndex}/{scenes.length}
@@ -788,7 +805,7 @@ export function HostConsole({
               </button>
             )}
           </div>
-          <div className="flex-1 overflow-y-auto px-3 pb-3 flex flex-col gap-3">
+          <div className="flex-1 overflow-y-auto px-3 pb-3 flex flex-col gap-3 [&>*]:shrink-0">
             {flowGroups.length === 0 ? (
               <span className="text-[12px] text-mute-2 px-1">No scenes yet.</span>
             ) : (
@@ -1026,8 +1043,16 @@ export function HostConsole({
                       )}
                     </div>
                   )}
-                  {current?.type !== "LEADERBOARD" && current?.type !== "WINNER" && (() => {
+                  {/* Only QUESTION/DRAWING scenes actually run a timer — showing
+                      a "--:--" clock on Welcome/Rules/Round Intro/Answer Reveal
+                      was confusing since those scenes have no timer concept. */}
+                  {(current?.type === "QUESTION" || current?.type === "DRAWING") && (() => {
                     const urg = timerUrgency(secondsLeft, Number(current?.settings?.timer ?? 30));
+                    // Before Start is pressed there's no countdown yet — show the
+                    // scene's configured duration (what will run) instead of a
+                    // blank "--:--", same as what participants see pre-start.
+                    const readyDisplay = formatClock(Number(current?.settings?.timer ?? 30));
+                    const display = secondsLeft !== null ? timerDisplay : room.liveState.timerPaused ? "PAUSED" : readyDisplay;
                     // Breathe while running; beat faster as it runs down.
                     const breath =
                       !timerRunning || urg === "idle"
@@ -1038,11 +1063,16 @@ export function HostConsole({
                             ? "animate-[encBreath_0.95s_ease-in-out_infinite]"
                             : "animate-[encBreath_1.6s_ease-in-out_infinite]";
                     return (
-                      <span
-                        className={`inline-block font-mono text-3xl font-black tabular-nums transition-colors duration-500 ${TIMER_URGENCY_TEXT[urg]} ${breath}`}
-                      >
-                        {timerDisplay}
-                      </span>
+                      <div className="flex flex-col items-center gap-1">
+                        <span
+                          className={`inline-block font-mono text-3xl font-black tabular-nums transition-colors duration-500 ${TIMER_URGENCY_TEXT[urg]} ${breath}`}
+                        >
+                          {display}
+                        </span>
+                        {secondsLeft === null && !room.liveState.timerPaused && (
+                          <span className="text-[9px] font-bold tracking-[.14em] text-mute-2">READY · PRESS START</span>
+                        )}
+                      </div>
                     );
                   })()}
 
@@ -1217,7 +1247,7 @@ export function HostConsole({
               {timerRunning ? "TIMER LIVE" : "IDLE"}
             </span>
           </div>
-          <div className="flex-1 overflow-y-auto p-3.5 flex flex-col gap-3">
+          <div className="flex-1 overflow-y-auto p-3.5 flex flex-col gap-3 [&>*]:shrink-0">
             {/* LIVE STATUS — the always-on competition-health dashboard: one
                 glance tells the host the whole room's state. */}
             <section className="rounded-2xl border border-accent/25 bg-accent/[.05] p-3">
@@ -1895,7 +1925,7 @@ export function HostConsole({
                 <Icon name="x" size={15} />
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
+            <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4 [&>*]:shrink-0">
             {/* SURPRISE PANEL */}
             <section className="rounded-2xl border border-accent/25 bg-accent/[.05] p-4 flex flex-col gap-2.5">
               <span className="flex items-center gap-1.5 text-sm font-bold text-ink-2">
@@ -2876,6 +2906,92 @@ const DEVICE_ROLE_META: Record<ParticipantRecord["role"], { emoji: string; label
 };
 
 /**
+ * "Who are the N connected phones" at a glance — every joined participant
+ * across every team in one list (instead of expanding each team one by one),
+ * with the same Make Captain / Make VC / Remove controls as the per-team
+ * panel. Opened from the top bar's Connected pill.
+ */
+function ConnectedDevicesPopover({
+  roomId,
+  participants,
+  teamById,
+  pending,
+  action,
+  onClose,
+}: {
+  roomId: string;
+  participants: ParticipantRecord[];
+  teamById: Map<string, TeamRecord>;
+  pending: boolean;
+  action: (run: () => Promise<void>) => void;
+  onClose: () => void;
+}) {
+  return (
+    <>
+      <div className="fixed inset-0 z-[80]" onClick={onClose} />
+      <div
+        data-theme="dark"
+        className="absolute left-0 top-[calc(100%+6px)] z-[81] w-[320px] max-h-[420px] overflow-y-auto rounded-2xl border border-line/[.1] bg-[#12141c] shadow-[0_12px_40px_rgba(0,0,0,.5)] p-2.5 flex flex-col gap-1 [&>*]:shrink-0"
+      >
+        <div className="px-1.5 py-1 flex items-center justify-between">
+          <span className="text-[10px] font-mono font-semibold tracking-[.12em] text-label">
+            CONNECTED · {participants.length}
+          </span>
+        </div>
+        {participants.length === 0 ? (
+          <span className="px-1.5 py-3 text-[12px] text-mute-2 text-center">No phones connected yet.</span>
+        ) : (
+          participants.map((p) => {
+            const team = teamById.get(p.teamId);
+            const meta = DEVICE_ROLE_META[p.role];
+            return (
+              <div key={p.id} className="flex items-center gap-2 rounded-xl border border-line/[.07] bg-line/[.03] px-2.5 py-2">
+                <span
+                  className={`w-1.5 h-1.5 rounded-full shrink-0 ${p.connected ? "bg-success" : "bg-line/[.25]"}`}
+                  title={p.connected ? "Connected" : "Disconnected"}
+                />
+                <span className="w-2 h-2 rounded-full shrink-0" style={{ background: team?.color ?? "#6C7BFA" }} />
+                <div className="flex flex-col min-w-0 flex-1">
+                  <span className="text-[12px] font-semibold text-ink-2 truncate">
+                    {meta.emoji} {p.name}
+                  </span>
+                  <span className="text-[10px] text-mute-2 truncate">
+                    {team?.name ?? "Unknown team"} · {meta.label}
+                    {p.connected ? "" : " · offline"}
+                  </span>
+                </div>
+                <div className="flex flex-col items-end gap-0.5 shrink-0">
+                  {p.role !== "CAPTAIN" && (
+                    <button
+                      onClick={() => action(() => setTeamDeviceRole(roomId, p.id, "CAPTAIN"))}
+                      disabled={pending}
+                      className="text-warn hover:brightness-125 text-[10px] font-semibold cursor-pointer"
+                    >
+                      Make Captain
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      if (window.confirm(`Remove ${p.name} from this room? They'll need to rejoin with the room code to come back.`)) {
+                        action(() => removeConnectedParticipant(roomId, p.id));
+                      }
+                    }}
+                    disabled={pending}
+                    className="text-danger-soft hover:text-danger text-[10px] font-semibold cursor-pointer"
+                  >
+                    Remove
+                  </button>
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+    </>
+  );
+}
+
+/**
  * Connected phones for one team, with host controls to reassign the
  * Captain / Vice Captain. The host is the ultimate authority over roles —
  * automatic assignment (first phone = captain) is just the default.
@@ -2929,6 +3045,17 @@ function TeamDevicesPanel({
                 Make VC
               </button>
             )}
+            <button
+              onClick={() => {
+                if (window.confirm(`Remove ${device.name} from this room? They'll need to rejoin with the room code to come back.`)) {
+                  action(() => removeConnectedParticipant(roomId, device.id));
+                }
+              }}
+              disabled={pending}
+              className="text-danger-soft hover:text-danger text-[10.5px] font-semibold cursor-pointer shrink-0"
+            >
+              Remove
+            </button>
           </div>
         );
       })}

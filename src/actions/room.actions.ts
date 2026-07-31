@@ -496,6 +496,18 @@ export async function joinRoom(input: JoinRoomInput): Promise<{
     };
   }
 
+  // Names must be unique across the whole room, not just within a team — two
+  // different phones showing up as "Raj" (even on different teams) makes it
+  // impossible to tell who's who on the host's connected-devices list.
+  const nameTakenElsewhere = await Participant.exists({
+    roomId: room._id,
+    teamId: { $ne: data.teamId },
+    name: { $regex: `^${data.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" },
+  });
+  if (nameTakenElsewhere) {
+    throw new Error(`"${data.name}" is already taken in this room. Please use a different name.`);
+  }
+
   // First phone of a team becomes CAPTAIN, second VICE_CAPTAIN, rest MEMBER.
   const teammates = await Participant.find({ teamId: data.teamId }).select("role").lean();
   const hasCaptain = teammates.some((p) => p.role === "CAPTAIN");

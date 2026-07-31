@@ -58,7 +58,7 @@ export const updateRoomSchema = z.object({
 export const joinRoomSchema = z.object({
   roomCode: z.string().min(4).max(12),
   teamId: objectId,
-  name: z.string().min(1, "Name is required").max(60),
+  name: z.string().trim().min(1, "Name is required").max(60),
 });
 
 export type CreateRoomInput = z.infer<typeof createRoomSchema>;

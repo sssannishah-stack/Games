@@ -297,6 +297,7 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
   }, [room.roomCode]);
   const [live, setLive] = useState<LivePayload | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [removedNotice, setRemovedNotice] = useState<string | null>(null);
   const [offline, setOffline] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [toast, setToast] = useState<string | null>(null);
@@ -361,11 +362,22 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
         });
         if (!response.ok) throw new Error("Live room is unavailable.");
         const payload = (await response.json()) as LivePayload;
-        if (!cancelled) {
-          setLive(payload);
-          setError(null);
-          setOffline(false);
+        if (cancelled) return;
+        // `me` is null once the host removes this device's Participant row —
+        // the team's live state (question, turn banner, options) is keyed by
+        // teamId and keeps rendering for anyone with that team cached, so
+        // without this check a removed phone would carry on playing as a
+        // ghost. Bounce it back to the join screen instead.
+        if (payload.me === null) {
+          window.localStorage.removeItem(storageKey(room.roomCode));
+          setParticipant(null);
+          setLive(null);
+          setRemovedNotice("You were removed from this room by the host. Enter your name to rejoin.");
+          return;
         }
+        setLive(payload);
+        setError(null);
+        setOffline(false);
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : "Connection lost.");
@@ -421,6 +433,7 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
   function handleJoined(joined: JoinedParticipant) {
     const stored = { ...joined, roomCode: room.roomCode.toUpperCase() };
     window.localStorage.setItem(storageKey(room.roomCode), JSON.stringify(stored));
+    setRemovedNotice(null);
     // JoinForm shows its own "You're in!" confirmation on successful join —
     // delay swapping to the live view so that moment is actually visible
     // instead of being replaced in the very same render.
@@ -648,6 +661,11 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
           <span className="text-2xl font-bold text-ink tracking-[-.015em]">{room.name}</span>
           <span className="text-[12px] text-mute-2">Enter your name and pick your team.</span>
         </div>
+        {removedNotice && (
+          <div className="rounded-2xl border border-danger/25 bg-danger/[.08] px-3.5 py-2.5 text-[12.5px] text-danger-soft text-center">
+            {removedNotice}
+          </div>
+        )}
         <JoinForm roomCode={room.roomCode} teams={teams} onJoined={handleJoined} />
       </JoinPageShell>
     );
@@ -1374,12 +1392,26 @@ function BottomBar({
 /** Rank / team / score / gap-to-leader table, opened from the bottom bar. */
 function LeaderboardSheet({ live }: { live: LivePayload }) {
   const leaderScore = live.leaderboard[0]?.score ?? 0;
+  // Score change since the last poll — a ref (not state) so it doesn't cause
+  // an extra render; the leaderboard already re-renders every poll tick.
+  const prevScores = useRef<Map<string, number>>(new Map());
+  const changes = new Map(
+    live.leaderboard.map((team) => [
+      team.id,
+      prevScores.current.has(team.id) ? team.score - prevScores.current.get(team.id)! : 0,
+    ])
+  );
+  useEffect(() => {
+    prevScores.current = new Map(live.leaderboard.map((t) => [t.id, t.score]));
+  }, [live.leaderboard]);
+
   return (
     <div className="flex flex-col gap-1.5">
       {live.leaderboard.length === 0 && <span className="text-sm text-mute-2">No teams yet.</span>}
       {live.leaderboard.map((team) => {
         const isMine = team.id === live.team?.id;
         const diff = leaderScore - team.score;
+        const change = changes.get(team.id) ?? 0;
         return (
           <div
             key={team.id}
@@ -1393,6 +1425,12 @@ function LeaderboardSheet({ live }: { live: LivePayload }) {
               {team.name}
               {isMine && <span className="ml-1.5 text-[10px] text-accent font-bold">YOU</span>}
             </span>
+            {change !== 0 && (
+              <span className={`text-[11px] font-bold shrink-0 ${change > 0 ? "text-success" : "text-danger-soft"}`}>
+                {change > 0 ? "+" : ""}
+                {change}
+              </span>
+            )}
             <span className="flex flex-col items-end shrink-0">
               <span className="font-mono text-[15px] font-black text-ink tabular-nums">{team.score}</span>
               {team.rank > 1 && <span className="text-[10px] text-mute-2">-{diff} behind</span>}
