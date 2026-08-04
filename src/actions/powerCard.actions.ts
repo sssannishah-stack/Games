@@ -185,6 +185,94 @@ async function extendRoomTimer(roomId: string, seconds: number): Promise<void> {
   });
 }
 
+/**
+ * Time Drain: cut `seconds` off the live countdown. Floored so the answering
+ * team always keeps a few seconds to actually respond — a card that could
+ * instantly zero the clock would be a "you lose your turn" button, which is
+ * not what it's sold as.
+ */
+const TIME_DRAIN_FLOOR_MS = 5000;
+async function drainRoomTimer(roomId: string, seconds: number): Promise<void> {
+  const room = await Room.findById(roomId).select("liveState.timerEndsAt").lean();
+  const endsAt = room?.liveState?.timerEndsAt;
+  if (!endsAt) throw new Error("Time Drain needs a running clock.");
+  const now = Date.now();
+  const drained = new Date(endsAt).getTime() - seconds * 1000;
+  await Room.findByIdAndUpdate(roomId, {
+    $set: {
+      "liveState.timerEndsAt": new Date(Math.max(drained, now + TIME_DRAIN_FLOOR_MS)),
+      "liveState.timerPaused": false,
+      "liveState.timerRemainingMs": null,
+    },
+  });
+}
+
+/**
+ * Pass the Question: hand the live question to another team by re-stamping the
+ * scene's assigned team, and remember who passed it. A wrong answer by the
+ * recipient bounces the penalty back to the passer (see resolveAndApplyMark).
+ */
+async function applyPassQuestionEffect(
+  roomId: string,
+  actingTeamId: string,
+  targetTeamId: string | null | undefined
+): Promise<void> {
+  const room = await Room.findById(roomId).select("currentSceneId currentQuestionId").lean();
+  if (!room?.currentSceneId || !room.currentQuestionId) throw new Error("No question is live.");
+  const questionId = room.currentQuestionId.toString();
+
+  const scene = await Scene.findById(room.currentSceneId).select("settings").lean();
+  const assignedTeamId =
+    typeof scene?.settings?.assignedTeamId === "string" ? scene.settings.assignedTeamId : null;
+  if (assignedTeamId !== actingTeamId) throw new Error("You can only pass your own question.");
+
+  // Pick the recipient: the caller's choice, else the next team in the room.
+  let recipientId = targetTeamId ?? null;
+  if (!recipientId) {
+    const others = await Team.find({ roomId, _id: { $ne: actingTeamId } })
+      .sort({ createdAt: 1 })
+      .select("_id")
+      .lean();
+    recipientId = others[0]?._id.toString() ?? null;
+  }
+  if (!recipientId || recipientId === actingTeamId) {
+    throw new Error("There's no other team to pass this question to.");
+  }
+  const recipient = await Team.findOne({ _id: recipientId, roomId }).select("_id passedToMe").lean();
+  if (!recipient) throw new Error("That team isn't in this room.");
+  if (recipient.passedToMe?.some((p) => p.questionId === questionId)) {
+    throw new Error("This question has already been passed once.");
+  }
+
+  await Scene.findByIdAndUpdate(room.currentSceneId, {
+    $set: { "settings.assignedTeamId": recipientId, "settings.assignmentSource": "PASSED" },
+  });
+  await Team.findByIdAndUpdate(recipientId, {
+    $addToSet: { passedToMe: { questionId, fromTeamId: actingTeamId } },
+  });
+}
+
+/**
+ * Copycat: ride the answering team's result on the live question. Recorded on
+ * the copier; resolveAndApplyMark mirrors the mark when the target is judged.
+ */
+async function applyCopycatEffect(roomId: string, actingTeamId: string): Promise<void> {
+  const room = await Room.findById(roomId).select("currentSceneId currentQuestionId").lean();
+  if (!room?.currentSceneId || !room.currentQuestionId) throw new Error("No question is live.");
+  const questionId = room.currentQuestionId.toString();
+
+  const scene = await Scene.findById(room.currentSceneId).select("settings").lean();
+  const assignedTeamId =
+    typeof scene?.settings?.assignedTeamId === "string" ? scene.settings.assignedTeamId : null;
+  if (!assignedTeamId || assignedTeamId === actingTeamId) {
+    throw new Error("Copycat needs another team to be answering.");
+  }
+
+  await Team.findByIdAndUpdate(actingTeamId, {
+    $addToSet: { copycats: { questionId, ofTeamId: assignedTeamId } },
+  });
+}
+
 /** Reveal the next hint to this team for the live question, and add 10s. */
 async function applyHintReveal(roomId: string, teamId: string): Promise<void> {
   const room = await Room.findById(roomId).select("currentQuestionId").lean();
@@ -202,37 +290,54 @@ async function applyHintReveal(roomId: string, teamId: string): Promise<void> {
 }
 
 /**
- * Freeze the active (assigned) team on their NEXT question — the current one
- * plays out normally, but they can play no power cards on the following one.
+ * Freeze the active (assigned) team on their NEXT TURN — the current question
+ * plays out normally, but they can play no power cards on the next question
+ * that is actually assigned to them.
+ *
+ * This deliberately targets their next *assigned* question, not simply the
+ * next question in flow order. Questions rotate between teams
+ * (buildQuestionTeamAssignments hands question i to team i % teamCount), so
+ * "the next question" almost always belongs to somebody else — freezing it
+ * cost the target nothing, since a team can only play attack cards on a
+ * question that isn't theirs anyway. Aiming at their real next turn is what
+ * makes the card do what its name says.
+ *
  * `actingTeamId` is the team casting Freeze; the target is whoever's turn it
  * currently is.
  */
 async function applyFreezeEffect(roomId: string, actingTeamId: string): Promise<void> {
   const room = await Room.findById(roomId).select("currentSceneId currentQuestionId").lean();
   if (!room?.currentSceneId) return;
-  const scene = await Scene.findById(room.currentSceneId).select("settings").lean();
+  const scene = await Scene.findById(room.currentSceneId).select("settings order").lean();
   const targetTeamId =
     typeof scene?.settings?.assignedTeamId === "string" ? scene.settings.assignedTeamId : null;
   if (!targetTeamId || targetTeamId === actingTeamId.toString()) {
     throw new Error("Freeze needs another team to be on the active question.");
   }
 
-  // Distinct question ids in flow order; freeze the one after the current.
+  // Compare on scene order rather than position in a question-id list so this
+  // still works when the live scene is a DRAWING one (not in the query below).
+  const currentOrder = Number(scene?.order ?? -1);
   const questionScenes = await Scene.find({ roomId, type: "QUESTION", questionId: { $ne: null } })
     .sort({ order: 1 })
-    .select("questionId")
+    .select("questionId settings order")
     .lean();
-  const order: string[] = [];
-  for (const s of questionScenes) {
-    const qid = s.questionId?.toString();
-    if (qid && !order.includes(qid)) order.push(qid);
-  }
-  const currentQid = room.currentQuestionId?.toString();
-  const idx = currentQid ? order.indexOf(currentQid) : -1;
-  const nextQid = idx >= 0 ? order[idx + 1] : order[0];
-  if (!nextQid) throw new Error("There is no next question to freeze.");
 
-  await Team.findByIdAndUpdate(targetTeamId, { $addToSet: { frozenQuestionIds: nextQid } });
+  const nextOwnTurn = questionScenes.find(
+    (s) =>
+      Number(s.order) > currentOrder &&
+      typeof s.settings?.assignedTeamId === "string" &&
+      s.settings.assignedTeamId === targetTeamId
+  );
+  // Fail loudly rather than burning the card on a no-op — requestPowerCard
+  // restores the card to AVAILABLE when this throws.
+  if (!nextOwnTurn?.questionId) {
+    throw new Error("That team has no upcoming question left to freeze.");
+  }
+
+  await Team.findByIdAndUpdate(targetTeamId, {
+    $addToSet: { frozenQuestionIds: nextOwnTurn.questionId.toString() },
+  });
 }
 
 /**
@@ -262,7 +367,8 @@ async function applyPeekEffect(roomId: string, teamId: string): Promise<void> {
 async function applyImmediatePowerEffect(
   roomId: string,
   teamId: string,
-  effectType: string
+  effectType: string,
+  targetTeamId?: string | null
 ): Promise<void> {
   if (effectType === "INSURANCE") await applyInsuranceCoverage(roomId, teamId);
   if (effectType === "HINT") await applyHintReveal(roomId, teamId);
@@ -271,6 +377,9 @@ async function applyImmediatePowerEffect(
   // Extra Time can only be played while the clock ticks (see playability),
   // so there's always a timer to extend here.
   if (effectType === "EXTRA_TIME") await extendRoomTimer(roomId, 30);
+  if (effectType === "TIME_DRAIN") await drainRoomTimer(roomId, 15);
+  if (effectType === "PASS_QUESTION") await applyPassQuestionEffect(roomId, teamId, targetTeamId);
+  if (effectType === "COPYCAT") await applyCopycatEffect(roomId, teamId);
 }
 
 /**
@@ -286,7 +395,22 @@ const INSTANT_CONSUME_EFFECTS = new Set([
   "INSURANCE",
   "FREEZE",
   "PEEK",
+  "TIME_DRAIN",
+  // Both of these fully resolve at play time — the pass reassigns the scene
+  // immediately, and Copycat's mirror is recorded on the team right away. The
+  // later score effect is read from that record, not from an ACTIVE card.
+  "PASS_QUESTION",
+  "COPYCAT",
 ]);
+
+/**
+ * Effects that stay ACTIVE, unconsumed, waiting to auto-apply on this team's
+ * NEXT scored mark (see resolveAndApplyMark in score.actions.ts) rather than
+ * resolving the instant they're played. These get pinned to the question
+ * that was live when they were played, so a later unrelated mark (a host
+ * fixing an earlier question, say) can't burn them by accident.
+ */
+const PINNED_ACTIVE_EFFECTS = new Set(["GAMBLE", "BLOCK_NEGATIVE", "DOUBLE_SCORE"]);
 
 /** Decrement one use of an owned power card, mirroring consumePowerCard's transition. */
 async function consumeTeamPowerCardUse(teamPowerCardId: unknown): Promise<void> {
@@ -294,6 +418,8 @@ async function consumeTeamPowerCardUse(teamPowerCardId: unknown): Promise<void> 
   if (!owned) return;
   owned.remainingUses -= 1;
   owned.status = owned.remainingUses <= 0 ? "CONSUMED" : "AVAILABLE";
+  // Drop the question pin — see the twin helper in score.actions.ts.
+  owned.questionId = null;
   await owned.save();
 }
 
@@ -461,7 +587,8 @@ export async function purchasePowerCard(
   roomId: string,
   teamId: string,
   powerCardId: string,
-  participantId?: string
+  participantId?: string,
+  quantity = 1
 ): Promise<void> {
   await connectToDatabase();
 
@@ -477,42 +604,50 @@ export async function purchasePowerCard(
   await assertPowerCardAllowedForRoom(room, powerCardId);
 
   const card = await getEnabledPowerCardForRoom(room, powerCardId);
+  // Mystery is a one-at-a-time gamble (each purchase rolls its own reward) —
+  // bulk quantity only applies to ordinary cards.
+  const qty = card.effectType === "MYSTERY" ? 1 : Math.max(1, Math.round(quantity));
 
   // Charge the live price — a flash sale discounts what the team actually pays.
-  const price = effectivePrice(card.price, room.liveState);
+  const unitPrice = effectivePrice(card.price, room.liveState);
+  const totalPrice = unitPrice * qty;
   const team = await Team.findOne({ _id: teamId, roomId }).lean();
   if (!team) throw new Error("Team does not belong to this room.");
-  if (team.coins < price) throw new Error("Not enough coins for this card.");
+  if (team.coins < totalPrice) throw new Error("Not enough coins for that many.");
 
-  // Atomic stock guard: only decrements if stock is still > 0 (or unlimited).
+  // Atomic stock guard: only decrements if enough stock remains (or unlimited).
   const stockFilter =
-    card.stock === null ? { _id: powerCardId } : { _id: powerCardId, stock: { $gt: 0 } };
-  const stockUpdate = card.stock === null ? {} : { $inc: { stock: -1 } };
+    card.stock === null ? { _id: powerCardId } : { _id: powerCardId, stock: { $gte: qty } };
+  const stockUpdate = card.stock === null ? {} : { $inc: { stock: -qty } };
   const reserved = await PowerCard.findOneAndUpdate(stockFilter, stockUpdate);
-  if (!reserved) throw new Error("Sold out.");
+  if (!reserved) {
+    throw new Error(
+      card.stock !== null && card.stock > 0 ? `Only ${card.stock} left in stock.` : "Sold out."
+    );
+  }
 
   await createCoinTransaction({
     roomId,
     teamId,
-    amount: -price,
+    amount: -totalPrice,
     type: "CARD_PURCHASE",
-    reason: `Bought ${card.name}`,
+    reason: qty > 1 ? `Bought ${qty}x ${card.name}` : `Bought ${card.name}`,
   });
 
   await EventLog.create({
     roomId,
     type: "CARD_PURCHASED",
-    metadata: { teamId, powerCardId, price },
+    metadata: { teamId, powerCardId, price: totalPrice, quantity: qty },
   });
 
   // A Mystery Box is a gamble: instead of landing in the inventory, it rolls a
   // random reward on the spot (bonus coins or a surprise card).
   if (card.effectType === "MYSTERY") {
-    await resolveMysteryReward(roomId, teamId, card.ownerId.toString(), price);
+    await resolveMysteryReward(roomId, teamId, card.ownerId.toString(), totalPrice);
   } else {
     await TeamPowerCard.findOneAndUpdate(
       { teamId, powerCardId },
-      { $inc: { remainingUses: card.usesPerTeam }, $set: { status: "AVAILABLE" } },
+      { $inc: { remainingUses: card.usesPerTeam * qty }, $set: { status: "AVAILABLE" } },
       { upsert: true }
     );
   }
@@ -575,6 +710,35 @@ async function resolveMysteryReward(
   });
 }
 
+/**
+ * The extra playability facts only Pass the Question / Copycat need. Kept
+ * behind an effect-type check so the common cards don't pay for two extra
+ * queries on every single play.
+ */
+async function resolvePassCopyContext(
+  roomId: string,
+  teamId: string,
+  currentQid: string | null,
+  effectType: string,
+  copycats?: Array<{ questionId: string; ofTeamId: string }>
+): Promise<{ otherTeamCount: number; alreadyPassed: boolean; alreadyCopying: boolean }> {
+  if (effectType === "PASS_QUESTION") {
+    const [otherTeamCount, passed] = await Promise.all([
+      Team.countDocuments({ roomId, _id: { $ne: teamId } }),
+      currentQid ? Team.exists({ roomId, "passedToMe.questionId": currentQid }) : null,
+    ]);
+    return { otherTeamCount, alreadyPassed: Boolean(passed), alreadyCopying: false };
+  }
+  if (effectType === "COPYCAT") {
+    return {
+      otherTeamCount: 0,
+      alreadyPassed: false,
+      alreadyCopying: Boolean(currentQid && copycats?.some((c) => c.questionId === currentQid)),
+    };
+  }
+  return { otherTeamCount: 0, alreadyPassed: false, alreadyCopying: false };
+}
+
 export interface RequestPowerCardInput {
   roomId: string;
   teamId: string;
@@ -601,7 +765,7 @@ export async function requestPowerCard(
     throw new Error("Power card use is disabled for participants.");
   }
   const team = await Team.findOne({ _id: input.teamId, roomId: input.roomId })
-    .select("frozenQuestionIds hintsRevealed peeks")
+    .select("frozenQuestionIds hintsRevealed peeks copycats")
     .lean();
   if (!team) throw new Error("Team does not belong to this room.");
   if (input.targetTeamId) {
@@ -633,12 +797,24 @@ export async function requestPowerCard(
     ? (team.hintsRevealed?.find((h) => h.questionId === currentQid)?.count ?? 0)
     : 0;
   const alreadyPeeked = Boolean(currentQid && team.peeks?.some((p) => p.questionId === currentQid));
+  const passCtx = await resolvePassCopyContext(
+    input.roomId,
+    input.teamId,
+    currentQid,
+    card.effectType,
+    team.copycats
+  );
   const playability = powerCardPlayability(card.effectType, {
     sceneType: currentScene?.type ?? null,
+    ...passCtx,
     timerRunning,
     assignedTeamId:
       typeof currentScene?.settings?.assignedTeamId === "string"
         ? currentScene.settings.assignedTeamId
+        : null,
+    opponentTeamId:
+      typeof currentScene?.settings?.opponentTeamId === "string"
+        ? currentScene.settings.opponentTeamId
         : null,
     actingTeamId: input.teamId,
     frozen,
@@ -660,7 +836,12 @@ export async function requestPowerCard(
       status: "AVAILABLE",
       remainingUses: { $gt: 0 },
     },
-    { $set: { status: skipApproval ? "ACTIVE" : "REQUESTED" } },
+    {
+      $set: {
+        status: skipApproval ? "ACTIVE" : "REQUESTED",
+        questionId: skipApproval && PINNED_ACTIVE_EFFECTS.has(card.effectType) ? currentQid : null,
+      },
+    },
     { new: true }
   );
   if (!owned) {
@@ -670,13 +851,13 @@ export async function requestPowerCard(
   let instantlyConsumed = false;
   if (skipApproval) {
     try {
-      await applyImmediatePowerEffect(input.roomId, input.teamId, card.effectType);
+      await applyImmediatePowerEffect(input.roomId, input.teamId, card.effectType, input.targetTeamId);
       if (INSTANT_CONSUME_EFFECTS.has(card.effectType)) {
         await consumeTeamPowerCardUse(owned._id);
         instantlyConsumed = true;
       }
     } catch (error) {
-      await TeamPowerCard.findByIdAndUpdate(owned._id, { $set: { status: "AVAILABLE" } });
+      await TeamPowerCard.findByIdAndUpdate(owned._id, { $set: { status: "AVAILABLE", questionId: null } });
       throw error;
     }
   }
@@ -733,7 +914,7 @@ async function approvePowerCard(
     request.approvedBy = approvedBy as unknown as IPowerCardRequest["approvedBy"];
     await TeamPowerCard.findOneAndUpdate(
       { teamId: request.teamId, powerCardId: request.powerCardId, status: "REQUESTED" },
-      { status: "AVAILABLE" }
+      { $set: { status: "AVAILABLE", questionId: null } }
     );
     await request.save();
     revalidatePath(`/rooms/${request.roomId.toString()}`);
@@ -794,20 +975,33 @@ async function activatePowerCard(requestId: string): Promise<IPowerCardRequest> 
 
   const card = await PowerCard.findById(request.powerCardId).select("effectType").lean();
   if (!card) {
-    await TeamPowerCard.findByIdAndUpdate(owned._id, { $set: { status: "AVAILABLE" } });
+    await TeamPowerCard.findByIdAndUpdate(owned._id, { $set: { status: "AVAILABLE", questionId: null } });
     request.status = "REJECTED";
     await request.save();
     throw new Error("Power card not found.");
   }
+  // Pin waiting modifiers to whatever question is live at activation — that's
+  // the question the host just green-lit the card for.
+  if (PINNED_ACTIVE_EFFECTS.has(card.effectType)) {
+    const activeRoom = await Room.findById(request.roomId).select("currentQuestionId").lean();
+    await TeamPowerCard.findByIdAndUpdate(owned._id, {
+      $set: { questionId: activeRoom?.currentQuestionId?.toString() ?? null },
+    });
+  }
   try {
-    await applyImmediatePowerEffect(request.roomId.toString(), request.teamId.toString(), card.effectType);
+    await applyImmediatePowerEffect(
+      request.roomId.toString(),
+      request.teamId.toString(),
+      card.effectType,
+      request.targetTeamId?.toString() ?? null
+    );
     if (INSTANT_CONSUME_EFFECTS.has(card.effectType)) {
       await consumeTeamPowerCardUse(owned._id);
     }
   } catch (error) {
     // Another team may have stolen the turn while this request was waiting
     // for approval. Cancel cleanly instead of leaving the card stuck ACTIVE.
-    await TeamPowerCard.findByIdAndUpdate(owned._id, { $set: { status: "AVAILABLE" } });
+    await TeamPowerCard.findByIdAndUpdate(owned._id, { $set: { status: "AVAILABLE", questionId: null } });
     request.status = "REJECTED";
     await request.save();
     throw error;
@@ -1081,7 +1275,9 @@ export async function hostRemoveTeamPowerCard(teamId: string, powerCardId: strin
 export async function hostPlayTeamPowerCard(
   roomId: string,
   teamId: string,
-  powerCardId: string
+  powerCardId: string,
+  /** Who to hand the question to — Pass the Question only. */
+  targetTeamId?: string | null
 ): Promise<{ status: PowerCardRequestStatus }> {
   const user = await requireUser();
   await connectToDatabase();
@@ -1090,7 +1286,7 @@ export async function hostPlayTeamPowerCard(
   const room = await Room.findById(roomId).lean();
   if (!room) throw new Error("Room not found.");
   const team = await Team.findOne({ _id: teamId, roomId })
-    .select("frozenQuestionIds hintsRevealed peeks")
+    .select("frozenQuestionIds hintsRevealed peeks copycats")
     .lean();
   if (!team) throw new Error("Team does not belong to this room.");
   await assertPowerCardAllowedForRoom(room, powerCardId);
@@ -1116,11 +1312,16 @@ export async function hostPlayTeamPowerCard(
   const alreadyPeeked = Boolean(currentQid && team.peeks?.some((p) => p.questionId === currentQid));
   const assignedTeamId =
     typeof currentScene?.settings?.assignedTeamId === "string" ? currentScene.settings.assignedTeamId : null;
+  const opponentTeamId =
+    typeof currentScene?.settings?.opponentTeamId === "string" ? currentScene.settings.opponentTeamId : null;
+  const passCtx = await resolvePassCopyContext(roomId, teamId, currentQid, card.effectType, team.copycats);
 
   const playability = powerCardPlayability(card.effectType, {
     sceneType: currentScene?.type ?? null,
+    ...passCtx,
     timerRunning,
     assignedTeamId,
+    opponentTeamId,
     actingTeamId: teamId,
     frozen,
     hintsTotal: currentQuestion?.hints?.length ?? 0,
@@ -1133,20 +1334,25 @@ export async function hostPlayTeamPowerCard(
 
   const owned = await TeamPowerCard.findOneAndUpdate(
     { teamId, powerCardId, status: "AVAILABLE", remainingUses: { $gt: 0 } },
-    { $set: { status: "ACTIVE" } },
+    {
+      $set: {
+        status: "ACTIVE",
+        questionId: PINNED_ACTIVE_EFFECTS.has(card.effectType) ? currentQid : null,
+      },
+    },
     { new: true }
   );
   if (!owned) throw new Error("This team doesn't own an available copy of that card.");
 
   let instantlyConsumed = false;
   try {
-    await applyImmediatePowerEffect(roomId, teamId, card.effectType);
+    await applyImmediatePowerEffect(roomId, teamId, card.effectType, targetTeamId);
     if (INSTANT_CONSUME_EFFECTS.has(card.effectType)) {
       await consumeTeamPowerCardUse(owned._id);
       instantlyConsumed = true;
     }
   } catch (error) {
-    await TeamPowerCard.findByIdAndUpdate(owned._id, { $set: { status: "AVAILABLE" } });
+    await TeamPowerCard.findByIdAndUpdate(owned._id, { $set: { status: "AVAILABLE", questionId: null } });
     throw error;
   }
 

@@ -9,7 +9,7 @@ import { detectAchievements } from "@/lib/detectAchievements";
 import { requireUser } from "@/lib/auth/getCurrentUser";
 import { assertRoomOwnership } from "@/lib/authz";
 import { assertTeamController } from "@/lib/teamRoles";
-import { type ScoreReason, type IScoreTransaction } from "@/types/db";
+import { type ScoreReason, type IScoreTransaction, type IEventLog } from "@/types/db";
 
 export interface CreateScoreTransactionInput {
   roomId: string;
@@ -21,11 +21,10 @@ export interface CreateScoreTransactionInput {
   isUndo?: boolean;
   createdBy?: string | null;
   /**
-   * Economy Mode only: coins to award alongside this score change (e.g. the
-   * competition's "correct answer" coin rule). The caller computes this from
-   * already-loaded competition settings — this action never looks up
-   * economy config itself, to avoid an extra database round trip on every
-   * single score event.
+   * Economy Mode only: coins to move alongside this score change. Normally
+   * derived in resolveAndApplyMark from the round's coin reward (and doubled
+   * or reversed by Gamble), so it can be negative — a Gamble lost on a wrong
+   * answer takes coins back.
    */
   coinsAwarded?: number;
 }
@@ -152,7 +151,11 @@ export async function createScoreTransaction(
       teamId: input.teamId,
       amount: input.coinsAwarded,
       type: "QUESTION_REWARD",
-      reason: `Reward for ${input.reason.toLowerCase()} answer`,
+      // Gamble can make this negative — don't call a loss a "reward".
+      reason:
+        input.coinsAwarded < 0
+          ? `Gamble lost on a ${input.reason.toLowerCase()} answer`
+          : `Reward for ${input.reason.toLowerCase()} answer`,
       createdBy: input.createdBy ?? null,
     });
   }
@@ -160,12 +163,22 @@ export async function createScoreTransaction(
   return transaction.toObject() as IScoreTransaction;
 }
 
+/** Display names for the auto-applied modifiers, used in the live event feed. */
+const AUTO_EFFECT_LABEL: Record<string, string> = {
+  BLOCK_NEGATIVE: "Shield",
+  DOUBLE_SCORE: "Double Points",
+  GAMBLE: "Gamble",
+};
+
 /** Decrement one use of an owned power card, same transition consumePowerCard uses. */
 async function consumeTeamPowerCardUse(teamPowerCardId: unknown): Promise<void> {
   const owned = await TeamPowerCard.findById(teamPowerCardId);
   if (!owned) return;
   owned.remainingUses -= 1;
   owned.status = owned.remainingUses <= 0 ? "CONSUMED" : "AVAILABLE";
+  // Drop the question pin — a multi-use card going back to AVAILABLE must be
+  // re-played (and re-pinned) before it can auto-apply again.
+  owned.questionId = null;
   await owned.save();
 }
 
@@ -186,6 +199,32 @@ async function freezeTimerRemaining(roomId: string): Promise<void> {
   await Room.findByIdAndUpdate(roomId, {
     $set: { "liveState.timerPaused": true, "liveState.timerRemainingMs": remainingMs },
   });
+}
+
+/**
+ * What one correct answer is worth in coins right now. Read fresh on every
+ * mark (not captured when the round was built) so editing a round's coin
+ * reward mid-event takes effect on the very next question.
+ *
+ * Round value wins; the question's own value is the fallback. This is a `> 0`
+ * check rather than `??` on purpose — coinReward defaults to 0, not null, so
+ * `??` could never fall through to the question and that fallback was dead.
+ * Returns 0 unless the competition actually runs Economy Mode.
+ */
+async function resolveCoinReward(roomId: string, questionId: string | null): Promise<number> {
+  const room = await Room.findById(roomId).select("competitionId currentRoundId").lean();
+  if (!room) return 0;
+  const competition = await Competition.findById(room.competitionId)
+    .select("settings.economy.enabled")
+    .lean();
+  if (!competition?.settings?.economy?.enabled) return 0;
+
+  const [round, question] = await Promise.all([
+    room.currentRoundId ? Round.findById(room.currentRoundId).select("coinReward").lean() : null,
+    questionId ? Question.findById(questionId).select("coinReward").lean() : null,
+  ]);
+  const roundCoins = round?.coinReward ?? 0;
+  return roundCoins > 0 ? roundCoins : question?.coinReward ?? 0;
 }
 
 /**
@@ -210,6 +249,38 @@ async function resolveAndApplyMark(input: {
   const questionId = input.questionId;
 
   if (points < 0 && questionId) {
+    // Pass the Question: this team only holds the question because an opponent
+    // handed it over, so the penalty for getting it wrong goes back to whoever
+    // passed it. Checked before Insurance — the receiver is taking nothing
+    // either way, and the passer's own protections are deliberately not
+    // consulted (the bounce is a flat consequence of the card, not a fresh
+    // judgement on them).
+    const passed = await Team.findById(input.teamId).select("passedToMe").lean();
+    const pass = passed?.passedToMe?.find((p) => p.questionId === questionId);
+    if (pass && !input.isTest) {
+      await createScoreTransaction({
+        roomId: input.roomId,
+        teamId: pass.fromTeamId,
+        points,
+        reason: "PENALTY",
+        questionId,
+        createdBy: input.createdBy ?? null,
+      });
+      await EventLog.create({
+        roomId: input.roomId,
+        type: "POWER_CARD_USED",
+        metadata: {
+          teamId: pass.fromTeamId,
+          questionId,
+          source: "PASS_BOUNCE",
+          effectType: "PASS_QUESTION",
+          points,
+          text: "Passed question answered wrong — penalty bounced back",
+        },
+      });
+      return { finalPoints: 0, blocked: true };
+    }
+
     // Insurance: a covered team takes no negative marks on an insured
     // question at all — no transaction, as if it never happened.
     const team = await Team.findById(input.teamId).select("insuredQuestionIds").lean();
@@ -231,62 +302,95 @@ async function resolveAndApplyMark(input: {
     }
   }
 
+  // The coin stake for this mark, resolved up front: Gamble is a coins-only
+  // card, so with no coin reward configured there is nothing to bet and it
+  // must not be consumed for zero effect.
+  const isJudged = input.reason === "CORRECT" || input.reason === "WRONG";
+  const coinBase =
+    input.coinsAwarded === undefined && questionId && isJudged
+      ? await resolveCoinReward(input.roomId, questionId)
+      : 0;
+
   // Shield / Double Points / Gamble: auto-applied from whichever this team
   // currently has ACTIVE, then consumed — same reliability guarantee as
   // Insurance, whether the mark came from the host or an MCQ auto-grade.
-  let consumed: { id: unknown; powerCardId: string; effectType: string } | null = null;
-  if (questionId && points !== 0 && (input.reason === "CORRECT" || input.reason === "WRONG" || input.reason === "BONUS")) {
-    const owned = await TeamPowerCard.find({ teamId: input.teamId, status: "ACTIVE" })
-      .select("_id powerCardId")
+  //
+  // Points and coins resolve independently. Shield and Double Points bend the
+  // marks; Gamble bends only the coins. A team holding Double Points AND
+  // Gamble therefore gets both, rather than one silently swallowing the other.
+  const consumed: Array<{ id: unknown; powerCardId: string; effectType: string }> = [];
+  let gambled = false;
+  if (questionId && (input.reason === "CORRECT" || input.reason === "WRONG" || input.reason === "BONUS")) {
+    // Only cards played FOR this question. They're pinned at play time
+    // (PINNED_ACTIVE_EFFECTS in powerCard.actions.ts); the null case covers
+    // cards activated before pinning existed, and host-granted copies that
+    // never went through a play flow — those keep the old "next mark wins"
+    // behaviour rather than becoming unusable.
+    const owned = await TeamPowerCard.find({
+      teamId: input.teamId,
+      status: "ACTIVE",
+      $or: [{ questionId }, { questionId: null }, { questionId: { $exists: false } }],
+    })
+      .select("_id powerCardId questionId")
       .lean();
     if (owned.length > 0) {
       const cards = await PowerCard.find({ _id: { $in: owned.map((o) => o.powerCardId) } })
         .select("_id effectType")
         .lean();
       const effectByCardId = new Map(cards.map((c) => [c._id.toString(), c.effectType]));
-      const findActive = (effectType: string) =>
-        owned.find((o) => effectByCardId.get(o.powerCardId.toString()) === effectType);
+      // Prefer a copy pinned to this exact question over an unpinned one, so a
+      // legacy/host-granted card is only reached for once the deliberate play
+      // for this question is used up.
+      const findActive = (effectType: string) => {
+        const matches = owned.filter((o) => effectByCardId.get(o.powerCardId.toString()) === effectType);
+        return matches.find((o) => o.questionId === questionId) ?? matches[0];
+      };
 
+      // Points modifier — at most one, and never Gamble (coins-only now).
       if (points < 0) {
         const shield = findActive("BLOCK_NEGATIVE");
-        const gamble = findActive("GAMBLE");
         if (shield) {
           points = 0;
-          consumed = { id: shield._id, powerCardId: shield.powerCardId.toString(), effectType: "BLOCK_NEGATIVE" };
-        } else if (gamble) {
-          points *= 2;
-          consumed = { id: gamble._id, powerCardId: gamble.powerCardId.toString(), effectType: "GAMBLE" };
+          consumed.push({ id: shield._id, powerCardId: shield.powerCardId.toString(), effectType: "BLOCK_NEGATIVE" });
         }
-      } else {
-        const gamble = findActive("GAMBLE");
+      } else if (points > 0) {
         const double = findActive("DOUBLE_SCORE");
+        if (double) {
+          points *= 2;
+          consumed.push({ id: double._id, powerCardId: double.powerCardId.toString(), effectType: "DOUBLE_SCORE" });
+        }
+      }
+
+      // Coin modifier — independent of the above, and only when coins are
+      // actually on the line.
+      if (coinBase > 0) {
+        const gamble = findActive("GAMBLE");
         if (gamble) {
-          points *= 2;
-          consumed = { id: gamble._id, powerCardId: gamble.powerCardId.toString(), effectType: "GAMBLE" };
-        } else if (double) {
-          points *= 2;
-          consumed = { id: double._id, powerCardId: double.powerCardId.toString(), effectType: "DOUBLE_SCORE" };
+          gambled = true;
+          consumed.push({ id: gamble._id, powerCardId: gamble.powerCardId.toString(), effectType: "GAMBLE" });
         }
       }
     }
   }
 
-  if (consumed && !input.isTest) {
-    await consumeTeamPowerCardUse(consumed.id);
-    await PowerCardRequest.updateMany(
-      { teamId: input.teamId, powerCardId: consumed.powerCardId, status: "ACTIVE" },
-      { $set: { status: "CONSUMED" } }
-    );
-    await EventLog.create({
-      roomId: input.roomId,
-      type: "POWER_CARD_USED",
-      metadata: {
-        teamId: input.teamId,
-        source: "AUTO_APPLIED",
-        effectType: consumed.effectType,
-        text: `${consumed.effectType === "BLOCK_NEGATIVE" ? "Shield" : consumed.effectType === "GAMBLE" ? "Gamble" : "Double Points"} applied automatically`,
-      },
-    });
+  if (consumed.length > 0 && !input.isTest) {
+    for (const card of consumed) {
+      await consumeTeamPowerCardUse(card.id);
+      await PowerCardRequest.updateMany(
+        { teamId: input.teamId, powerCardId: card.powerCardId, status: "ACTIVE" },
+        { $set: { status: "CONSUMED" } }
+      );
+      await EventLog.create({
+        roomId: input.roomId,
+        type: "POWER_CARD_USED",
+        metadata: {
+          teamId: input.teamId,
+          source: "AUTO_APPLIED",
+          effectType: card.effectType,
+          text: `${AUTO_EFFECT_LABEL[card.effectType] ?? "Power card"} applied automatically`,
+        },
+      });
+    }
   }
 
   if (input.isTest) {
@@ -298,6 +402,27 @@ async function resolveAndApplyMark(input: {
     return { finalPoints: points, blocked: false };
   }
 
+  // Coins. A correct answer pays the round's reward; Gamble doubles that
+  // payout and turns a wrong answer into a loss of the same size — the coin
+  // stake is the whole card, it leaves marks alone. Read live from the
+  // round/question, so editing a round's coin reward moves the stake with it.
+  //
+  // Callers may still pass coinsAwarded explicitly (host coin tools); that
+  // wins over the derived value so nothing here overrides a deliberate award.
+  let coinsAwarded = input.coinsAwarded;
+  if (coinsAwarded === undefined && coinBase > 0) {
+    if (input.reason === "CORRECT") {
+      coinsAwarded = gambled ? coinBase * 2 : coinBase;
+    } else if (input.reason === "WRONG" && gambled) {
+      // Never take more coins than the team actually holds. The balance is a
+      // raw $inc with no floor, so an unclamped loss would leave them
+      // negative — which reads as a bug on their phone and blocks every
+      // store purchase until they earn back past zero.
+      const team = await Team.findById(input.teamId).select("coins").lean();
+      coinsAwarded = -Math.min(coinBase, Math.max(0, team?.coins ?? 0));
+    }
+  }
+
   await createScoreTransaction({
     roomId: input.roomId,
     teamId: input.teamId,
@@ -306,10 +431,62 @@ async function resolveAndApplyMark(input: {
     participantId: input.participantId ?? null,
     questionId: input.questionId ?? null,
     createdBy: input.createdBy ?? null,
-    coinsAwarded: input.coinsAwarded,
+    coinsAwarded,
   });
+  await mirrorToCopycats(input.roomId, input.teamId, questionId, points, input.createdBy);
   await detectAchievements(input.roomId);
   return { finalPoints: points, blocked: false };
+}
+
+/**
+ * Copycat payout: any team riding THIS team's result on this question gets the
+ * same mark, good or bad. Written straight to the ledger rather than back
+ * through resolveAndApplyMark, so a copier's own cards can't re-trigger the
+ * modifier chain (and two teams copying each other can't recurse).
+ */
+async function mirrorToCopycats(
+  roomId: string,
+  answeringTeamId: string,
+  questionId: string | null,
+  points: number,
+  createdBy?: string | null
+): Promise<void> {
+  if (!questionId || points === 0) return;
+  const copiers = await Team.find({
+    roomId,
+    copycats: { $elemMatch: { questionId, ofTeamId: answeringTeamId } },
+  })
+    .select("_id")
+    .lean();
+  if (copiers.length === 0) return;
+
+  // Logged as BONUS/PENALTY rather than CORRECT/WRONG: the copier never
+  // answered, so mirroring the raw reason would inflate their correct/wrong
+  // counts and rewrite their answer streak off someone else's question.
+  const mirroredReason: ScoreReason = points > 0 ? "BONUS" : "PENALTY";
+
+  for (const copier of copiers) {
+    await createScoreTransaction({
+      roomId,
+      teamId: copier._id.toString(),
+      points,
+      reason: mirroredReason,
+      questionId,
+      createdBy: createdBy ?? null,
+    });
+    await EventLog.create({
+      roomId,
+      type: "POWER_CARD_USED",
+      metadata: {
+        teamId: copier._id.toString(),
+        questionId,
+        source: "COPYCAT_MIRROR",
+        effectType: "COPYCAT",
+        points,
+        text: `Copycat mirrored ${points >= 0 ? "+" : ""}${points}`,
+      },
+    });
+  }
 }
 
 export async function giveMarks(input: {
@@ -412,10 +589,28 @@ export async function submitMcqAnswer(input: {
     throw new Error("That option does not exist.");
   }
 
-  // Turn gate: if the round assigns a team to this question, only that team answers.
+  // Turn gate: if the round assigns a team to this question, only that team
+  // answers — except in Head-to-Head, where two teams race for the same
+  // question and either may answer.
   const assignedTeamId = typeof scene.settings?.assignedTeamId === "string" ? scene.settings.assignedTeamId : null;
-  if (assignedTeamId && assignedTeamId !== input.teamId) {
+  const opponentTeamId = typeof scene.settings?.opponentTeamId === "string" ? scene.settings.opponentTeamId : null;
+  const isDuellist = input.teamId === assignedTeamId || input.teamId === opponentTeamId;
+  if (assignedTeamId && !isDuellist) {
     throw new Error("It is not your team's turn to answer.");
+  }
+
+  // Head-to-Head is a race: the first correct answer takes the question and
+  // closes it, so a slower opponent can't also score on the same one.
+  if (opponentTeamId) {
+    const alreadyWon = await EventLog.findOne({
+      roomId: room._id,
+      type: "MCQ_GRADED",
+      "metadata.questionId": questionId,
+      "metadata.correct": true,
+    }).lean<IEventLog>();
+    if (alreadyWon) {
+      throw new Error("Too late — the other team already answered this one correctly.");
+    }
   }
 
   // One graded answer per team per question.
@@ -476,19 +671,17 @@ export async function submitMcqAnswer(input: {
     }
   }
 
-  // Finalize. Coins only pay out on a correct answer, and only in Economy Mode.
+  // Finalize. Coins are resolved inside resolveAndApplyMark now, so the
+  // Gamble multiplier (and its wrong-answer coin loss) applies identically
+  // whether the mark came from here or from the host's Correct/Wrong buttons.
   const positive = round?.positiveMarks ?? question.positiveMarks ?? 10;
   const negative = Math.abs(round?.negativeMarks ?? question.negativeMarks ?? 5);
   const rawPoints = correct ? positive : isBonus ? 0 : -negative;
 
-  let coins = 0;
-  if (correct) {
-    const competition = await Competition.findById(room.competitionId).select("settings.economy.enabled").lean();
-    if (competition?.settings?.economy?.enabled) coins = round?.coinReward ?? question.coinReward ?? 0;
-  }
-
-  if (!isTest && assignedTeamId) {
-    // A single assigned answerer just resolved this question — stop the clock.
+  // Stop the clock once the question is actually settled. In Head-to-Head a
+  // wrong answer settles nothing — the opponent is still racing — so only a
+  // correct one freezes the timer there.
+  if (!isTest && assignedTeamId && (correct || !opponentTeamId)) {
     await freezeTimerRemaining(input.roomId);
   }
 
@@ -501,7 +694,6 @@ export async function submitMcqAnswer(input: {
     participantId: input.participantId,
     createdBy: null,
     isTest,
-    coinsAwarded: coins > 0 ? coins : undefined,
   });
 
   await EventLog.create({

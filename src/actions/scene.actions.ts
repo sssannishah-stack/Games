@@ -13,6 +13,7 @@ import {
 } from "@/types/db";
 import {
   buildQuestionTeamAssignments,
+  buildHeadToHeadAssignments,
   type EffectiveQuestionAssignmentMode,
 } from "@/lib/questionAssignment";
 
@@ -49,7 +50,7 @@ export async function applyQuestionTeamAssignments(roomId: string, competitionId
 
   const roundIds = [...new Set(scenes.flatMap((scene) => (scene.roundId ? [scene.roundId.toString()] : [])))];
   const rounds = await Round.find({ _id: { $in: roundIds } })
-    .select("questionAssignment questions")
+    .select("questionAssignment questions specialMode")
     .lean();
   const roundById = new Map(rounds.map((round) => [round._id.toString(), round]));
   const teamIds = teams.map((team) => team._id.toString());
@@ -62,11 +63,13 @@ export async function applyQuestionTeamAssignments(roomId: string, competitionId
     if (!round) continue;
     const configuredMode = round.questionAssignment as QuestionAssignmentMode;
     const effectiveMode = (configuredMode === "DEFAULT" ? fallbackMode : configuredMode) as EffectiveQuestionAssignmentMode;
-    const assignments = buildQuestionTeamAssignments(
-      round.questions.map((questionId) => questionId.toString()),
-      teamIds,
-      effectiveMode
-    );
+    // Head-to-Head pairs teams itself — the duel IS the assignment, so it
+    // overrides whatever questionAssignment mode the round was set to.
+    const isHeadToHead = round.specialMode === "HEAD_TO_HEAD";
+    const questionIds = round.questions.map((questionId) => questionId.toString());
+    const assignments = isHeadToHead
+      ? buildHeadToHeadAssignments(questionIds, teamIds)
+      : buildQuestionTeamAssignments(questionIds, teamIds, effectiveMode);
     const assignmentByQuestion = new Map(assignments.map((assignment) => [assignment.questionId, assignment]));
 
     for (const scene of scenes.filter((item) => item.roundId?.toString() === roundId)) {
@@ -82,7 +85,15 @@ export async function applyQuestionTeamAssignments(roomId: string, competitionId
                     "settings.assignmentMode": effectiveMode,
                     "settings.assignedTeamId": assignment.teamId,
                     "settings.assignmentSource": assignment.source,
+                    ...(assignment.opponentTeamId
+                      ? { "settings.opponentTeamId": assignment.opponentTeamId }
+                      : {}),
                   },
+                  // A round switched away from Head-to-Head must drop its old
+                  // opponent, or the second duellist would linger on the scene.
+                  ...(assignment.opponentTeamId
+                    ? {}
+                    : { $unset: { "settings.opponentTeamId": "" } }),
                 },
               },
             }
@@ -94,6 +105,7 @@ export async function applyQuestionTeamAssignments(roomId: string, competitionId
                   $unset: {
                     "settings.assignedTeamId": "",
                     "settings.assignmentSource": "",
+                    "settings.opponentTeamId": "",
                   },
                 },
               },

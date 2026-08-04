@@ -1,10 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { appendStroke, clearBoard } from "@/actions/drawing.actions";
+import { appendStroke, clearBoard, undoLastStroke } from "@/actions/drawing.actions";
 
 interface Stroke {
-  kind: "STROKE" | "CLEAR";
+  kind: "STROKE" | "CLEAR" | "UNDO";
   color: string;
   width: number;
   erase: boolean;
@@ -50,6 +50,14 @@ export function LiveDrawBoard({ roomId, roomCode, canDraw, identity, pollMs = 90
   const pendingRef = useRef<{ at: number; stroke: Stroke }[]>([]);
   const sinceRef = useRef(0);
   const questionRef = useRef<string | null>(null);
+  // Counts our own in-flight undos so their poll echo (an UNDO row) doesn't
+  // pop a second stroke on top of the one we already removed optimistically.
+  const pendingUndoRef = useRef(0);
+  const [hasContent, setHasContent] = useState(false);
+  const syncHasContent = useCallback(() => {
+    const has = committedRef.current.length > 0 || pendingRef.current.length > 0;
+    setHasContent((prev) => (prev === has ? prev : has));
+  }, []);
 
   // The in-progress stroke the drawer is laying down right now.
   const liveRef = useRef<Stroke | null>(null);
@@ -137,9 +145,11 @@ export function LiveDrawBoard({ roomId, roomCode, canDraw, identity, pollMs = 90
           questionRef.current = data.questionId;
           committedRef.current = [];
           pendingRef.current = [];
+          pendingUndoRef.current = 0;
           sinceRef.current = 0;
           liveRef.current = null;
           redraw();
+          syncHasContent();
           if (alive) timer = window.setTimeout(tick, pollMs);
           return;
         }
@@ -150,6 +160,15 @@ export function LiveDrawBoard({ roomId, roomCode, canDraw, identity, pollMs = 90
             if (s.kind === "CLEAR") {
               committedRef.current = [];
               pendingRef.current = [];
+            } else if (s.kind === "UNDO") {
+              if (pendingUndoRef.current > 0) {
+                // Echo of our own optimistic pop below — already applied locally.
+                pendingUndoRef.current -= 1;
+              } else if (pendingRef.current.length) {
+                pendingRef.current.pop();
+              } else {
+                committedRef.current.pop();
+              }
             } else {
               committedRef.current.push(s);
             }
@@ -158,6 +177,7 @@ export function LiveDrawBoard({ roomId, roomCode, canDraw, identity, pollMs = 90
           // Anything I finished >2s ago is surely echoed now — stop shadow-drawing it.
           pendingRef.current = pendingRef.current.filter((p) => Date.now() - p.at < 2000);
           redraw();
+          syncHasContent();
         } else {
           pendingRef.current = pendingRef.current.filter((p) => Date.now() - p.at < 2000);
         }
@@ -172,7 +192,7 @@ export function LiveDrawBoard({ roomId, roomCode, canDraw, identity, pollMs = 90
       alive = false;
       if (timer) window.clearTimeout(timer);
     };
-  }, [roomCode, pollMs, redraw]);
+  }, [roomCode, pollMs, redraw, syncHasContent]);
 
   // ---- Drawer input ----
   const pointFromEvent = (e: React.PointerEvent) => {
@@ -218,6 +238,7 @@ export function LiveDrawBoard({ roomId, roomCode, canDraw, identity, pollMs = 90
     // Keep showing it locally until the server echo lands.
     pendingRef.current.push({ at: Date.now(), stroke });
     redraw();
+    syncHasContent();
     try {
       await appendStroke({
         roomId,
@@ -232,6 +253,7 @@ export function LiveDrawBoard({ roomId, roomCode, canDraw, identity, pollMs = 90
       // On failure, drop the shadow copy so we don't imply it saved.
       pendingRef.current = pendingRef.current.filter((p) => p.stroke !== stroke);
       redraw();
+      syncHasContent();
     }
   };
 
@@ -241,8 +263,10 @@ export function LiveDrawBoard({ roomId, roomCode, canDraw, identity, pollMs = 90
     try {
       committedRef.current = [];
       pendingRef.current = [];
+      pendingUndoRef.current = 0;
       liveRef.current = null;
       redraw();
+      syncHasContent();
       await clearBoard({
         roomId,
         teamId: identity.teamId ?? undefined,
@@ -250,6 +274,33 @@ export function LiveDrawBoard({ roomId, roomCode, canDraw, identity, pollMs = 90
       });
     } catch {
       /* next poll reconciles */
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onUndo = async () => {
+    if (!canDraw || busy) return;
+    const hasPending = pendingRef.current.length > 0;
+    if (!hasPending && committedRef.current.length === 0) return;
+    setBusy(true);
+    try {
+      // Pop whichever copy of the most recent stroke is currently showing —
+      // still-unconfirmed strokes live in pendingRef, older ones in committedRef.
+      if (hasPending) pendingRef.current.pop();
+      else committedRef.current.pop();
+      pendingUndoRef.current += 1;
+      redraw();
+      syncHasContent();
+      await undoLastStroke({
+        roomId,
+        teamId: identity.teamId ?? undefined,
+        participantId: identity.participantId ?? undefined,
+      });
+    } catch {
+      // Failed server-side — give back the undo credit so a later real echo
+      // (if any) still pops correctly, and let the next poll reconcile.
+      pendingUndoRef.current = Math.max(0, pendingUndoRef.current - 1);
     } finally {
       setBusy(false);
     }
@@ -314,8 +365,15 @@ export function LiveDrawBoard({ roomId, roomCode, canDraw, identity, pollMs = 90
             ⌫ Erase
           </button>
           <button
+            onClick={onUndo}
+            disabled={busy || !hasContent}
+            className="flex h-7 items-center gap-1 rounded-lg bg-line/[.05] px-2.5 text-[11px] font-bold text-mute-2 transition hover:bg-line/[.1] disabled:opacity-40"
+          >
+            ↩ Undo
+          </button>
+          <button
             onClick={onClear}
-            disabled={busy}
+            disabled={busy || !hasContent}
             className="ml-auto flex h-7 items-center gap-1 rounded-lg bg-danger/[.12] px-2.5 text-[11px] font-bold text-danger-soft transition hover:bg-danger/20 disabled:opacity-50"
           >
             🗑 Clear

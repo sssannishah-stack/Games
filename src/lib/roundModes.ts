@@ -50,4 +50,11 @@ export const ROUND_MODES: Record<SpecialRoundMode, RoundModeDef> = {
     description: "Rewards only: the server blocks negative marks in this round.",
     color: "#3DD68C",
   },
+  HEAD_TO_HEAD: {
+    label: "Head-to-Head",
+    emoji: "⚔️",
+    description:
+      "Each question goes to two teams at once — the first correct answer wins it and locks the other out. Teams are paired automatically and rotate every question.",
+    color: "#F06A96",
+  },
 };

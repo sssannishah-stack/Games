@@ -9,6 +9,10 @@ const AuctionBidSchema = new Schema<IAuctionBid>(
     roomId: { type: Schema.Types.ObjectId, ref: "Room", required: true, index: true },
     teamId: { type: Schema.Types.ObjectId, ref: "Team", required: true },
     amount: { type: Number, required: true },
+    // Explicitly opted out (or auto-opted-out once the team can no longer
+    // afford the next minimum bid) — excluded from winner selection and can't
+    // bid again in this auction.
+    passed: { type: Boolean, default: false },
   },
   { timestamps: true }
 );

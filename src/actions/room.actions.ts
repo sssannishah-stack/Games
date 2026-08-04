@@ -400,6 +400,8 @@ export async function resetRoom(
               hintsRevealed: [],
               frozenQuestionIds: [],
               peeks: [],
+              passedToMe: [],
+              copycats: [],
               stats: {
                 correctAnswers: 0,
                 wrongAnswers: 0,
@@ -570,4 +572,8 @@ export async function submitTeamAnswer(input: {
       submittedBy: submitter.name,
     },
   });
+
+  // Without this the host console's poll could serve a cached render and the
+  // submitted answer wouldn't appear until the host clicked something.
+  revalidatePath(`/host/${input.roomId}`);
 }

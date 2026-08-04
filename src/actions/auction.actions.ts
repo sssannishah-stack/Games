@@ -76,6 +76,9 @@ export async function placeBid(
   if (!auction || auction.roomId.toString() !== roomId) throw new Error("Auction not found.");
   if (auction.status !== "OPEN") throw new Error("This auction has closed.");
 
+  const existingBid = await AuctionBid.findOne({ auctionId, teamId }).select("passed").lean<{ passed?: boolean }>();
+  if (existingBid?.passed) throw new Error("You've opted out of this auction.");
+
   const bid = Math.round(amount);
   if (bid < auction.startingBid) throw new Error(`Bid must be at least ${auction.startingBid}.`);
 
@@ -93,7 +96,36 @@ export async function placeBid(
 
   await AuctionBid.findOneAndUpdate(
     { auctionId, teamId },
-    { $set: { amount: bid, roomId } },
+    { $set: { amount: bid, roomId, passed: false } },
+    { upsert: true }
+  );
+
+  revalidatePath(`/host/${roomId}`);
+}
+
+/**
+ * A team opts out of the current auction — either by choice, or auto-called
+ * by the client once a NORMAL auction's next minimum bid exceeds the team's
+ * coins (they can no longer possibly win). A passed team keeps whatever bid
+ * it already had on record (excluded from winner selection either way) but
+ * can't bid again in this auction.
+ */
+export async function passOnAuction(
+  roomId: string,
+  teamId: string,
+  auctionId: string,
+  participantId?: string
+): Promise<void> {
+  await connectToDatabase();
+  await assertTeamController(teamId, participantId);
+
+  const auction = await Auction.findById(auctionId).lean<IAuction>();
+  if (!auction || auction.roomId.toString() !== roomId) throw new Error("Auction not found.");
+  if (auction.status !== "OPEN") return;
+
+  await AuctionBid.findOneAndUpdate(
+    { auctionId, teamId },
+    { $set: { passed: true, roomId }, $setOnInsert: { amount: 0 } },
     { upsert: true }
   );
 
@@ -145,7 +177,9 @@ export async function settleAuction(auctionId: string): Promise<void> {
   if (auction.status !== "OPEN") return;
 
   const roomId = auction.roomId.toString();
-  const bids = await AuctionBid.find({ auctionId }).sort({ createdAt: 1 }).lean();
+  // Passed teams (opted out, or auto-passed once they couldn't afford the
+  // next bid) never win, even if their last bid on record was high.
+  const bids = (await AuctionBid.find({ auctionId }).sort({ createdAt: 1 }).lean()).filter((b) => !b.passed);
 
   if (bids.length === 0) {
     await Auction.findByIdAndUpdate(auctionId, { $set: { status: "CANCELLED" } });

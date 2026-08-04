@@ -12,20 +12,23 @@ import type { ShopCard } from "@/components/store/PowerCardShopTile";
  */
 export function PurchaseConfirmSheet({
   card,
+  quantity = 1,
   coins,
   pending,
   onCancel,
   onConfirm,
 }: {
   card: ShopCard | null;
+  quantity?: number;
   coins: number;
   pending: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
   if (!card) return null;
-  const canAfford = coins >= card.price;
-  const after = coins - card.price;
+  const totalPrice = card.price * quantity;
+  const canAfford = coins >= totalPrice;
+  const after = coins - totalPrice;
 
   return (
     <AnimatePresence>
@@ -48,17 +51,25 @@ export function PurchaseConfirmSheet({
             <div className="w-[120px]">
               <PowerCardFace name={card.name} effectType={card.effectType} rarity={card.rarity} icon={card.icon} size="sm" />
             </div>
-            <span className="text-[15px] font-black text-ink text-center">Buy {card.name}?</span>
+            <span className="text-[15px] font-black text-ink text-center">
+              Buy {quantity > 1 ? `${quantity}x ` : ""}{card.name}?
+            </span>
 
             <div className="w-full rounded-2xl border border-line/[.09] bg-line/[.03] px-4 py-3 flex flex-col gap-2">
+              {quantity > 1 && (
+                <div className="flex items-center justify-between text-[12px]">
+                  <span className="text-mute-2">Unit price</span>
+                  <span className="font-mono font-semibold text-ink-3">{card.price} 🪙 × {quantity}</span>
+                </div>
+              )}
               <div className="flex items-center justify-between text-[12px]">
-                <span className="text-mute-2">Price</span>
+                <span className="text-mute-2">{quantity > 1 ? "Total" : "Price"}</span>
                 <motion.span
                   animate={!canAfford ? { x: [0, -6, 6, -4, 4, 0] } : {}}
                   transition={{ duration: 0.4 }}
                   className={`font-mono font-black ${canAfford ? "text-warn" : "text-danger-soft"}`}
                 >
-                  {card.price} 🪙
+                  {totalPrice} 🪙
                 </motion.span>
               </div>
               <div className="flex items-center justify-between text-[12px]">
@@ -71,7 +82,7 @@ export function PurchaseConfirmSheet({
 
             {!canAfford && (
               <span className="text-[11.5px] font-semibold text-danger-soft text-center">
-                You need {card.price - coins} more coins.
+                You need {totalPrice - coins} more coins.
               </span>
             )}
 
@@ -92,7 +103,7 @@ export function PurchaseConfirmSheet({
                     : "bg-line/[.08] text-dim-2 cursor-not-allowed"
                 }`}
               >
-                {pending ? "Buying…" : "Buy"}
+                {pending ? "Buying…" : quantity > 1 ? `Buy ×${quantity}` : "Buy"}
               </button>
             </div>
           </motion.div>

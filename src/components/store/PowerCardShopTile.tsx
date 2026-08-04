@@ -39,13 +39,19 @@ export function PowerCardShopTile({
   card: ShopCard;
   size?: "md" | "lg";
   canBuy: boolean;
-  onBuy: () => void;
+  onBuy: (quantity: number) => void;
   featured?: boolean;
 }) {
   const [pressed, setPressed] = useState(false);
+  const [qty, setQty] = useState(1);
   const theme = getPowerCardTheme(card.effectType, card.icon);
   const rarity = rarityTheme(card.rarity);
   const soldOut = card.limited && (card.stock ?? 0) <= 0;
+  // Mystery is a one-at-a-time gamble — each purchase rolls its own reward,
+  // so bulk buying doesn't apply there. Limited cards cap out at remaining
+  // stock; everything else gets a sane bulk ceiling.
+  const bulkable = !card.isMystery && !soldOut;
+  const maxQty = card.limited && card.stock !== null ? Math.max(1, card.stock) : 20;
 
   return (
     <motion.div
@@ -131,18 +137,44 @@ export function PowerCardShopTile({
           {!card.limited && card.stock === null && card.remainingUses === 0 && <span>Unlimited stock</span>}
         </div>
 
+        {/* Quantity stepper — below the card, tap +/- to bulk up before buying. */}
+        {bulkable && (
+          <div className="flex items-center gap-1.5 mt-0.5" onClick={(e) => e.stopPropagation()}>
+            <button
+              type="button"
+              disabled={!canBuy || qty <= 1}
+              onClick={() => setQty((q) => Math.max(1, q - 1))}
+              className="w-6 h-6 rounded-lg bg-line/[.07] text-ink-3 font-bold text-[12px] flex items-center justify-center disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+            >
+              −
+            </button>
+            <span className="flex-1 text-center text-[11.5px] font-black text-ink tabular-nums">×{qty}</span>
+            <button
+              type="button"
+              disabled={!canBuy || qty >= maxQty}
+              onClick={() => setQty((q) => Math.min(maxQty, q + 1))}
+              className="w-6 h-6 rounded-lg bg-line/[.07] text-ink-3 font-bold text-[12px] flex items-center justify-center disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+            >
+              +
+            </button>
+          </div>
+        )}
+
         <div className="flex items-center gap-2 mt-0.5">
           <span className="flex items-baseline gap-1 font-mono font-black text-[13px] text-ink">
             {card.onSale && card.basePrice != null && (
               <span className="text-[10px] font-bold text-dim-2 line-through">{card.basePrice}</span>
             )}
-            {card.price}
+            {bulkable && qty > 1 ? card.price * qty : card.price}
             <span className="text-[10px] font-bold text-warn">🪙</span>
           </span>
           <button
             type="button"
             disabled={!canBuy || soldOut}
-            onClick={onBuy}
+            onClick={() => {
+              onBuy(bulkable ? qty : 1);
+              setQty(1);
+            }}
             className={`ml-auto rounded-xl px-3.5 py-1.5 text-[11px] font-black tracking-[.02em] transition active:scale-95 ${
               !canBuy || soldOut
                 ? "bg-line/[.08] text-dim-2 cursor-not-allowed"
@@ -154,7 +186,7 @@ export function PowerCardShopTile({
                 : undefined
             }
           >
-            {soldOut ? "SOLD OUT" : "BUY"}
+            {soldOut ? "SOLD OUT" : bulkable && qty > 1 ? `BUY ×${qty}` : "BUY"}
           </button>
         </div>
       </div>

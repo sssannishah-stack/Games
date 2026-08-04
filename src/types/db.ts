@@ -72,7 +72,16 @@ export type RoundType = (typeof ROUND_TYPES)[number];
 // Special live modes layered on top of a round (Section 13). They change how
 // the round is framed and how the host is prompted to score — scoring stays
 // manual, so these guide the host rather than auto-computing anything.
-export const SPECIAL_ROUND_MODES = ["NONE", "SPEED", "RISK", "SURVIVAL", "BONUS"] as const;
+export const SPECIAL_ROUND_MODES = [
+  "NONE",
+  "SPEED",
+  "RISK",
+  "SURVIVAL",
+  "BONUS",
+  // Two teams get the same question at once; the first correct answer takes
+  // it and closes the question for the other.
+  "HEAD_TO_HEAD",
+] as const;
 export type SpecialRoundMode = (typeof SPECIAL_ROUND_MODES)[number];
 
 export const ROUND_CATEGORIES = ["Knowledge", "Music", "Drawing", "Custom"] as const;
@@ -181,6 +190,13 @@ export const POWER_CARD_EFFECT_TYPES = [
   "GAMBLE",
   "FREEZE",
   "PEEK",
+  // Cut the live clock on the answering team's question.
+  "TIME_DRAIN",
+  // Hand your assigned question to another team; a wrong answer's penalty
+  // bounces back to you.
+  "PASS_QUESTION",
+  // Mirror whatever mark the answering team receives onto your own score.
+  "COPYCAT",
 ] as const;
 export type PowerCardEffectType = (typeof POWER_CARD_EFFECT_TYPES)[number];
 
@@ -434,6 +450,16 @@ export interface ITeam {
   frozenQuestionIds: string[];
   /** One eliminated wrong-option index per question this team has Peeked. */
   peeks: Array<{ questionId: string; eliminatedOptionIndex: number }>;
+  /**
+   * Questions handed to this team by an opponent's Pass the Question. A wrong
+   * answer on one of these sends the penalty back to `fromTeamId` instead.
+   */
+  passedToMe: Array<{ questionId: string; fromTeamId: string }>;
+  /**
+   * Questions where this team is copying another's result (Copycat). Whatever
+   * mark `ofTeamId` receives on that question is mirrored onto this team.
+   */
+  copycats: Array<{ questionId: string; ofTeamId: string }>;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -479,6 +505,7 @@ export interface IAuctionBid {
   roomId: Types.ObjectId;
   teamId: Types.ObjectId;
   amount: number;
+  passed: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -550,15 +577,17 @@ export interface IScene {
   updatedAt: Date;
 }
 
-export const DRAWING_STROKE_KINDS = ["STROKE", "CLEAR"] as const;
+export const DRAWING_STROKE_KINDS = ["STROKE", "CLEAR", "UNDO"] as const;
 export type DrawingStrokeKind = (typeof DRAWING_STROKE_KINDS)[number];
 
 /**
  * One append-only mark on a DRAWING scene's shared board. Coordinates are
  * normalized 0..1 (a flat [x0,y0,x1,y1,…] array) so the same stroke renders
  * correctly on any screen size. A `CLEAR` row is a wipe marker: on replay the
- * canvas resets and only strokes with a higher `seq` are drawn. Scoped to a
- * question so a new drawing question always starts on a blank board.
+ * canvas resets and only strokes with a higher `seq` are drawn. An `UNDO` row
+ * is a "pop the last stroke" marker, so every viewer's replay removes the
+ * same stroke instead of a destructive delete. Scoped to a question so a new
+ * drawing question always starts on a blank board.
  */
 export interface IDrawingStroke {
   _id: Types.ObjectId;
@@ -647,6 +676,8 @@ export interface ITeamPowerCard {
   powerCardId: Types.ObjectId;
   remainingUses: number;
   status: PowerCardStatus;
+  /** The question this card went ACTIVE for (Gamble/Shield/Double Points only) — see model comment. */
+  questionId: string | null;
   createdAt: Date;
   updatedAt: Date;
 }

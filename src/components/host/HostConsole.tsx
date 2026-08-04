@@ -121,6 +121,9 @@ const LOG_VISUAL: Record<string, { icon: string; color: string }> = {
   AUCTION_CANCELLED: { icon: "gavel", color: "text-mute-2" },
   BROADCAST_SENT: { icon: "megaphone", color: "text-accent" },
   ANSWER_REVEALED: { icon: "lightbulb", color: "text-warn" },
+  ANSWER_SUBMITTED: { icon: "message-square", color: "text-info" },
+  MCQ_GRADED: { icon: "circle-check", color: "text-success" },
+  MCQ_RETRY: { icon: "rotate-ccw", color: "text-warn" },
   SCENE_CHANGED: { icon: "clapperboard", color: "text-mute-2" },
   TIMER_STARTED: { icon: "play", color: "text-mute-2" },
   TIMER_STOPPED: { icon: "pause", color: "text-mute-2" },
@@ -143,6 +146,9 @@ const LOG_CATEGORY: Record<string, Exclude<LogFilter, "ALL">> = {
   AUCTION_SOLD: "AUCTION",
   AUCTION_CANCELLED: "AUCTION",
   SCORE_CHANGED: "SCORE",
+  ANSWER_SUBMITTED: "SCORE",
+  MCQ_GRADED: "SCORE",
+  MCQ_RETRY: "SCORE",
   ACHIEVEMENT_EARNED: "SCORE",
   COIN_AWARDED: "SCORE",
   LUCKY_SPIN: "SCORE",
@@ -312,21 +318,37 @@ export function HostConsole({
 
   const teamById = new Map(teams.map((t) => [t.id, t]));
   const cardById = new Map(cards.map((c) => [c.id, c]));
+  const questionById = new Map(questions.map((q) => [q.id, q]));
+  // Some POWER_CARD_USED logs (auto-applied Shield/Gamble/Double, Insurance
+  // blocks) record only the effect, never a powerCardId — this lets the feed
+  // still name the card instead of saying "a card".
+  const cardByEffect = new Map(cards.map((c) => [c.effectType, c]));
   const assignedTeamId = typeof current?.settings?.assignedTeamId === "string"
     ? current.settings.assignedTeamId
     : null;
   const assignedTeam = assignedTeamId ? teamById.get(assignedTeamId) ?? null : null;
+  // Head-to-Head stamps a second duellist onto the scene; both race the same question.
+  const opponentTeamId = typeof current?.settings?.opponentTeamId === "string"
+    ? current.settings.opponentTeamId
+    : null;
+  const opponentTeam = opponentTeamId ? teamById.get(opponentTeamId) ?? null : null;
+  // Host's chosen duel winner, reset whenever the live question changes.
+  const [duelPick, setDuelPick] = useState<string | null>(null);
+  useEffect(() => setDuelPick(null), [current?.id]);
   const assignmentSource = typeof current?.settings?.assignmentSource === "string"
     ? current.settings.assignmentSource
     : null;
   // Has the assigned team already gotten a whole-team Correct/Wrong verdict
   // on this question? Tapping the other button afterward used to just stack
   // a second mark on top — block it here too (server also enforces this).
+  // Which team the Mark Answer buttons act on. Normally the assigned team; in
+  // a Head-to-Head the host picks the winner of the duel first.
+  const markTeamId = duelPick ?? assignedTeamId;
   const alreadyJudgedTransaction =
-    assignedTeamId && question
+    markTeamId && question
       ? scoreHistory.find(
           (entry) =>
-            entry.teamId === assignedTeamId &&
+            entry.teamId === markTeamId &&
             entry.questionId === question.id &&
             !entry.participantId &&
             (entry.reason === "CORRECT" || entry.reason === "WRONG") &&
@@ -468,10 +490,50 @@ export function HostConsole({
         return metadata.reset ? "Timer reset" : "Timer paused";
       case "POWER_CARD_REQUESTED":
         return `${teamName(metadata.teamId)} requested ${cardName(metadata.powerCardId)}`;
-      case "POWER_CARD_USED":
-        return metadata.source === "HOST_REMOVED"
-          ? `${teamName(metadata.teamId)}'s ${cardName(metadata.powerCardId)} removed`
-          : `${teamName(metadata.teamId)} used ${cardName(metadata.powerCardId)}`;
+      case "POWER_CARD_USED": {
+        // Auto-applied / insurance-block logs carry an effectType instead of a
+        // powerCardId, so resolve by whichever the log actually recorded.
+        const played = metadata.powerCardId
+          ? cardById.get(String(metadata.powerCardId))
+          : cardByEffect.get(String(metadata.effectType) as PowerCardEffectType);
+        const label = played?.name ?? String(metadata.effectType ?? "").replace(/_/g, " ").toLowerCase() ?? "a card";
+        const team = teamName(metadata.teamId);
+        if (metadata.source === "HOST_REMOVED") return `${team}'s ${label} removed`;
+        if (metadata.source === "HOST_GIFT") return `${team} was given ${label}`;
+        if (metadata.source === "INSURANCE_BLOCK") return `${team}: ${label} blocked a negative mark`;
+        if (metadata.source === "PASS_BOUNCE") {
+          return `${team} took ${Number(metadata.points ?? 0)} — their passed question was answered wrong`;
+        }
+        if (metadata.source === "COPYCAT_MIRROR") {
+          const mirrored = Number(metadata.points ?? 0);
+          return `${team} copied ${mirrored >= 0 ? "+" : ""}${mirrored}`;
+        }
+        const target = metadata.targetTeamId ? ` on ${teamName(metadata.targetTeamId)}` : "";
+        const auto = metadata.source === "AUTO_APPLIED" ? " (auto)" : "";
+        return `${team} used ${label}${target}${auto}`;
+      }
+      case "ANSWER_SUBMITTED":
+        return `${teamName(metadata.teamId)} answered: "${String(metadata.text ?? "")}"`;
+      case "MCQ_GRADED": {
+        const options = questionById.get(String(metadata.questionId ?? ""))?.options ?? [];
+        const index = Number(metadata.optionIndex ?? -1);
+        const picked =
+          index >= 0 && index < options.length
+            ? `${String.fromCharCode(65 + index)}. ${options[index]}`
+            : `option ${index + 1}`;
+        return `${teamName(metadata.teamId)} picked ${picked} — ${metadata.correct ? "✓ correct" : "✗ wrong"}`;
+      }
+      case "MCQ_RETRY": {
+        // Name the pick they burned the Double Guess on — "got a second try"
+        // alone left the host unable to see what was actually ruled out.
+        const options = questionById.get(String(metadata.questionId ?? ""))?.options ?? [];
+        const index = Number(metadata.firstPick ?? -1);
+        const wrong =
+          index >= 0 && index < options.length
+            ? `${String.fromCharCode(65 + index)}. ${options[index]}`
+            : `option ${index + 1}`;
+        return `${teamName(metadata.teamId)} used Double Guess — ${wrong} was wrong`;
+      }
       case "CARD_PURCHASED":
         return `${teamName(metadata.teamId)} bought ${cardName(metadata.powerCardId)}`;
       case "COIN_AWARDED":
@@ -551,10 +613,10 @@ export function HostConsole({
         .filter((o) => o.status === "ACTIVE")
         .map((o) => cardById.get(o.powerCardId)?.effectType)
     );
+    // Gamble is deliberately absent here — it stakes coins, not marks.
     if (previewPoints < 0) {
       if (activeEffectTypes.has("BLOCK_NEGATIVE")) previewPoints = 0;
-      else if (activeEffectTypes.has("GAMBLE")) previewPoints *= 2;
-    } else if (activeEffectTypes.has("GAMBLE") || activeEffectTypes.has("DOUBLE_SCORE")) {
+    } else if (activeEffectTypes.has("DOUBLE_SCORE")) {
       previewPoints *= 2;
     }
 
@@ -1005,12 +1067,28 @@ export function HostConsole({
                   </div>
                   {round && <span className="text-[12px] text-mute-2">{round.title}</span>}
                   {question && assignedTeam && (
-                    <div className="flex items-center gap-2 rounded-xl border border-accent/35 bg-accent/[.1] px-4 py-2">
-                      <span className="text-[10px] font-mono font-semibold tracking-[.1em] text-accent">ASSIGNED TEAM</span>
-                      <span className="w-2.5 h-2.5 rounded-full" style={{ background: assignedTeam.color ?? "#6C7BFA" }} />
-                      <span className="text-sm font-black text-ink">{assignedTeam.name}</span>
-                      {assignmentSource === "RANDOM_REMAINDER" && <span className="text-[10px] text-mute-2">random remainder</span>}
-                    </div>
+                    opponentTeam ? (
+                      // Head-to-Head: both duellists, so the host can see the
+                      // matchup at a glance and mark whoever gets there first.
+                      <div className="flex items-center gap-2.5 rounded-xl border border-danger/35 bg-danger/[.08] px-4 py-2">
+                        <span className="text-[10px] font-mono font-semibold tracking-[.1em] text-danger-soft">
+                          ⚔️ HEAD-TO-HEAD
+                        </span>
+                        <span className="w-2.5 h-2.5 rounded-full" style={{ background: assignedTeam.color ?? "#6C7BFA" }} />
+                        <span className="text-sm font-black text-ink">{assignedTeam.name}</span>
+                        <span className="text-[11px] font-bold text-mute-2">vs</span>
+                        <span className="w-2.5 h-2.5 rounded-full" style={{ background: opponentTeam.color ?? "#6C7BFA" }} />
+                        <span className="text-sm font-black text-ink">{opponentTeam.name}</span>
+                        <span className="text-[10px] text-mute-2">first correct wins</span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2 rounded-xl border border-accent/35 bg-accent/[.1] px-4 py-2">
+                        <span className="text-[10px] font-mono font-semibold tracking-[.1em] text-accent">ASSIGNED TEAM</span>
+                        <span className="w-2.5 h-2.5 rounded-full" style={{ background: assignedTeam.color ?? "#6C7BFA" }} />
+                        <span className="text-sm font-black text-ink">{assignedTeam.name}</span>
+                        {assignmentSource === "RANDOM_REMAINDER" && <span className="text-[10px] text-mute-2">random remainder</span>}
+                      </div>
+                    )
                   )}
                   <div className="text-4xl font-bold text-ink leading-tight">
                     {question?.question || current?.title || "—"}
@@ -1274,10 +1352,25 @@ export function HostConsole({
                 <StatChip label="QUESTION" value={questionIndex ? `#${questionIndex}` : "—"} tone="#6C7BFA" />
               </div>
               {assignedTeam && (
-                <div className="mt-1.5 flex items-center gap-1.5 rounded-lg border border-accent/25 bg-accent/[.06] px-2.5 py-1.5">
-                  <span className="text-[9px] font-bold tracking-[.12em] text-accent">CURRENT TEAM</span>
+                <div
+                  className={`mt-1.5 flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 ${
+                    opponentTeam ? "border-danger/25 bg-danger/[.06]" : "border-accent/25 bg-accent/[.06]"
+                  }`}
+                >
+                  <span
+                    className={`text-[9px] font-bold tracking-[.12em] ${opponentTeam ? "text-danger-soft" : "text-accent"}`}
+                  >
+                    {opponentTeam ? "⚔️ DUEL" : "CURRENT TEAM"}
+                  </span>
                   <span className="w-2 h-2 rounded-full" style={{ background: assignedTeam.color ?? "#6C7BFA" }} />
                   <span className="text-[12px] font-bold text-ink truncate">{assignedTeam.name}</span>
+                  {opponentTeam && (
+                    <>
+                      <span className="text-[10px] text-mute-2">vs</span>
+                      <span className="w-2 h-2 rounded-full" style={{ background: opponentTeam.color ?? "#6C7BFA" }} />
+                      <span className="text-[12px] font-bold text-ink truncate">{opponentTeam.name}</span>
+                    </>
+                  )}
                 </div>
               )}
             </section>
@@ -1363,8 +1456,36 @@ export function HostConsole({
                   /* One-tap scoring for this question's team. */
                   <div className="flex flex-col gap-1.5 rounded-xl border border-line/[.1] bg-line/[.03] p-2.5 mt-0.5">
                     <span className="text-[10px] font-semibold tracking-[.1em] text-label">
-                      MARK ANSWER{assignedTeam ? ` · ${assignedTeam.name}` : ""}
+                      MARK ANSWER
+                      {opponentTeam
+                        ? markTeamId
+                          ? ` · ${teamById.get(markTeamId)?.name ?? ""}`
+                          : ""
+                        : assignedTeam
+                          ? ` · ${assignedTeam.name}`
+                          : ""}
                     </span>
+                    {/* Head-to-Head: two teams raced this question, so the host
+                        picks who they're marking before awarding anything. */}
+                    {opponentTeam && assignedTeam && (
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {[assignedTeam, opponentTeam].map((team) => (
+                          <button
+                            key={team.id}
+                            onClick={() => setDuelPick(team.id)}
+                            disabled={pending}
+                            className={`flex items-center justify-center gap-1.5 rounded-lg border px-2 py-1.5 text-[11.5px] font-bold transition cursor-pointer ${
+                              markTeamId === team.id
+                                ? "border-accent/50 bg-accent/[.14] text-ink"
+                                : "border-line/[.12] bg-line/[.04] text-mute-2 hover:bg-line/[.08]"
+                            }`}
+                          >
+                            <span className="w-2 h-2 rounded-full" style={{ background: team.color ?? "#6C7BFA" }} />
+                            {team.name}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     {room.economyEnabled && (
                       <label className="flex items-center gap-2 text-[11px] text-ink-3">
                         <Icon name="coins" size={12} className="text-warn shrink-0" />
@@ -1384,8 +1505,8 @@ export function HostConsole({
                         size="sm"
                         disabled={pending || teams.length === 0 || Boolean(alreadyJudgedTransaction)}
                         onClick={() =>
-                          assignedTeamId
-                            ? quickMark(assignedTeamId, true)
+                          markTeamId
+                            ? quickMark(markTeamId, true)
                             : openScoring(teams[0]?.id ?? "", Math.abs(round?.positiveMarks ?? 10))
                         }
                         className="justify-center"
@@ -1398,8 +1519,8 @@ export function HostConsole({
                         size="sm"
                         disabled={pending || teams.length === 0 || round?.specialMode === "BONUS" || Boolean(alreadyJudgedTransaction)}
                         onClick={() =>
-                          assignedTeamId
-                            ? quickMark(assignedTeamId, false)
+                          markTeamId
+                            ? quickMark(markTeamId, false)
                             : openScoring(teams[0]?.id ?? "", -Math.abs(round?.negativeMarks ?? 5))
                         }
                         className="justify-center"
@@ -1473,7 +1594,12 @@ export function HostConsole({
                   {timerRunning && (
                     <span className="text-[10.5px] text-mute-2">Stop the timer to reveal the answer.</span>
                   )}
-                  <SubmittedAnswers logs={logs} questionId={question.id} teamById={teamById} />
+                  <SubmittedAnswers
+                    logs={logs}
+                    questionId={question.id}
+                    options={question.options ?? []}
+                    teamById={teamById}
+                  />
                 </>
               ) : (
                 <span className="text-[12px] text-mute-2">No question active.</span>
@@ -2027,12 +2153,16 @@ export function HostConsole({
                   {auction.bids.length > 0 && (
                     <div className="flex flex-col gap-1 max-h-24 overflow-y-auto">
                       {[...auction.bids]
-                        .sort((a, b) => b.amount - a.amount)
+                        .sort((a, b) => Number(a.passed) - Number(b.passed) || b.amount - a.amount)
                         .map((b) => (
-                          <div key={b.teamId} className="flex items-center gap-2 text-[12px]">
+                          <div key={b.teamId} className={`flex items-center gap-2 text-[12px] ${b.passed ? "opacity-50" : ""}`}>
                             <span className="w-1.5 h-1.5 rounded-full" style={{ background: teamById.get(b.teamId)?.color ?? "#6C7BFA" }} />
-                            <span className="text-ink-3 truncate">{teamById.get(b.teamId)?.name ?? "Team"}</span>
-                            <span className="ml-auto font-mono font-semibold text-ink">{b.amount}</span>
+                            <span className={`text-ink-3 truncate ${b.passed ? "line-through" : ""}`}>{teamById.get(b.teamId)?.name ?? "Team"}</span>
+                            {b.passed ? (
+                              <span className="ml-auto text-[10px] font-bold text-mute-2">OUT</span>
+                            ) : (
+                              <span className="ml-auto font-mono font-semibold text-ink">{b.amount}</span>
+                            )}
                           </div>
                         ))}
                     </div>
@@ -2674,9 +2804,12 @@ const EFFECT_LABEL: Record<PowerCardEffectType, string> = {
   DOUBLE_SCORE: "Double Points — next correct counts 2×",
   SECOND_CHANCE: "Second Chance — may answer again",
   MYSTERY: "Mystery effect",
-  GAMBLE: "All-or-Nothing — double reward or double penalty",
-  FREEZE: "Freeze — opponent's cards locked next question",
+  GAMBLE: "Coin bet — double coins if correct, lose them if wrong",
+  FREEZE: "Freeze — target team can't use cards on their next turn",
   PEEK: "Peek — one wrong MCQ option ruled out",
+  TIME_DRAIN: "Time Drain — 15s cut from the answering team's clock",
+  PASS_QUESTION: "Passed — another team answers; a wrong answer bounces back",
+  COPYCAT: "Copycat — mirrors the answering team's result",
 };
 
 function ScoringModal({
@@ -3064,39 +3197,82 @@ function TeamDevicesPanel({
 }
 
 /**
- * Written answers submitted by team captains for the current question
- * (rooms with answerMode CAPTAIN_SUBMIT). A record for the host to judge —
+ * What each team actually answered on the current question — written captain
+ * submissions (answerMode CAPTAIN_SUBMIT) AND tapped MCQ picks. Previously
+ * only the written kind showed here, so on an MCQ question the host had no
+ * way to see which option a team chose. A record for the host to judge —
  * marks are still given manually via Give Marks.
  */
 function SubmittedAnswers({
   logs,
   questionId,
+  options,
   teamById,
 }: {
   logs: EventLogRecord[];
   questionId: string;
+  options: string[];
   teamById: Map<string, TeamRecord>;
 }) {
-  // Latest submission per team for this question only.
-  const byTeam = new Map<string, EventLogRecord>();
+  const label = (index: number) =>
+    index >= 0 && index < options.length
+      ? `${String.fromCharCode(65 + index)}. ${options[index]}`
+      : `Option ${index + 1}`;
+
+  // Latest answer per team for this question only, of either kind, plus any
+  // Double Guess retry so the host can see the pick that was burned — not
+  // just the final one the team settled on.
+  const answerByTeam = new Map<string, EventLogRecord>();
+  const retryByTeam = new Map<string, number>();
   for (const log of logs) {
-    if (log.type !== "ANSWER_SUBMITTED") continue;
     if (String(log.metadata?.questionId ?? "") !== questionId) continue;
     const teamId = String(log.metadata?.teamId ?? "");
-    if (!byTeam.has(teamId)) byTeam.set(teamId, log); // logs are newest-first
+    if (log.type === "MCQ_RETRY") {
+      retryByTeam.set(teamId, Number(log.metadata?.firstPick ?? -1));
+    } else if (log.type === "ANSWER_SUBMITTED" || log.type === "MCQ_GRADED") {
+      if (!answerByTeam.has(teamId)) answerByTeam.set(teamId, log); // newest-first
+    }
   }
-  if (byTeam.size === 0) return null;
+
+  // A team mid-retry has no graded row yet, but still deserves a row so the
+  // host can see what they've already ruled out.
+  const teamIds = [...new Set([...answerByTeam.keys(), ...retryByTeam.keys()])];
+  if (teamIds.length === 0) return null;
 
   return (
     <div className="flex flex-col gap-1 mt-1">
-      <span className="text-[10px] font-semibold text-dim-2 tracking-[.1em]">SUBMITTED ANSWERS</span>
-      {[...byTeam.entries()].map(([teamId, log]) => {
+      <span className="text-[10px] font-semibold text-dim-2 tracking-[.1em]">TEAM ANSWERS</span>
+      {teamIds.map((teamId) => {
         const team = teamById.get(teamId);
+        const log = answerByTeam.get(teamId) ?? null;
+        const retryPick = retryByTeam.get(teamId);
+        const isMcq = log?.type === "MCQ_GRADED";
+        const finalText = !log
+          ? null
+          : isMcq
+            ? label(Number(log.metadata?.optionIndex ?? -1))
+            : String(log.metadata?.text ?? "");
         return (
-          <div key={log.id} className="flex items-center gap-2 rounded-lg bg-line/[.04] px-2 py-1.5 text-[11.5px]">
+          <div
+            key={teamId}
+            className="flex items-center gap-2 rounded-lg bg-line/[.04] px-2 py-1.5 text-[11.5px]"
+          >
             <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: team?.color ?? "#6C7BFA" }} />
             <span className="font-semibold text-ink-3 shrink-0">{team?.name ?? "Team"}:</span>
-            <span className="text-ink-2 truncate">{String(log.metadata?.text ?? "")}</span>
+            {retryPick !== undefined && (
+              <span className="shrink-0 text-danger-soft line-through opacity-70">{label(retryPick)}</span>
+            )}
+            {retryPick !== undefined && <span className="shrink-0 text-dim-2">→</span>}
+            <span className="text-ink-2 truncate">
+              {finalText ?? <span className="text-mute-2 italic">picking again…</span>}
+            </span>
+            {isMcq && (
+              <span
+                className={`ml-auto shrink-0 font-bold ${log?.metadata?.correct ? "text-success" : "text-danger-soft"}`}
+              >
+                {log?.metadata?.correct ? "✓" : "✗"}
+              </span>
+            )}
           </div>
         );
       })}

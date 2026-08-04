@@ -42,14 +42,36 @@ const TeamSchema = new Schema<ITeam>(
       default: [],
     },
     // Questions this team is frozen on — set when an opponent plays Freeze,
-    // covering the team's next question. While frozen, it can play no power
-    // cards on that question.
+    // covering the team's next *assigned* question (their next real turn, not
+    // merely the next question in flow order, which usually belongs to
+    // someone else). While frozen, it can play no power cards on that question.
     frozenQuestionIds: { type: [String], default: [] },
     // One eliminated wrong-option index per question this team has Peeked.
     peeks: {
       type: [
         new Schema(
           { questionId: { type: String, required: true }, eliminatedOptionIndex: { type: Number, required: true } },
+          { _id: false }
+        ),
+      ],
+      default: [],
+    },
+    // Questions an opponent handed to this team with Pass the Question. The
+    // penalty for getting one wrong bounces back to the team that passed it.
+    passedToMe: {
+      type: [
+        new Schema(
+          { questionId: { type: String, required: true }, fromTeamId: { type: String, required: true } },
+          { _id: false }
+        ),
+      ],
+      default: [],
+    },
+    // Questions where this team is riding another team's result (Copycat).
+    copycats: {
+      type: [
+        new Schema(
+          { questionId: { type: String, required: true }, ofTeamId: { type: String, required: true } },
           { _id: false }
         ),
       ],

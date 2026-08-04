@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { requestPowerCard } from "@/actions/powerCard.actions";
-import { placeBid } from "@/actions/auction.actions";
+import { placeBid, passOnAuction } from "@/actions/auction.actions";
 import { submitTeamAnswer } from "@/actions/room.actions";
 import { submitMcqAnswer } from "@/actions/score.actions";
 import { JoinForm, type JoinedParticipant } from "@/components/room/JoinForm";
@@ -83,7 +83,9 @@ type LiveAuction = {
   leaderName: string | null;
   leaderIsMe: boolean;
   bidderCount: number;
+  activeBidderCount: number;
   myBid: number | null;
+  myPassed: boolean;
 };
 
 type LiveFeedItem = {
@@ -137,6 +139,8 @@ type LivePayload = {
   /** My team's MCQ selection state for the live question. */
   myMcq: {
     graded: { optionIndex: number; correct: boolean; points: number } | null;
+    /** Head-to-Head: the other team took this question before we answered. */
+    duelLost?: boolean;
     retryFirstPick: number | null;
     canAnswer: boolean;
   } | null;
@@ -146,10 +150,18 @@ type LivePayload = {
   turn: {
     assignedTeamId: string | null;
     assignedTeamName: string | null;
+    /** Head-to-Head: the second team racing for this same question. */
+    opponentTeamId: string | null;
+    opponentTeamName: string | null;
     isMyTurn: boolean;
     frozen: boolean;
     /** The host's verdict on the assigned team, visible to every team. */
-    judgment: { reason: "CORRECT" | "WRONG"; points: number } | null;
+    judgment: {
+      reason: "CORRECT" | "WRONG";
+      points: number;
+      optionIndex: number | null;
+      retryOptionIndex: number | null;
+    } | null;
   };
   /** Drawing board context (DRAWING scenes only). */
   drawing: {
@@ -274,6 +286,7 @@ function livePlayContext(live: LivePayload): PowerPlayContext {
     sceneType: live.currentScene?.type ?? null,
     timerRunning: endsAt > Date.now() && !live.timer.paused,
     assignedTeamId: live.turn.assignedTeamId,
+    opponentTeamId: live.turn.opponentTeamId,
     actingTeamId: live.team?.id ?? null,
     frozen: live.turn.frozen,
     hintsTotal: live.question?.hintsTotal ?? 0,
@@ -476,6 +489,17 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
         setToast(`Bid placed: ${amount} coins.`);
       } catch (err) {
         setToast(err instanceof Error ? err.message : "Could not place bid.");
+      }
+    });
+  }
+
+  function passAuction() {
+    if (!live?.team || !live.auction || !participant) return;
+    startTransition(async () => {
+      try {
+        await passOnAuction(live.room.id, live.team!.id, live.auction!.id, participant.id);
+      } catch (err) {
+        setToast(err instanceof Error ? err.message : "Could not opt out.");
       }
     });
   }
@@ -762,6 +786,7 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
                 coins={live.team?.coins ?? 0}
                 pending={pending}
                 onBid={bid}
+                onPass={passAuction}
                 canControl={live.me?.canControl ?? false}
               />
             ) : (
@@ -915,6 +940,9 @@ const EFFECT_ICON: Record<string, string> = {
   GAMBLE: "🎲",
   FREEZE: "❄",
   PEEK: "👁",
+  TIME_DRAIN: "⏳",
+  PASS_QUESTION: "🔄",
+  COPYCAT: "🪞",
 };
 
 type RoundMode = "SPEED" | "RISK" | "SURVIVAL" | "BONUS";
@@ -959,7 +987,7 @@ function LiveStatusCard({ live }: { live: LivePayload }) {
   let status: Status | null = null;
 
   if (onQuestion && live.turn.frozen) {
-    status = { icon: "❄️", title: "Your Team Is Frozen", tone: "info", subtitle: "An opponent froze you — no power cards on this question." };
+    status = { icon: "❄️", title: "Your Team Is Frozen", tone: "info", subtitle: "An opponent played Freeze — you can't use any power card on this question. You can still answer normally." };
   } else if (onQuestion && live.turn.assignedTeamId && live.turn.judgment && !live.turn.isMyTurn) {
     // The assigned team has been judged — every other team gets told the
     // result here instead of staying stuck on "Team X is answering" until the
@@ -969,21 +997,62 @@ function LiveStatusCard({ live }: { live: LivePayload }) {
     // which yields to that overlay.)
     const correct = live.turn.judgment.reason === "CORRECT";
     const blocked = !correct && live.turn.judgment.points === 0;
+    const optionLabel = (index: number | null) =>
+      index !== null && index >= 0 && live.question?.options?.[index]
+        ? `${String.fromCharCode(65 + index)}. ${live.question.options[index]}`
+        : null;
+    const pickedOption = optionLabel(live.turn.judgment.optionIndex);
+    const retryOption = optionLabel(live.turn.judgment.retryOptionIndex);
+    const resultLine = blocked
+      ? "A shield or insurance saved their marks."
+      : `${correct ? "+" : ""}${live.turn.judgment.points} points.`;
+    // Show the burned Double Guess too, so watchers don't read a rescued
+    // answer as a clean first-try win.
+    const pickLine = pickedOption
+      ? retryOption
+        ? `Picked ${retryOption} ✗, then ${pickedOption} (Double Guess) — ${resultLine}`
+        : `Picked ${pickedOption} — ${resultLine}`
+      : resultLine;
     status = {
       icon: correct ? "✅" : blocked ? "🛡" : "❌",
       title: `${live.turn.assignedTeamName ?? "They"} ${correct ? "Answered Correctly" : "Answered Wrong"}`,
       tone: correct ? "success" : blocked ? "info" : "danger",
-      subtitle: blocked
-        ? "A shield or insurance saved their marks."
-        : `${correct ? "+" : ""}${live.turn.judgment.points} points.`,
+      subtitle: pickLine,
+    };
+  } else if (onQuestion && live.myMcq?.duelLost) {
+    // Head-to-Head: the opponent got there first.
+    status = {
+      icon: "🏳️",
+      title: "Too Slow",
+      tone: "danger",
+      subtitle: `${live.turn.assignedTeamId === live.team?.id ? live.turn.opponentTeamName : live.turn.assignedTeamName ?? "The other team"} took this one first.`,
+    };
+  } else if (onQuestion && live.turn.opponentTeamId && live.turn.isMyTurn) {
+    // Head-to-Head, and this phone is one of the two duellists.
+    const rivalName =
+      live.turn.assignedTeamId === live.team?.id
+        ? live.turn.opponentTeamName
+        : live.turn.assignedTeamName;
+    status = {
+      icon: "⚔️",
+      title: `Head-to-Head vs ${rivalName ?? "the other team"}`,
+      tone: "warn",
+      subtitle: "First correct answer takes it — be quick.",
     };
   } else if (onQuestion && live.turn.assignedTeamId && !live.turn.isMyTurn) {
-    status = {
-      icon: "⏳",
-      title: `${live.turn.assignedTeamName ?? "Another team"} is answering`,
-      tone: "warn",
-      subtitle: "Wait for your turn. Only Freeze can be played right now.",
-    };
+    status = live.turn.opponentTeamId
+      ? {
+          icon: "⚔️",
+          title: `${live.turn.assignedTeamName ?? "Team"} vs ${live.turn.opponentTeamName ?? "Team"}`,
+          tone: "warn",
+          subtitle: "Head-to-Head — first correct answer takes the question.",
+        }
+      : {
+          icon: "⏳",
+          title: `${live.turn.assignedTeamName ?? "Another team"} is answering`,
+          tone: "warn",
+          subtitle: "Wait for your turn. Only Freeze can be played right now.",
+        };
   } else if (onQuestion && live.turn.assignedTeamId && live.turn.isMyTurn) {
     status = { icon: "🎯", title: "Your Turn", tone: "success", subtitle: "Discuss quickly — your captain should answer." };
   } else if (onQuestion && !live.question?.isMCQ && live.timer.paused && !live.judgment && !live.timer.showAnswer) {
@@ -2684,30 +2753,78 @@ function AuctionPanel({
   coins,
   pending,
   onBid,
+  onPass,
   canControl,
 }: {
   auction: LiveAuction;
   coins: number;
   pending: boolean;
   onBid: (amount: number) => void;
+  onPass: () => void;
   canControl: boolean;
 }) {
-  const suggested =
-    auction.type === "NORMAL"
-      ? Math.max(auction.startingBid, auction.currentBid + auction.minIncrement)
-      : auction.myBid ?? auction.startingBid;
-  const [amount, setAmount] = useState(suggested);
+  // The real floor for the next bid — NORMAL auctions can never go below the
+  // current high bid + increment; sealed ones can never go below the starting
+  // bid. Used to clamp both the +/- stepper and the free-typed input so a bid
+  // that's guaranteed to be rejected server-side is never even offered.
+  const minBid =
+    auction.type === "NORMAL" ? Math.max(auction.startingBid, auction.currentBid + auction.minIncrement) : auction.startingBid;
+  const [amount, setAmount] = useState(minBid);
   // NORMAL auctions are a race — when another team raises the bid, jump the
   // input to the new minimum raise automatically instead of leaving it
   // sitting on a now-losing number the team would have to notice and fix
   // themselves. (Sealed SECRET/LUCKY bids don't reveal the current bid, so
   // there's nothing to react to there.)
   useEffect(() => {
-    if (auction.type === "NORMAL") setAmount(suggested);
+    if (auction.type === "NORMAL") setAmount(minBid);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auction.id, auction.currentBid, auction.type]);
   const sealed = auction.type !== "NORMAL";
-  const canAfford = coins >= amount && amount >= auction.startingBid;
+  const belowMin = auction.type === "NORMAL" && amount < minBid;
+  const canAfford = coins >= amount && amount >= auction.startingBid && !belowMin;
+
+  // Auto opt-out: once this team can no longer afford the next minimum bid on
+  // a NORMAL auction, they can't possibly win by bidding further — pass on
+  // their behalf so the UI (and the host) can see they're out, instead of
+  // leaving them stuck staring at a Bid button that will always fail. Doesn't
+  // apply to the current leader (nothing to chase) or sealed auctions (no
+  // back-and-forth to keep up with).
+  const autoPassedRef = useRef(false);
+  useEffect(() => {
+    if (
+      auction.type === "NORMAL" &&
+      auction.currentBid > 0 &&
+      !auction.leaderIsMe &&
+      !auction.myPassed &&
+      coins < minBid &&
+      !autoPassedRef.current
+    ) {
+      autoPassedRef.current = true;
+      onPass();
+    }
+    if (auction.myPassed) autoPassedRef.current = false;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auction.id, auction.currentBid, coins, minBid, auction.myPassed, auction.leaderIsMe]);
+
+  if (auction.myPassed) {
+    return (
+      <motion.div
+        initial={{ scale: 0.97, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        className="shrink-0 mb-2 rounded-2xl border-2 border-line/[.12] bg-line/[.03] p-3"
+      >
+        <div className="flex items-center gap-2.5">
+          <span className="text-2xl grayscale opacity-60">{auction.itemIcon}</span>
+          <div className="flex flex-col min-w-0">
+            <span className="text-[13px] font-bold text-ink-2 truncate">{auction.itemName}</span>
+            <span className="text-[11px] text-mute-2">
+              You&apos;re out of this auction{auction.type === "NORMAL" && auction.currentBid > 0 ? ` — high bid ${auction.currentBid}` : ""}.
+            </span>
+          </div>
+        </div>
+      </motion.div>
+    );
+  }
 
   return (
     <motion.div
@@ -2752,15 +2869,18 @@ function AuctionPanel({
         <>
           <div className="mt-2.5 flex items-center gap-1.5">
             <button
-              onClick={() => setAmount((a) => Math.max(auction.startingBid, a - auction.minIncrement))}
-              className="w-8 h-9 rounded-lg bg-line/[.06] text-ink font-bold cursor-pointer"
+              onClick={() => setAmount((a) => Math.max(minBid, a - auction.minIncrement))}
+              disabled={amount <= minBid}
+              className="w-8 h-9 rounded-lg bg-line/[.06] text-ink font-bold cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
             >
               −
             </button>
             <input
               type="number"
+              min={minBid}
               value={amount}
               onChange={(e) => setAmount(Number(e.target.value))}
+              onBlur={() => setAmount((a) => Math.max(minBid, a))}
               className="flex-1 min-w-0 h-9 bg-line/[.05] border border-line/[.1] rounded-lg px-2 text-center text-[14px] font-bold text-ink outline-none"
             />
             <button
@@ -2781,8 +2901,17 @@ function AuctionPanel({
           </div>
           {!canAfford && (
             <span className="mt-1.5 block text-[10.5px] text-danger-soft">
-              {amount < auction.startingBid ? `Minimum bid is ${auction.startingBid}` : "Not enough coins"}
+              {belowMin ? `Bid must be at least ${minBid}` : amount < auction.startingBid ? `Minimum bid is ${auction.startingBid}` : "Not enough coins"}
             </span>
+          )}
+          {auction.type === "NORMAL" && (
+            <button
+              onClick={onPass}
+              disabled={pending}
+              className="mt-1.5 text-[10.5px] font-semibold text-mute-2 hover:text-danger-soft cursor-pointer"
+            >
+              Opt out of this auction
+            </button>
           )}
         </>
       ) : (
@@ -3039,12 +3168,15 @@ const SELF_POWER_FX: Record<string, { icon: string; text: string; color: string 
   EXTRA_TIME: { icon: "⏱", text: "+30 sec added to the timer", color: "#3DD68C" },
   HINT: { icon: "💡", text: "Hint revealed · +10 sec", color: "#E8A33D" },
   INSURANCE: { icon: "🩹", text: "Insured — no negatives for 3 questions", color: "#6FD3C6" },
-  FREEZE: { icon: "❄️", text: "Opponent frozen next question", color: "#6ED3F2" },
+  FREEZE: { icon: "❄️", text: "No cards for them next turn", color: "#6ED3F2" },
   DOUBLE_SCORE: { icon: "⚡", text: "Double Points armed", color: "#FF9A3D" },
   BLOCK_NEGATIVE: { icon: "🛡", text: "Shield armed", color: "#9BC0EF" },
-  GAMBLE: { icon: "🎲", text: "Gamble on — double or nothing", color: "#F06A96" },
+  GAMBLE: { icon: "🎲", text: "Coins staked — double or lose them", color: "#F06A96" },
   SECOND_CHANCE: { icon: "↩", text: "Second chance ready", color: "#3DD68C" },
   PEEK: { icon: "👁", text: "One wrong option ruled out", color: "#5EC9E8" },
+  TIME_DRAIN: { icon: "⏳", text: "−15s off their clock", color: "#F0A63D" },
+  PASS_QUESTION: { icon: "🔄", text: "Question passed on — wrong answers bounce back to you", color: "#A79BF0" },
+  COPYCAT: { icon: "🪞", text: "Copying their result — points or penalty", color: "#7FD6C4" },
 };
 
 /**

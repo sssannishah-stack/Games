@@ -107,6 +107,38 @@ export async function clearBoard(input: {
 }
 
 /**
+ * Pop the most recent stroke — recorded as an UNDO marker (not a delete) so
+ * every viewer's replay removes the same stroke, matching the append-only
+ * ledger CLEAR already uses. Replays the ledger since the last CLEAR to know
+ * how many strokes are still "live" after earlier undos, so pressing Undo
+ * repeatedly walks back multiple strokes rather than only working once.
+ */
+export async function undoLastStroke(input: {
+  roomId: string;
+  teamId?: string | null;
+  participantId?: string | null;
+}): Promise<{ seq: number } | null> {
+  await connectToDatabase();
+  const { roomId, questionId } = await assertCanDraw(input.roomId, input);
+
+  const rows = await DrawingStroke.find({ roomId, questionId })
+    .sort({ seq: 1 })
+    .select("kind seq")
+    .lean<{ kind: string; seq: number }[]>();
+  let depth = 0;
+  for (const row of rows) {
+    if (row.kind === "CLEAR") depth = 0;
+    else if (row.kind === "STROKE") depth += 1;
+    else if (row.kind === "UNDO") depth = Math.max(0, depth - 1);
+  }
+  if (depth === 0) return null;
+
+  const seq = (rows.at(-1)?.seq ?? 0) + 1;
+  await DrawingStroke.create({ roomId, questionId, seq, kind: "UNDO", points: [] });
+  return { seq };
+}
+
+/**
  * Host-only: hand the pen to a team (its captain draws) or take it back
  * (`teamId: null` → host-only). Clears the board so the new drawer starts
  * fresh, matching the "new drawer, blank canvas" expectation.

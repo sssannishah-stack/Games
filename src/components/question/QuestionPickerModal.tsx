@@ -217,6 +217,10 @@ export function QuestionPickerModal({
       </Modal>
 
       <QuestionEditorModal
+        // Remounts on every open (same fix as QuestionBankBoard's Create
+        // Question) so a fresh instance always starts blank instead of
+        // reusing the last create's leftover field values.
+        key={createOpen ? "create-open" : "create-closed"}
         rounds={rounds}
         open={createOpen}
         onClose={() => setCreateOpen(false)}

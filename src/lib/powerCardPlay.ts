@@ -11,6 +11,12 @@
 
 const PLAYABLE_SCENES = new Set(["QUESTION", "DRAWING"]);
 
+/**
+ * Cards you play while it is SOMEONE ELSE's turn — they act on the team
+ * currently answering. Everything else is a card you play on your own turn.
+ */
+const OFF_TURN_EFFECTS = new Set(["FREEZE", "TIME_DRAIN", "COPYCAT"]);
+
 export interface PowerPlayContext {
   /** The scene currently on every phone (e.g. "WELCOME", "QUESTION"). */
   sceneType: string | null;
@@ -18,6 +24,8 @@ export interface PowerPlayContext {
   timerRunning: boolean;
   /** Team whose question/turn is currently active, when the round assigns one. */
   assignedTeamId?: string | null;
+  /** Head-to-Head: the second team racing for the same question. Both count as "on turn". */
+  opponentTeamId?: string | null;
   /** Team attempting to play the card. */
   actingTeamId?: string | null;
   /** The acting team is frozen on this question (opponent's Freeze) — no cards. */
@@ -30,6 +38,12 @@ export interface PowerPlayContext {
   optionsCount?: number;
   /** This team has already Peeked (eliminated a wrong option) on the live question. */
   alreadyPeeked?: boolean;
+  /** Teams in the room other than the acting one — Pass the Question needs a recipient. */
+  otherTeamCount?: number;
+  /** The live question was already handed over once (blocks pass ping-pong). */
+  alreadyPassed?: boolean;
+  /** This team is already copying someone on the live question. */
+  alreadyCopying?: boolean;
 }
 
 export interface PowerPlayability {
@@ -51,22 +65,46 @@ export function powerCardPlayability(
   if (effectType === "MYSTERY") {
     return { usable: false, reason: "Mystery Box opens automatically when it is purchased." };
   }
-  // Freeze is an attack card — played by another team against whoever's
-  // turn it currently is, not on your own turn.
-  const isAttack = effectType === "FREEZE";
+  // Cards played AGAINST whoever's turn it is, rather than on your own turn:
+  // Freeze and Time Drain hit the answering team, Copycat rides their result.
+  const isAttack = OFF_TURN_EFFECTS.has(effectType ?? "");
+  // In Head-to-Head both duellists are "on turn" — each may use their own help
+  // cards, and neither can attack the other mid-duel.
+  const isOnTurn =
+    ctx.actingTeamId === ctx.assignedTeamId ||
+    (Boolean(ctx.opponentTeamId) && ctx.actingTeamId === ctx.opponentTeamId);
   if (!ctx.assignedTeamId) {
     if (isAttack) {
       return { usable: false, reason: "This card needs a question assigned to another team." };
     }
-  } else if (ctx.actingTeamId === ctx.assignedTeamId) {
+  } else if (isOnTurn) {
     if (isAttack) {
-      return { usable: false, reason: "It is your turn — attack cards target other teams." };
+      return { usable: false, reason: "It is your turn — this card targets the team that's answering." };
     }
   } else if (!isAttack) {
-    return { usable: false, reason: "Only the active team can use this card. You may play Freeze." };
+    return {
+      usable: false,
+      reason: "Only the active team can use this card. You may play Freeze, Time Drain or Copycat.",
+    };
   }
-  if (effectType === "EXTRA_TIME" && !ctx.timerRunning) {
-    return { usable: false, reason: "Extra Time needs the timer to be running." };
+  if ((effectType === "EXTRA_TIME" || effectType === "TIME_DRAIN") && !ctx.timerRunning) {
+    return {
+      usable: false,
+      reason: `${effectType === "EXTRA_TIME" ? "Extra Time" : "Time Drain"} needs the timer to be running.`,
+    };
+  }
+  if (effectType === "PASS_QUESTION") {
+    // Passing needs somebody to pass to, and a question that hasn't already
+    // been handed over — otherwise it could ping-pong between two teams.
+    if ((ctx.otherTeamCount ?? 0) < 1) {
+      return { usable: false, reason: "There's no other team to pass this question to." };
+    }
+    if (ctx.alreadyPassed) {
+      return { usable: false, reason: "This question has already been passed once." };
+    }
+  }
+  if (effectType === "COPYCAT" && ctx.alreadyCopying) {
+    return { usable: false, reason: "You're already copying this question." };
   }
   if (effectType === "HINT") {
     if (!ctx.hintsTotal) {

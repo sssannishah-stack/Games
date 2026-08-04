@@ -57,6 +57,7 @@ export function PowerStoreExperience({
 }: StoreLiveProps) {
   const [tab, setTab] = useState<Tab>("FEATURED");
   const [confirmCard, setConfirmCard] = useState<ShopCard | null>(null);
+  const [confirmQty, setConfirmQty] = useState(1);
   const [buying, setBuying] = useState(false);
   const [celebration, setCelebration] = useState<CelebrationPayload | null>(null);
   const [mysteryPhase, setMysteryPhase] = useState<MysteryPhase>(null);
@@ -98,14 +99,16 @@ export function PowerStoreExperience({
     [nonMystery]
   );
 
-  function openConfirm(card: ShopCard) {
+  function openConfirm(card: ShopCard, quantity = 1) {
     setError(null);
     setConfirmCard(card);
+    setConfirmQty(card.isMystery ? 1 : Math.max(1, quantity));
   }
 
   async function confirmPurchase() {
     if (!confirmCard) return;
     const card = confirmCard;
+    const qty = confirmQty;
     setBuying(true);
     setError(null);
     try {
@@ -114,7 +117,7 @@ export function PowerStoreExperience({
         setMysteryPhase("opening");
         play("spin");
       }
-      await purchasePowerCard(roomId, teamId, card.id, participantId);
+      await purchasePowerCard(roomId, teamId, card.id, participantId, qty);
       setConfirmCard(null);
       if (!card.isMystery) {
         play("purchase");
@@ -124,7 +127,7 @@ export function PowerStoreExperience({
           icon: card.icon,
           effectType: card.effectType,
           rarity: card.rarity,
-          ownedAfter: card.remainingUses + 1,
+          ownedAfter: card.remainingUses + qty,
         });
       }
     } catch (err) {
@@ -151,7 +154,7 @@ export function PowerStoreExperience({
           size={featuredSize ? "lg" : "md"}
           canBuy={canBuy}
           featured={featuredSize}
-          onBuy={() => openConfirm(card)}
+          onBuy={(quantity) => openConfirm(card, quantity)}
         />
       ))
     );
@@ -262,7 +265,7 @@ export function PowerStoreExperience({
         </motion.div>
       </AnimatePresence>
 
-      <PurchaseConfirmSheet card={confirmCard} coins={coins} pending={buying} onCancel={() => setConfirmCard(null)} onConfirm={confirmPurchase} />
+      <PurchaseConfirmSheet card={confirmCard} quantity={confirmQty} coins={coins} pending={buying} onCancel={() => setConfirmCard(null)} onConfirm={confirmPurchase} />
       <PurchaseCelebration payload={celebration} onDone={() => setCelebration(null)} />
       <MysteryReveal phase={mysteryPhase} onDone={() => setMysteryPhase(null)} />
     </div>

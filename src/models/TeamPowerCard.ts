@@ -14,6 +14,12 @@ const TeamPowerCardSchema = new Schema<ITeamPowerCard>(
       default: "AVAILABLE",
       required: true,
     },
+    // Which question this card went ACTIVE for — set only for the modifiers
+    // that wait to auto-apply on a later mark (Gamble, Shield, Double Points).
+    // Without it, resolveAndApplyMark had no way to tell "the question this
+    // was played for" from "whatever mark happens to land next", so an
+    // unrelated correction on another question could burn the card instead.
+    questionId: { type: String, default: null },
   },
   { timestamps: true }
 );

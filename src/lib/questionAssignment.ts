@@ -5,7 +5,32 @@ export type EffectiveQuestionAssignmentMode = Exclude<QuestionAssignmentMode, "D
 export interface QuestionTeamAssignment {
   questionId: string;
   teamId: string;
-  source: "FIXED" | "RANDOM" | "RANDOM_REMAINDER";
+  source: "FIXED" | "RANDOM" | "RANDOM_REMAINDER" | "HEAD_TO_HEAD";
+  /** Head-to-Head only: the second team racing for this same question. */
+  opponentTeamId?: string;
+}
+
+/**
+ * Head-to-Head pairing: question i pits team i against team i+1, walking the
+ * roster so every team faces every other in turn rather than the same two
+ * duelling all night. Overrides the round's normal assignment mode — the
+ * pairing IS the format.
+ *
+ * Returns [] with fewer than two teams: there's no duel to run, and callers
+ * fall back to leaving the question unassigned rather than inventing an
+ * opponent.
+ */
+export function buildHeadToHeadAssignments(
+  questionIds: string[],
+  teamIds: string[]
+): QuestionTeamAssignment[] {
+  if (questionIds.length === 0 || teamIds.length < 2) return [];
+  return questionIds.map((questionId, index) => ({
+    questionId,
+    teamId: teamIds[index % teamIds.length],
+    opponentTeamId: teamIds[(index + 1) % teamIds.length],
+    source: "HEAD_TO_HEAD" as const,
+  }));
 }
 
 function shuffled<T>(items: T[], random: () => number): T[] {

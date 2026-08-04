@@ -7,6 +7,7 @@ import type { AuctionType, AuctionStage } from "@/types/db";
 export interface AuctionBidView {
   teamId: string;
   amount: number;
+  passed: boolean;
 }
 
 export interface ActiveAuction {
@@ -44,6 +45,6 @@ export async function getActiveAuction(roomId: string): Promise<ActiveAuction | 
     minIncrement: auction.minIncrement,
     currentBid: auction.currentBid,
     currentBidTeamId: auction.currentBidTeamId ? auction.currentBidTeamId.toString() : null,
-    bids: bids.map((b) => ({ teamId: b.teamId.toString(), amount: b.amount })),
+    bids: bids.map((b) => ({ teamId: b.teamId.toString(), amount: b.amount, passed: b.passed ?? false })),
   });
 }

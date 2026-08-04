@@ -111,6 +111,13 @@ export async function GET(
   const assignedTeam = assignedTeamId
     ? teams.find((team) => id(team._id) === assignedTeamId) ?? null
     : null;
+  const opponentTeamId =
+    typeof currentScene?.settings?.opponentTeamId === "string"
+      ? currentScene.settings.opponentTeamId
+      : null;
+  const opponentTeam = opponentTeamId
+    ? teams.find((team) => id(team._id) === opponentTeamId) ?? null
+    : null;
   const [catalog, inventory, requests, teamDevices, myAnswerLog] = await Promise.all([
     competition
       ? PowerCard.find({ ownerId: competition.ownerId, enabled: true }).sort({ price: 1 }).lean<IPowerCard[]>()
@@ -145,7 +152,8 @@ export async function GET(
   // 20-event feed window, which can roll it out of range in a busy room before
   // the host moves on — this backs a persistent "you got it right/wrong"
   // banner that must not silently disappear).
-  const [mcqGraded, mcqRetry, judgmentLog, turnJudgmentLog] = await Promise.all([
+  const [mcqGraded, mcqRetry, judgmentLog, turnJudgmentLog, turnMcqGraded, turnMcqRetry, duelWonLog] =
+    await Promise.all([
     selectedTeam && room.currentQuestionId
       ? EventLog.findOne({
           roomId: room._id,
@@ -192,6 +200,40 @@ export async function GET(
         })
           .sort({ createdAt: -1 })
           .lean<IEventLog>()
+      : null,
+    // Same lookup as mcqGraded above, but for the assigned team regardless of
+    // who's viewing — so an onlooking team can see WHICH option the answering
+    // team picked, not just correct/wrong. mcqGraded stays scoped to
+    // selectedTeam (used for "can I still answer" gating on my own turn).
+    assignedTeamId && room.currentQuestionId
+      ? EventLog.findOne({
+          roomId: room._id,
+          type: "MCQ_GRADED",
+          "metadata.teamId": assignedTeamId,
+          "metadata.questionId": id(room.currentQuestionId),
+        }).lean<IEventLog>()
+      : null,
+    // A Double Guess retry by the answering team. Public alongside the verdict
+    // for the same reason the picked option is: without it, watching teams see
+    // only the team's final pick and can't tell they burned a second chance.
+    assignedTeamId && room.currentQuestionId
+      ? EventLog.findOne({
+          roomId: room._id,
+          type: "MCQ_RETRY",
+          "metadata.teamId": assignedTeamId,
+          "metadata.questionId": id(room.currentQuestionId),
+        }).lean<IEventLog>()
+      : null,
+    // Head-to-Head only: has EITHER duellist already answered correctly? The
+    // first correct answer takes the question, so this closes the other's
+    // answer UI immediately instead of letting them tap into a server error.
+    opponentTeamId && room.currentQuestionId
+      ? EventLog.findOne({
+          roomId: room._id,
+          type: "MCQ_GRADED",
+          "metadata.questionId": id(room.currentQuestionId),
+          "metadata.correct": true,
+        }).lean<IEventLog>()
       : null,
   ]);
 
@@ -372,15 +414,14 @@ export async function GET(
   if (openAuction) {
     const [auctionCard, allBids] = await Promise.all([
       PowerCard.findById(openAuction.powerCardId).select("name icon").lean<{ name: string; icon: string }>(),
-      AuctionBid.find({ auctionId: openAuction._id }).select("teamId amount").lean(),
+      AuctionBid.find({ auctionId: openAuction._id }).select("teamId amount passed").lean(),
     ]);
-    const myBid = selectedTeam
-      ? allBids.find((b) => id(b.teamId) === id(selectedTeam._id))?.amount ?? null
-      : null;
+    const myBidRow = selectedTeam ? allBids.find((b) => id(b.teamId) === id(selectedTeam._id)) : null;
     const leader = openAuction.currentBidTeamId
       ? teams.find((t) => id(t._id) === id(openAuction.currentBidTeamId))
       : null;
     const isPublic = openAuction.type === "NORMAL";
+    const activeBidders = allBids.filter((b) => !b.passed);
     auctionView = {
       id: id(openAuction._id),
       type: openAuction.type,
@@ -393,7 +434,11 @@ export async function GET(
       leaderName: isPublic ? leader?.name ?? null : null,
       leaderIsMe: isPublic && selectedTeam ? id(openAuction.currentBidTeamId) === id(selectedTeam._id) : false,
       bidderCount: allBids.length,
-      myBid,
+      // Teams still able to bid — lets a team see "you're the last one in" once
+      // everyone else has passed or priced themselves out.
+      activeBidderCount: activeBidders.length,
+      myBid: myBidRow?.amount ?? null,
+      myPassed: myBidRow?.passed ?? false,
     };
   }
 
@@ -442,10 +487,15 @@ export async function GET(
           : null;
         const retryFirstPick = mcqRetry ? Number(mcqRetry.metadata?.firstPick ?? -1) : null;
         // Answerable only when it's this team's turn (assigned rounds) and the
-        // question isn't graded yet or revealed.
-        const myTurn = !assignedTeamId || assignedTeamId === id(selectedTeam._id);
-        const canAnswer = !graded && !room.liveState?.showAnswer && myTurn;
-        return { graded, retryFirstPick, canAnswer };
+        // question isn't graded yet or revealed. In Head-to-Head both duellists
+        // have a turn, but the first correct answer closes it for the loser.
+        const myTurn =
+          !assignedTeamId ||
+          assignedTeamId === id(selectedTeam._id) ||
+          opponentTeamId === id(selectedTeam._id);
+        const duelClosed = Boolean(duelWonLog);
+        const canAnswer = !graded && !room.liveState?.showAnswer && myTurn && !duelClosed;
+        return { graded, retryFirstPick, canAnswer, duelLost: duelClosed && !graded };
       })(),
       // The host's most recent Correct/Wrong call on my team — a dedicated
       // signal (not inferred from the score number moving) so the phone can
@@ -469,7 +519,15 @@ export async function GET(
       turn: {
         assignedTeamId,
         assignedTeamName: assignedTeam?.name ?? null,
-        isMyTurn: Boolean(selectedTeam && assignedTeamId === id(selectedTeam._id)),
+        // Head-to-Head: the second team racing for this same question. Both
+        // duellists get isMyTurn, so each sees the answer UI rather than a
+        // "wait your turn" screen.
+        opponentTeamId,
+        opponentTeamName: opponentTeam?.name ?? null,
+        isMyTurn: Boolean(
+          selectedTeam &&
+            (assignedTeamId === id(selectedTeam._id) || opponentTeamId === id(selectedTeam._id))
+        ),
         // My team is frozen (an opponent's Freeze) on the live question.
         frozen: Boolean(
           selectedTeam &&
@@ -484,6 +542,11 @@ export async function GET(
           ? {
               reason: turnJudgmentLog.metadata?.reason as "CORRECT" | "WRONG",
               points: Number(turnJudgmentLog.metadata?.points ?? 0),
+              // Which MCQ option the assigned team picked — null for
+              // non-MCQ/host-judged questions, where there's no option to show.
+              optionIndex: turnMcqGraded ? Number(turnMcqGraded.metadata?.optionIndex ?? -1) : null,
+              // The pick they burned a Double Guess on before settling, if any.
+              retryOptionIndex: turnMcqRetry ? Number(turnMcqRetry.metadata?.firstPick ?? -1) : null,
             }
           : null,
       },
@@ -569,10 +632,13 @@ export async function GET(
             // Total hint count (not the text) so a team can tell Hint is
             // exhausted/unavailable without spoiling anything for others.
             hintsTotal: question.hints?.length ?? 0,
-            // This team's own Peek result, if they used it on this question —
-            // the index of one wrong option, to strike through client-side.
+            // Peek's elimination is public once used — visible to every team,
+            // not just whoever spent the card, so the whole room benefits from
+            // one team's reveal. Only the assigned team can ever play Peek
+            // (powerCardPlayability), so there's at most one peek per question;
+            // this naturally still resolves to "my own" when I'm that team.
             peekedOptionIndex:
-              selectedTeam?.peeks?.find((p) => p.questionId === id(question._id))?.eliminatedOptionIndex ?? null,
+              assignedTeam?.peeks?.find((p) => p.questionId === id(question._id))?.eliminatedOptionIndex ?? null,
           }
         : null,
       team: selectedTeam

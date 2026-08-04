@@ -13,9 +13,23 @@ import {
   type UpdateRoundInput,
 } from "@/validators/round.validator";
 
-function refreshRoundPaths(roundId?: string) {
+/**
+ * Revalidates the round library pages AND every room that has this round
+ * selected — a room's dashboard/Event Flow reads round.questionCount and the
+ * round's own question list via separate queries than the round library
+ * page, so adding/removing/reordering a round's questions here (e.g. from
+ * the "Add questions" picker) previously left any room using that round
+ * showing a stale count until the host happened to hard-navigate there.
+ */
+async function refreshRoundPaths(roundId?: string) {
   revalidatePath("/admin/rounds");
-  if (roundId) revalidatePath(`/admin/rounds/${roundId}`);
+  if (!roundId) return;
+  revalidatePath(`/admin/rounds/${roundId}`);
+  await connectToDatabase();
+  const rooms = await Room.find({ selectedRounds: roundId }).select("_id").lean();
+  for (const room of rooms) {
+    revalidatePath(`/admin/rooms/${room._id.toString()}`);
+  }
 }
 
 /** Create a reusable round in the host's library — not tied to any room. */
@@ -26,7 +40,7 @@ export async function createRound(input: CreateRoundInput): Promise<{ id: string
   await connectToDatabase();
   const round = await Round.create({ ownerId: user.id, ...data, questions: [] });
 
-  refreshRoundPaths();
+  await refreshRoundPaths();
   return { id: round._id.toString() };
 }
 
@@ -49,7 +63,7 @@ export async function updateRound(roundId: string, input: UpdateRoundInput): Pro
     );
   }
 
-  refreshRoundPaths(roundId);
+  await refreshRoundPaths(roundId);
 }
 
 /** Duplicates a round by reference — the copy points at the same library Questions, it doesn't clone them. */
@@ -77,7 +91,7 @@ export async function duplicateRound(roundId: string): Promise<{ id: string }> {
     allowedPowerCards: round.allowedPowerCards,
   });
 
-  refreshRoundPaths();
+  await refreshRoundPaths();
   return { id: copy._id.toString() };
 }
 
@@ -90,7 +104,7 @@ export async function deleteRound(roundId: string): Promise<void> {
   await Round.findByIdAndDelete(roundId);
   await Room.updateMany({ selectedRounds: roundId }, { $pull: { selectedRounds: roundId } });
 
-  refreshRoundPaths();
+  await refreshRoundPaths();
 }
 
 /**
@@ -113,7 +127,7 @@ export async function createRoundWithQuestions(
   const orderedIds = questionIds.filter((id) => ownedSet.has(id));
 
   const round = await Round.create({ ownerId: user.id, title: clean, questions: orderedIds });
-  refreshRoundPaths();
+  await refreshRoundPaths();
   return { id: round._id.toString() };
 }
 
@@ -129,7 +143,7 @@ export async function addQuestionsToRound(roundId: string, questionIds: string[]
   if (toAdd.length === 0) return;
 
   await Round.findByIdAndUpdate(roundId, { $push: { questions: { $each: toAdd } } });
-  refreshRoundPaths(roundId);
+  await refreshRoundPaths(roundId);
 }
 
 export async function removeQuestionFromRound(roundId: string, questionId: string): Promise<void> {
@@ -138,7 +152,7 @@ export async function removeQuestionFromRound(roundId: string, questionId: strin
   await connectToDatabase();
 
   await Round.findByIdAndUpdate(roundId, { $pull: { questions: questionId } });
-  refreshRoundPaths(roundId);
+  await refreshRoundPaths(roundId);
 }
 
 /** Replaces a round's question order wholesale — the caller always sends the full ordered array. */
@@ -153,5 +167,5 @@ export async function reorderRoundQuestions(roundId: string, questionIds: string
   if (!isSamePermutation) throw new Error("Question order must be a reordering of the round's existing questions.");
 
   await Round.findByIdAndUpdate(roundId, { $set: { questions: questionIds } });
-  refreshRoundPaths(roundId);
+  await refreshRoundPaths(roundId);
 }

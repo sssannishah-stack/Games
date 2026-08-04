@@ -113,6 +113,7 @@ function RoundSettingsForm({ round, roomUsageCount }: { round: RoundRecord; room
   const [positiveMarks, setPositiveMarks] = useState(round.positiveMarks);
   const [negativeMarks, setNegativeMarks] = useState(round.negativeMarks);
   const [bonusMarks, setBonusMarks] = useState(round.bonusMarks);
+  const [coinReward, setCoinReward] = useState(round.coinReward);
   const [questionAssignment, setQuestionAssignment] = useState<QuestionAssignmentMode>(round.questionAssignment);
   const [error, setError] = useState<string | null>(null);
   const [safetyOpen, setSafetyOpen] = useState(false);
@@ -133,6 +134,7 @@ function RoundSettingsForm({ round, roomUsageCount }: { round: RoundRecord; room
       positiveMarks,
       negativeMarks,
       bonusMarks,
+      coinReward,
       questionAssignment,
     };
   }
@@ -227,7 +229,16 @@ function RoundSettingsForm({ round, roomUsageCount }: { round: RoundRecord; room
         )}
       </div>
 
-      <NumberField label="Timer (seconds)" value={defaultTimer} onChange={setDefaultTimer} />
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <NumberField label="Timer (seconds)" value={defaultTimer} onChange={setDefaultTimer} />
+        {/* Coins are separate from the marks override below: the live scorer
+            reads coinReward regardless of scoringMode, so gating this behind
+            "Custom Rules" would hide a setting that still applies. */}
+        <NumberField label="Coins for correct answer 🪙" value={coinReward} onChange={setCoinReward} />
+      </div>
+      <span className="text-[11px] text-mute-2 -mt-1">
+        Coins are paid out only when Economy Mode is enabled for the competition. 0 = no coins.
+      </span>
 
       <div className="grid grid-cols-2 gap-2">
         <Button variant={scoringMode === "INHERIT" ? "primary" : "subtle"} onClick={() => setScoringMode("INHERIT")}>
