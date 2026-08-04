@@ -20,6 +20,8 @@ export interface ShopCard {
   limited?: boolean;
   stock: number | null;
   remainingUses: number;
+  /** False when this round's allow-list excludes the card — still shown, sorted to the bottom, not buyable. */
+  allowedThisRound: boolean;
 }
 
 /**
@@ -47,15 +49,16 @@ export function PowerCardShopTile({
   const theme = getPowerCardTheme(card.effectType, card.icon);
   const rarity = rarityTheme(card.rarity);
   const soldOut = card.limited && (card.stock ?? 0) <= 0;
+  const locked = !card.allowedThisRound;
   // Mystery is a one-at-a-time gamble — each purchase rolls its own reward,
   // so bulk buying doesn't apply there. Limited cards cap out at remaining
   // stock; everything else gets a sane bulk ceiling.
-  const bulkable = !card.isMystery && !soldOut;
+  const bulkable = !card.isMystery && !soldOut && !locked;
   const maxQty = card.limited && card.stock !== null ? Math.max(1, card.stock) : 20;
 
   return (
     <motion.div
-      whileTap={canBuy && !soldOut ? { scale: 0.97, rotateX: 4 } : undefined}
+      whileTap={canBuy && !soldOut && !locked ? { scale: 0.97, rotateX: 4 } : undefined}
       onTapStart={() => setPressed(true)}
       onTap={() => setPressed(false)}
       onTapCancel={() => setPressed(false)}
@@ -83,7 +86,7 @@ export function PowerCardShopTile({
         />
       )}
       {/* Featured tiles get a slow diagonal light sweep — a "premium shelf" cue. */}
-      {featured && !soldOut && (
+      {featured && !soldOut && !locked && (
         <motion.span
           aria-hidden
           className="pointer-events-none absolute inset-y-0 w-1/3 z-[1]"
@@ -94,7 +97,7 @@ export function PowerCardShopTile({
         />
       )}
 
-      <div className={`relative px-2.5 pt-2.5 ${soldOut ? "opacity-45 saturate-50" : ""}`}>
+      <div className={`relative px-2.5 pt-2.5 ${soldOut || locked ? "opacity-45 saturate-50" : ""}`}>
         <PowerCardFace
           name={card.name}
           effectType={card.effectType}
@@ -109,24 +112,36 @@ export function PowerCardShopTile({
         >
           {rarity.label.toUpperCase()}
         </span>
-        {card.limited && (
-          <span
-            className={`absolute top-4 left-4 rounded-full px-2 py-0.5 text-[8.5px] font-bold tracking-[.06em] ${
-              soldOut ? "bg-black/70 text-mute-2" : "bg-pink/85 text-white"
-            }`}
-          >
-            {soldOut ? "SOLD OUT" : `${card.stock} LEFT`}
+        {locked ? (
+          <span className="absolute top-4 left-4 rounded-full bg-black/70 text-white/90 px-2 py-0.5 text-[8.5px] font-bold tracking-[.06em]">
+            🔒 LOCKED
           </span>
-        )}
-        {card.onSale && !card.limited && (
-          <span className="absolute top-4 left-4 rounded-full bg-warn/90 text-black px-2 py-0.5 text-[8.5px] font-black tracking-[.06em]">
-            SALE
-          </span>
+        ) : (
+          <>
+            {card.limited && (
+              <span
+                className={`absolute top-4 left-4 rounded-full px-2 py-0.5 text-[8.5px] font-bold tracking-[.06em] ${
+                  soldOut ? "bg-black/70 text-mute-2" : "bg-pink/85 text-white"
+                }`}
+              >
+                {soldOut ? "SOLD OUT" : `${card.stock} LEFT`}
+              </span>
+            )}
+            {card.onSale && !card.limited && (
+              <span className="absolute top-4 left-4 rounded-full bg-warn/90 text-black px-2 py-0.5 text-[8.5px] font-black tracking-[.06em]">
+                SALE
+              </span>
+            )}
+          </>
         )}
       </div>
 
       <div className="flex flex-col gap-1.5 px-3 pb-3 pt-2">
-        <p className="text-[11px] leading-snug text-mute-2 line-clamp-2 min-h-[28px]">{card.description}</p>
+        {locked ? (
+          <p className="text-[11px] leading-snug text-danger-soft/80 min-h-[28px]">Not allowed in this round.</p>
+        ) : (
+          <p className="text-[11px] leading-snug text-mute-2 line-clamp-2 min-h-[28px]">{card.description}</p>
+        )}
 
         <div className="flex items-center justify-between text-[10px] text-dim">
           {card.remainingUses > 0 && (
@@ -170,23 +185,23 @@ export function PowerCardShopTile({
           </span>
           <button
             type="button"
-            disabled={!canBuy || soldOut}
+            disabled={!canBuy || soldOut || locked}
             onClick={() => {
               onBuy(bulkable ? qty : 1);
               setQty(1);
             }}
             className={`ml-auto rounded-xl px-3.5 py-1.5 text-[11px] font-black tracking-[.02em] transition active:scale-95 ${
-              !canBuy || soldOut
+              !canBuy || soldOut || locked
                 ? "bg-line/[.08] text-dim-2 cursor-not-allowed"
                 : "text-white cursor-pointer"
             }`}
             style={
-              canBuy && !soldOut
+              canBuy && !soldOut && !locked
                 ? { background: `linear-gradient(135deg, ${theme.accent}, color-mix(in oklab, ${theme.accent} 60%, black))` }
                 : undefined
             }
           >
-            {soldOut ? "SOLD OUT" : bulkable && qty > 1 ? `BUY ×${qty}` : "BUY"}
+            {locked ? "LOCKED" : soldOut ? "SOLD OUT" : bulkable && qty > 1 ? `BUY ×${qty}` : "BUY"}
           </button>
         </div>
       </div>

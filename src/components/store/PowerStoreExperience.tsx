@@ -84,10 +84,16 @@ export function PowerStoreExperience({
     }
   }, [feed, play]);
 
+  // cards already arrives sorted allowed-first (server-side) — the CARDS tab
+  // (below) keeps that order so a round-locked card sinks to the bottom
+  // instead of vanishing. Featured/Special are curated highlight rails,
+  // though, so a card nobody can currently buy has no business being
+  // spotlighted there — those two stay allowed-only.
   const nonMystery = useMemo(() => cards.filter((c) => !c.isMystery), [cards]);
   const mysteryCards = useMemo(() => cards.filter((c) => c.isMystery), [cards]);
   const featured = useMemo(() => {
-    return [...nonMystery]
+    return nonMystery
+      .filter((c) => c.allowedThisRound)
       .sort((a, b) => {
         const rank = (c: ShopCard) => (c.onSale ? 3 : 0) + (RARITY_RANK[c.rarity ?? "COMMON"] ?? 0);
         return rank(b) - rank(a) || b.price - a.price;
@@ -95,7 +101,7 @@ export function PowerStoreExperience({
       .slice(0, 4);
   }, [nonMystery]);
   const specialOffers = useMemo(
-    () => nonMystery.filter((c) => c.onSale || (c.limited && (c.stock ?? 0) <= 5)),
+    () => nonMystery.filter((c) => c.allowedThisRound && (c.onSale || (c.limited && (c.stock ?? 0) <= 5))),
     [nonMystery]
   );
 
@@ -129,6 +135,11 @@ export function PowerStoreExperience({
           rarity: card.rarity,
           ownedAfter: card.remainingUses + qty,
         });
+        // PurchaseCelebration has no timer of its own — it only clears via
+        // its `onDone` prop, which fires from AnimatePresence's
+        // onExitComplete. That only runs once `celebration` actually becomes
+        // null, so without this the card stayed on screen forever.
+        window.setTimeout(() => setCelebration(null), 2200);
       }
     } catch (err) {
       awaitingMysteryFor.current = null;

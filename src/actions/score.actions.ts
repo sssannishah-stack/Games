@@ -622,9 +622,16 @@ export async function submitMcqAnswer(input: {
   });
   if (alreadyGraded) throw new Error("Your team has already answered this question.");
 
-  const team = await Team.findById(input.teamId).select("peeks").lean();
+  const team = await Team.findById(input.teamId).select("peeks copycats").lean();
   const peekedIndex = team?.peeks?.find((p) => p.questionId === questionId)?.eliminatedOptionIndex;
   if (peekedIndex === input.optionIndex) throw new Error("That option was ruled out by Peek.");
+
+  // A team riding Copycat on this question gets the copied team's mark
+  // instead of their own — they can't also answer for themselves, or they'd
+  // collect both a real mark and a mirrored one.
+  if (team?.copycats?.some((c) => c.questionId === questionId)) {
+    throw new Error("You're copying another team on this question — you can't also answer it.");
+  }
 
   // A prior wrong pick this question (Double Guess retry in progress).
   const retryLog = await EventLog.findOne({
@@ -701,6 +708,25 @@ export async function submitMcqAnswer(input: {
     type: "MCQ_GRADED",
     metadata: { teamId: input.teamId, questionId, optionIndex: input.optionIndex, correct, points: finalPoints },
   });
+
+  // Open question (no single assigned team, e.g. ANY_TEAM) — every team
+  // answers independently, so there's no one team's mark to freeze the clock
+  // on the way assignedTeamId does above. Once every team in the room has
+  // now answered, the question is effectively over; stop the clock instead of
+  // letting it run out (and keep beeping) with nothing left to wait for.
+  if (!isTest && !assignedTeamId) {
+    const [totalTeams, answeredTeamIds] = await Promise.all([
+      Team.countDocuments({ roomId: input.roomId }),
+      EventLog.distinct("metadata.teamId", {
+        roomId: room._id,
+        type: "MCQ_GRADED",
+        "metadata.questionId": questionId,
+      }),
+    ]);
+    if (totalTeams > 0 && answeredTeamIds.length >= totalTeams) {
+      await freezeTimerRemaining(input.roomId);
+    }
+  }
 
   revalidatePath(`/host/${input.roomId}`);
   revalidatePath(`/admin/rooms/${input.roomId}`);

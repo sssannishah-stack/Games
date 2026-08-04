@@ -152,7 +152,7 @@ export async function GET(
   // 20-event feed window, which can roll it out of range in a busy room before
   // the host moves on — this backs a persistent "you got it right/wrong"
   // banner that must not silently disappear).
-  const [mcqGraded, mcqRetry, judgmentLog, turnJudgmentLog, turnMcqGraded, turnMcqRetry, duelWonLog] =
+  const [mcqGraded, mcqRetry, judgmentLog, turnJudgmentLog, turnMcqGraded, turnMcqRetry, duelWonLog, allMcqGraded] =
     await Promise.all([
     selectedTeam && room.currentQuestionId
       ? EventLog.findOne({
@@ -235,6 +235,19 @@ export async function GET(
           "metadata.correct": true,
         }).lean<IEventLog>()
       : null,
+    // Every team's MCQ pick on the live question, for the Answer Reveal
+    // screen's per-team breakdown — matters most in an open (ANY_TEAM)
+    // question where every team answers independently, so there's no single
+    // "assigned team" to show. Fetched regardless of showAnswer (cheap,
+    // indexed the same as the lookups above); only included in the response
+    // once the answer is actually revealed, same gate as `question.answer`.
+    room.currentQuestionId
+      ? EventLog.find({
+          roomId: room._id,
+          type: "MCQ_GRADED",
+          "metadata.questionId": id(room.currentQuestionId),
+        }).lean<IEventLog[]>()
+      : [],
   ]);
 
   // Team device roles: who controls this team right now. The captain while
@@ -244,11 +257,15 @@ export async function GET(
   const meDevice = participantId ? teamDevices.find((d) => id(d._id) === participantId) ?? null : null;
   const canControl = Boolean(meDevice && control.actingCaptainId === id(meDevice._id));
 
-  // A round with powerCardMode "CUSTOM" restricts play to its allow-list —
+  // A round with powerCardMode "CUSTOM" restricts PLAY to its allow-list —
   // plus whatever the host has force-enabled for this room's live event
-  // (Room.powerCardOverrides). Participants must never see a card that
-  // isn't actually usable right now (mirrors the same check the server
-  // enforces in requestPowerCard/purchasePowerCard).
+  // (Room.powerCardOverrides). This is different from Room.powerCardExclusions
+  // (the host's own manual "turn this card off entirely" toggle): an
+  // exclusion is a deliberate hide, so it still removes the card outright.
+  // A round restriction is a per-round rule that changes as rounds change —
+  // hiding a team's owned card here made it silently vanish from their deck
+  // with no explanation. Now it still shows, sorted to the bottom, disabled
+  // with a reason (see `allowedThisRound` below), same treatment as sold-out.
   // Same-named catalog entries (e.g. leftover duplicates from before card
   // names were enforced unique) would otherwise show as repeated tiles in
   // the store — collapse to one card per name, keeping the first (cheapest,
@@ -258,9 +275,12 @@ export async function GET(
   const roundIsRestricted = round?.powerCardMode === "CUSTOM";
   const allowedCardIds = new Set([...(round?.allowedPowerCards ?? []), ...(room.powerCardOverrides ?? [])]);
   const excludedCardIds = new Set(room.powerCardExclusions ?? []);
+  const isAllowedThisRound = (cardId: string) => !roundIsRestricted || allowedCardIds.has(cardId);
   const visibleCards = uniqueCatalog
-    .filter((card) => (roundIsRestricted ? allowedCardIds.has(id(card._id)) : true))
-    .filter((card) => !excludedCardIds.has(id(card._id)));
+    .filter((card) => !excludedCardIds.has(id(card._id)))
+    // Allowed cards first (stable within that — catalog is already
+    // price-sorted), disallowed ones sink to the bottom of every list.
+    .sort((a, b) => Number(isAllowedThisRound(id(b._id))) - Number(isAllowedThisRound(id(a._id))));
 
   const requestByCard = new Map(requests.map((item) => [id(item.powerCardId), item]));
   const inventoryByCard = new Map(inventory.map((item) => [id(item.powerCardId), item]));
@@ -497,6 +517,20 @@ export async function GET(
         const canAnswer = !graded && !room.liveState?.showAnswer && myTurn && !duelClosed;
         return { graded, retryFirstPick, canAnswer, duelLost: duelClosed && !graded };
       })(),
+      // Eligible Copycat targets on an OPEN question (no single assigned
+      // team, e.g. ANY_TEAM rounds) — every team answers independently there,
+      // so there's no implicit team to ride and the player must pick one.
+      // Only teams that haven't answered yet qualify: copying an
+      // already-graded team would be a risk-free guaranteed result, not a
+      // gamble. Empty on assigned-turn questions, where Copycat auto-targets
+      // the assigned team and needs no picker.
+      copycatTargets:
+        selectedTeam && !assignedTeamId && question?.isMCQ && currentScene?.type === "QUESTION"
+          ? teams
+              .filter((t) => id(t._id) !== id(selectedTeam._id))
+              .filter((t) => !allMcqGraded.some((log) => String(log.metadata?.teamId ?? "") === id(t._id)))
+              .map((t) => ({ id: id(t._id), name: t.name, color: t.color }))
+          : [],
       // The host's most recent Correct/Wrong call on my team — a dedicated
       // signal (not inferred from the score number moving) so the phone can
       // show a reliable result even when the delta is 0 (Insurance/Shield
@@ -604,7 +638,9 @@ export async function GET(
             negativeMarks: round.negativeMarks,
             coinReward: round.coinReward ?? 0,
             allowedPowerCards: roundIsRestricted
-              ? visibleCards.map((card) => ({ id: id(card._id), name: card.name, icon: card.icon }))
+              ? visibleCards
+                  .filter((card) => isAllowedThisRound(id(card._id)))
+                  .map((card) => ({ id: id(card._id), name: card.name, icon: card.icon }))
               : null,
           }
         : null,
@@ -617,7 +653,14 @@ export async function GET(
             type: question.type,
             question: question.question,
             media: question.media ?? null,
-            timer: question.timer,
+            // The scene's stamped timer, not the question's own — the scene
+            // already resolved round.defaultTimer vs. the question's CUSTOM
+            // override at scene-generation time (see effectiveTimers in
+            // scene.actions.ts). question.timer is just the DB field's raw
+            // value (defaults to 20), which showed as the pre-countdown
+            // number even when the round's real timer was 60.
+            timer:
+              typeof currentScene?.settings?.timer === "number" ? currentScene.settings.timer : question.timer,
             positiveMarks: question.positiveMarks,
             negativeMarks: question.negativeMarks,
             isMCQ: question.isMCQ,
@@ -639,6 +682,23 @@ export async function GET(
             // this naturally still resolves to "my own" when I'm that team.
             peekedOptionIndex:
               assignedTeam?.peeks?.find((p) => p.questionId === id(question._id))?.eliminatedOptionIndex ?? null,
+            // Per-team picks for the Answer Reveal screen — who answered what,
+            // across every team, not just the assigned/watching one. Held back
+            // until the host actually reveals, same as `answer` above, so a
+            // question can't be spoiled by peeking at this field mid-answer.
+            teamAnswers: room.liveState.showAnswer
+              ? allMcqGraded.map((log) => {
+                  const teamId = String(log.metadata?.teamId ?? "");
+                  const meta = teamMetaById.get(teamId);
+                  return {
+                    teamId,
+                    teamName: meta?.name ?? "Team",
+                    teamColor: meta?.color ?? "#6C7BFA",
+                    optionIndex: Number(log.metadata?.optionIndex ?? -1),
+                    correct: Boolean(log.metadata?.correct),
+                  };
+                })
+              : [],
           }
         : null,
       team: selectedTeam
@@ -703,6 +763,10 @@ export async function GET(
               !liveRequest,
             status: liveRequest?.status ?? owned?.status ?? "AVAILABLE",
             requestId: liveRequest ? id(liveRequest._id) : null,
+            // False when this round's CUSTOM allow-list doesn't include the
+            // card — it still shows (sorted to the bottom) rather than
+            // disappearing, so an owned card never vanishes without explanation.
+            allowedThisRound: isAllowedThisRound(id(card._id)),
           };
         }),
       },

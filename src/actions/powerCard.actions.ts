@@ -253,23 +253,59 @@ async function applyPassQuestionEffect(
 }
 
 /**
- * Copycat: ride the answering team's result on the live question. Recorded on
- * the copier; resolveAndApplyMark mirrors the mark when the target is judged.
+ * Copycat: ride another team's result on the live question. Recorded on the
+ * copier; resolveAndApplyMark mirrors the mark when the target is judged.
+ *
+ * Two question shapes need two different targeting rules:
+ *  - Assigned-turn question (one team answers): the target is that team,
+ *    resolved automatically — there's nothing to choose.
+ *  - Open question (every team answers independently, e.g. ANY_TEAM rounds):
+ *    there's no single implicit target, so the caller must pick one. The
+ *    chosen team must not have answered yet — copying an already-graded
+ *    team would be a risk-free guaranteed result, not a gamble.
  */
-async function applyCopycatEffect(roomId: string, actingTeamId: string): Promise<void> {
+async function applyCopycatEffect(
+  roomId: string,
+  actingTeamId: string,
+  targetTeamId?: string | null
+): Promise<void> {
   const room = await Room.findById(roomId).select("currentSceneId currentQuestionId").lean();
   if (!room?.currentSceneId || !room.currentQuestionId) throw new Error("No question is live.");
   const questionId = room.currentQuestionId.toString();
 
+  const alreadyAnswered = await EventLog.exists({
+    roomId,
+    type: "MCQ_GRADED",
+    "metadata.teamId": actingTeamId,
+    "metadata.questionId": questionId,
+  });
+  if (alreadyAnswered) throw new Error("You've already answered this question yourself.");
+
   const scene = await Scene.findById(room.currentSceneId).select("settings").lean();
   const assignedTeamId =
     typeof scene?.settings?.assignedTeamId === "string" ? scene.settings.assignedTeamId : null;
-  if (!assignedTeamId || assignedTeamId === actingTeamId) {
-    throw new Error("Copycat needs another team to be answering.");
+
+  let resolvedTargetId: string;
+  if (assignedTeamId) {
+    if (assignedTeamId === actingTeamId) throw new Error("Copycat needs another team to be answering.");
+    resolvedTargetId = assignedTeamId;
+  } else {
+    if (!targetTeamId) throw new Error("Pick a team to copy.");
+    if (targetTeamId === actingTeamId) throw new Error("You can't copy your own team.");
+    const target = await Team.findOne({ _id: targetTeamId, roomId }).select("_id").lean();
+    if (!target) throw new Error("That team isn't in this room.");
+    const targetAnswered = await EventLog.exists({
+      roomId,
+      type: "MCQ_GRADED",
+      "metadata.teamId": targetTeamId,
+      "metadata.questionId": questionId,
+    });
+    if (targetAnswered) throw new Error("That team has already answered — pick a team that hasn't yet.");
+    resolvedTargetId = targetTeamId;
   }
 
   await Team.findByIdAndUpdate(actingTeamId, {
-    $addToSet: { copycats: { questionId, ofTeamId: assignedTeamId } },
+    $addToSet: { copycats: { questionId, ofTeamId: resolvedTargetId } },
   });
 }
 
@@ -379,7 +415,7 @@ async function applyImmediatePowerEffect(
   if (effectType === "EXTRA_TIME") await extendRoomTimer(roomId, 30);
   if (effectType === "TIME_DRAIN") await drainRoomTimer(roomId, 15);
   if (effectType === "PASS_QUESTION") await applyPassQuestionEffect(roomId, teamId, targetTeamId);
-  if (effectType === "COPYCAT") await applyCopycatEffect(roomId, teamId);
+  if (effectType === "COPYCAT") await applyCopycatEffect(roomId, teamId, targetTeamId);
 }
 
 /**
@@ -720,23 +756,33 @@ async function resolvePassCopyContext(
   teamId: string,
   currentQid: string | null,
   effectType: string,
+  assignedTeamId: string | null,
   copycats?: Array<{ questionId: string; ofTeamId: string }>
-): Promise<{ otherTeamCount: number; alreadyPassed: boolean; alreadyCopying: boolean }> {
+): Promise<{ otherTeamCount: number; alreadyPassed: boolean; alreadyCopying: boolean; hasCopycatTarget: boolean }> {
   if (effectType === "PASS_QUESTION") {
     const [otherTeamCount, passed] = await Promise.all([
       Team.countDocuments({ roomId, _id: { $ne: teamId } }),
       currentQid ? Team.exists({ roomId, "passedToMe.questionId": currentQid }) : null,
     ]);
-    return { otherTeamCount, alreadyPassed: Boolean(passed), alreadyCopying: false };
+    return { otherTeamCount, alreadyPassed: Boolean(passed), alreadyCopying: false, hasCopycatTarget: false };
   }
   if (effectType === "COPYCAT") {
-    return {
-      otherTeamCount: 0,
-      alreadyPassed: false,
-      alreadyCopying: Boolean(currentQid && copycats?.some((c) => c.questionId === currentQid)),
-    };
+    const alreadyCopying = Boolean(currentQid && copycats?.some((c) => c.questionId === currentQid));
+    // Assigned-turn question: the target is implicit (whoever's turn it is).
+    // Open question: only usable if some OTHER team hasn't answered yet —
+    // copying an already-graded team would be a risk-free guaranteed result.
+    let hasCopycatTarget = Boolean(assignedTeamId);
+    if (!assignedTeamId && currentQid && !alreadyCopying) {
+      const [otherTeams, answeredIds] = await Promise.all([
+        Team.find({ roomId, _id: { $ne: teamId } }).select("_id").lean(),
+        EventLog.distinct("metadata.teamId", { roomId, type: "MCQ_GRADED", "metadata.questionId": currentQid }),
+      ]);
+      const answered = new Set(answeredIds.map(String));
+      hasCopycatTarget = otherTeams.some((t) => !answered.has(t._id.toString()));
+    }
+    return { otherTeamCount: 0, alreadyPassed: false, alreadyCopying, hasCopycatTarget };
   }
-  return { otherTeamCount: 0, alreadyPassed: false, alreadyCopying: false };
+  return { otherTeamCount: 0, alreadyPassed: false, alreadyCopying: false, hasCopycatTarget: false };
 }
 
 export interface RequestPowerCardInput {
@@ -797,21 +843,21 @@ export async function requestPowerCard(
     ? (team.hintsRevealed?.find((h) => h.questionId === currentQid)?.count ?? 0)
     : 0;
   const alreadyPeeked = Boolean(currentQid && team.peeks?.some((p) => p.questionId === currentQid));
+  const assignedTeamId =
+    typeof currentScene?.settings?.assignedTeamId === "string" ? currentScene.settings.assignedTeamId : null;
   const passCtx = await resolvePassCopyContext(
     input.roomId,
     input.teamId,
     currentQid,
     card.effectType,
+    assignedTeamId,
     team.copycats
   );
   const playability = powerCardPlayability(card.effectType, {
     sceneType: currentScene?.type ?? null,
     ...passCtx,
     timerRunning,
-    assignedTeamId:
-      typeof currentScene?.settings?.assignedTeamId === "string"
-        ? currentScene.settings.assignedTeamId
-        : null,
+    assignedTeamId,
     opponentTeamId:
       typeof currentScene?.settings?.opponentTeamId === "string"
         ? currentScene.settings.opponentTeamId
@@ -862,12 +908,14 @@ export async function requestPowerCard(
     }
   }
 
-  const assignedTeamId =
-    typeof currentScene?.settings?.assignedTeamId === "string"
-      ? currentScene.settings.assignedTeamId
-      : null;
+  // Freeze always targets the assigned team; Copycat does too when there IS
+  // one (assigned-turn question) — only an open question's explicit pick
+  // needs input.targetTeamId at all. Keeps the event feed's "used X on Y"
+  // line accurate to what actually got recorded, not just what the client sent.
   const effectiveTargetTeamId =
-    card.effectType === "FREEZE" ? assignedTeamId : input.targetTeamId ?? null;
+    card.effectType === "FREEZE" || (card.effectType === "COPYCAT" && assignedTeamId)
+      ? assignedTeamId
+      : input.targetTeamId ?? null;
 
   const request = await PowerCardRequest.create({
     roomId: input.roomId,
@@ -1314,7 +1362,14 @@ export async function hostPlayTeamPowerCard(
     typeof currentScene?.settings?.assignedTeamId === "string" ? currentScene.settings.assignedTeamId : null;
   const opponentTeamId =
     typeof currentScene?.settings?.opponentTeamId === "string" ? currentScene.settings.opponentTeamId : null;
-  const passCtx = await resolvePassCopyContext(roomId, teamId, currentQid, card.effectType, team.copycats);
+  const passCtx = await resolvePassCopyContext(
+    roomId,
+    teamId,
+    currentQid,
+    card.effectType,
+    assignedTeamId,
+    team.copycats
+  );
 
   const playability = powerCardPlayability(card.effectType, {
     sceneType: currentScene?.type ?? null,
@@ -1356,7 +1411,10 @@ export async function hostPlayTeamPowerCard(
     throw error;
   }
 
-  const effectiveTargetTeamId = card.effectType === "FREEZE" ? assignedTeamId : null;
+  const effectiveTargetTeamId =
+    card.effectType === "FREEZE" || (card.effectType === "COPYCAT" && assignedTeamId)
+      ? assignedTeamId
+      : targetTeamId ?? null;
   const request = await PowerCardRequest.create({
     roomId,
     teamId,

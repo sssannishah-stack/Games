@@ -2418,13 +2418,15 @@ export function HostConsole({
               </div>
             </section>
 
-            {round && (
+            {cards.length > 0 && (
               <section className="rounded-2xl border border-line/[.08] bg-line/[.03] p-4 flex flex-col gap-2">
-                <span className="text-sm font-bold text-ink-2">Round Power Card Access</span>
+                <span className="text-sm font-bold text-ink-2">Power Card Access</span>
                 <span className="text-[11.5px] text-mute-2">
-                  {roundIsRestricted
+                  {round && roundIsRestricted
                     ? <>&quot;{round.title}&quot; restricts play to its allowed cards — check/uncheck to change what&apos;s live for this event.</>
-                    : <>&quot;{round.title}&quot; allows every power card by default — uncheck any to turn it off for this event.</>}
+                    : round
+                      ? <>&quot;{round.title}&quot; allows every power card by default — uncheck any to hide it from the Store and turn it off for this event.</>
+                      : "Uncheck any card to hide it from the Power Store and turn it off for this event — check it again any time to bring it back."}
                 </span>
                 <div className="flex flex-col gap-1.5">
                   {cards.map((card) => {

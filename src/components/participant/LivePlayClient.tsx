@@ -69,6 +69,8 @@ type LivePower = {
   requestable?: boolean;
   status: "AVAILABLE" | "REQUESTED" | "APPROVED" | "ACTIVE" | "CONSUMED" | "REJECTED";
   requestId: string | null;
+  /** False when this round's allow-list excludes the card — still shown, just unusable. */
+  allowedThisRound: boolean;
 };
 
 type LiveAuction = {
@@ -144,6 +146,8 @@ type LivePayload = {
     retryFirstPick: number | null;
     canAnswer: boolean;
   } | null;
+  /** Teams my team can Copycat on an open question — see the field's own doc in the API route. */
+  copycatTargets: { id: string; name: string; color: string }[];
   /** The host's most recent Correct/Wrong call on my team. */
   judgment: { id: string; reason: "CORRECT" | "WRONG"; points: number } | null;
   competition: { id: string; title: string };
@@ -212,6 +216,14 @@ type LivePayload = {
     hints: { text: string; penalty: number }[];
     hintsTotal: number;
     peekedOptionIndex: number | null;
+    /** Every team's MCQ pick, populated only once the host reveals the answer. */
+    teamAnswers: {
+      teamId: string;
+      teamName: string;
+      teamColor: string;
+      optionIndex: number;
+      correct: boolean;
+    }[];
   } | null;
   team: LiveTeam | null;
   leaderboard: Array<Omit<LiveTeam, "members">>;
@@ -294,6 +306,7 @@ function livePlayContext(live: LivePayload): PowerPlayContext {
     isMCQ: live.question?.isMCQ ?? false,
     optionsCount: live.question?.options.length ?? 0,
     alreadyPeeked: live.question?.peekedOptionIndex != null,
+    hasCopycatTarget: live.copycatTargets.length > 0,
   };
 }
 
@@ -459,7 +472,7 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
     setLive(null);
   }
 
-  function request(card: LivePower) {
+  function request(card: LivePower, targetTeamId?: string) {
     if (!live?.team || !participant) return;
     startTransition(async () => {
       try {
@@ -468,6 +481,7 @@ export function LivePlayClient({ room, teams }: LivePlayClientProps) {
           teamId: live.team!.id,
           powerCardId: card.id,
           participantId: participant.id,
+          targetTeamId,
         });
         play(result.status === "ACTIVE" ? "card" : "tap");
         setToast(
@@ -1324,7 +1338,7 @@ function BottomBar({
 }: {
   live: LivePayload;
   pending: boolean;
-  onRequest: (card: LivePower) => void;
+  onRequest: (card: LivePower, targetTeamId?: string) => void;
   participantId: string;
   /** Bumped by the Store Open notification's "Open" button to pop this
    *  sheet straight to the store from anywhere on screen. */
@@ -1521,18 +1535,30 @@ function PowersSheet({
   live: LivePayload;
   pending: boolean;
   canControl: boolean;
-  onRequest: (card: LivePower) => void;
+  onRequest: (card: LivePower, targetTeamId?: string) => void;
 }) {
   const inventory = live.powers.cards.filter((c) => c.remainingUses > 0);
   const requestsAllowed = live.room.permissions?.requestLifelines !== false;
   const [waitingId, setWaitingId] = useState<string | null>(null);
+  // Copycat on an open question (no single assigned team) has no implicit
+  // target — the player picks who to ride, so tapping it opens this picker
+  // instead of requesting immediately.
+  const [copycatPicker, setCopycatPicker] = useState<LivePower | null>(null);
 
-  function use(card: LivePower) {
-    onRequest(card);
+  function commit(card: LivePower, targetTeamId?: string) {
+    onRequest(card, targetTeamId);
     if (card.requiresApproval) {
       setWaitingId(card.id);
       window.setTimeout(() => setWaitingId((id) => (id === card.id ? null : id)), 1800);
     }
+  }
+
+  function use(card: LivePower) {
+    if (card.effectType === "COPYCAT" && !live.turn.assignedTeamId) {
+      setCopycatPicker(card);
+      return;
+    }
+    commit(card);
   }
 
   return (
@@ -1568,10 +1594,17 @@ function PowersSheet({
       ) : (
         <div className="grid grid-cols-2 gap-3">
           {inventory.map((card) => {
-            const play = powerCardPlayability(card.effectType, livePlayContext(live));
+            // Cards this round's allow-list excludes are already sorted to
+            // the bottom by the server (live.powers.cards) — override
+            // playability rather than compute it, so a round restriction
+            // can't be second-guessed by a momentary "usable" from the
+            // generic rulebook.
+            const play = card.allowedThisRound
+              ? powerCardPlayability(card.effectType, livePlayContext(live))
+              : { usable: false, reason: "Not allowed in this round." };
             const busy = card.status === "REQUESTED" || card.status === "ACTIVE";
             return (
-              <div key={card.id} className="flex flex-col gap-1.5">
+              <div key={card.id} className={`flex flex-col gap-1.5 ${card.allowedThisRound ? "" : "opacity-50"}`}>
                 <div className={card.status === "ACTIVE" ? "rounded-2xl ring-2 ring-success/70" : ""}>
                   {/* Tap the card to flip it and read what it does. */}
                   <FlippablePowerCard
@@ -1593,6 +1626,11 @@ function PowersSheet({
                         {card.status === "ACTIVE" && (
                           <span className="absolute top-1.5 left-1/2 -translate-x-1/2 rounded-full bg-success/90 text-white text-[9px] font-bold tracking-[.1em] px-2 py-0.5">
                             ACTIVE
+                          </span>
+                        )}
+                        {!card.allowedThisRound && (
+                          <span className="absolute top-1.5 left-1/2 -translate-x-1/2 rounded-full bg-black/75 text-white/90 text-[9px] font-bold tracking-[.1em] px-2 py-0.5">
+                            🔒 LOCKED
                           </span>
                         )}
                       </>
@@ -1629,6 +1667,68 @@ function PowersSheet({
           })}
         </div>
       )}
+      {copycatPicker && (
+        <CopycatTargetSheet
+          card={copycatPicker}
+          targets={live.copycatTargets}
+          onPick={(teamId) => {
+            commit(copycatPicker, teamId);
+            setCopycatPicker(null);
+          }}
+          onCancel={() => setCopycatPicker(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/** "Who do you want to copy?" — Copycat's target picker for an open question. */
+function CopycatTargetSheet({
+  card,
+  targets,
+  onPick,
+  onCancel,
+}: {
+  card: LivePower;
+  targets: { id: string; name: string; color: string }[];
+  onPick: (teamId: string) => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-[75] flex items-end justify-center">
+      <div className="absolute inset-0 bg-black/65 backdrop-blur-[3px]" onClick={onCancel} />
+      <div className="relative w-full max-w-[420px] rounded-t-[26px] border border-line/[.12] bg-card p-5 flex flex-col gap-3 shadow-[0_-20px_60px_rgba(0,0,0,.5)]">
+        <span className="text-[10px] font-bold tracking-[.18em] text-mute-2">
+          {card.icon} {card.name.toUpperCase()} — PICK A TEAM
+        </span>
+        <span className="text-[12px] text-mute-2 -mt-1">
+          You&apos;ll get their result on this question — good or bad. Only teams that haven&apos;t answered yet.
+        </span>
+        {targets.length === 0 ? (
+          <span className="text-[12.5px] text-mute-2 py-3 text-center">
+            No team left to copy — everyone else has already answered.
+          </span>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            {targets.map((team) => (
+              <button
+                key={team.id}
+                onClick={() => onPick(team.id)}
+                className="flex items-center gap-2.5 rounded-xl border border-line/[.1] bg-line/[.04] px-3.5 py-2.5 text-left cursor-pointer hover:border-accent/40 active:scale-[.98] transition"
+              >
+                <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: team.color }} />
+                <span className="text-[13px] font-bold text-ink">{team.name}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        <button
+          onClick={onCancel}
+          className="rounded-xl border border-line/[.12] bg-line/[.04] py-2.5 text-[12.5px] font-bold text-ink-3 cursor-pointer"
+        >
+          Cancel
+        </button>
+      </div>
     </div>
   );
 }
@@ -1729,7 +1829,7 @@ function SceneScreen({
 }: {
   live: LivePayload;
   seconds: number | null;
-  onRequest: (card: LivePower) => void;
+  onRequest: (card: LivePower, targetTeamId?: string) => void;
   onSubmitAnswer: (text: string) => void;
   onSelectMcq: (optionIndex: number) => void;
   pending: boolean;
@@ -1999,7 +2099,7 @@ function QuestionScene({
 }: {
   live: LivePayload;
   seconds: number | null;
-  onRequest: (card: LivePower) => void;
+  onRequest: (card: LivePower, targetTeamId?: string) => void;
   onSubmitAnswer: (text: string) => void;
   onSelectMcq: (optionIndex: number) => void;
   pending: boolean;
@@ -2300,7 +2400,9 @@ function QuestionScene({
             </div>
           ) : (
             available.map((card) => {
-              const play = powerCardPlayability(card.effectType, livePlayContext(live));
+              const play = card.allowedThisRound
+                ? powerCardPlayability(card.effectType, livePlayContext(live))
+                : { usable: false, reason: "Not allowed in this round." };
               // ACTIVE = already armed (Shield/Double Points/Gamble waiting on
               // the next mark) or a card that just resolved but hasn't been
               // re-synced yet — either way it isn't AVAILABLE to play again.
@@ -2497,6 +2599,8 @@ function AnswerRevealScene({ live }: { live: LivePayload }) {
   useEffect(() => {
     play("reveal");
   }, [play]);
+  const teamAnswers = live.question?.teamAnswers ?? [];
+  const options = live.question?.options ?? [];
   return (
     <div className="flex-1 flex flex-col items-center justify-center text-center gap-5">
       <Icon name="circle-check" size={38} className="text-success" />
@@ -2509,6 +2613,30 @@ function AnswerRevealScene({ live }: { live: LivePayload }) {
           {live.question?.answer ?? "Revealed by the host"}
         </span>
       </div>
+      {teamAnswers.length > 0 && (
+        <div className="w-full flex flex-col gap-1.5">
+          <span className="text-[10px] font-semibold tracking-[.12em] text-dim-2 text-left">TEAM ANSWERS</span>
+          {teamAnswers.map((ta) => {
+            const picked =
+              ta.optionIndex >= 0 && ta.optionIndex < options.length
+                ? `${String.fromCharCode(65 + ta.optionIndex)}. ${options[ta.optionIndex]}`
+                : `Option ${ta.optionIndex + 1}`;
+            return (
+              <div
+                key={ta.teamId}
+                className="flex items-center gap-2 rounded-xl border border-line/[.08] bg-line/[.03] px-3 py-2 text-left"
+              >
+                <span className="w-2 h-2 rounded-full shrink-0" style={{ background: ta.teamColor }} />
+                <span className="text-[12px] font-bold text-ink-3 shrink-0">{ta.teamName}:</span>
+                <span className="text-[12px] text-ink-2 truncate">{picked}</span>
+                <span className={`ml-auto shrink-0 font-bold ${ta.correct ? "text-success" : "text-danger-soft"}`}>
+                  {ta.correct ? "✓" : "✗"}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

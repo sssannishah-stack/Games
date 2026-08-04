@@ -44,6 +44,12 @@ export interface PowerPlayContext {
   alreadyPassed?: boolean;
   /** This team is already copying someone on the live question. */
   alreadyCopying?: boolean;
+  /**
+   * Open question only (no assignedTeamId): is there at least one OTHER team
+   * that hasn't answered yet? Assigned-turn questions don't need this — the
+   * target is implicit — so it's ignored whenever assignedTeamId is set.
+   */
+  hasCopycatTarget?: boolean;
 }
 
 export interface PowerPlayability {
@@ -74,7 +80,14 @@ export function powerCardPlayability(
     ctx.actingTeamId === ctx.assignedTeamId ||
     (Boolean(ctx.opponentTeamId) && ctx.actingTeamId === ctx.opponentTeamId);
   if (!ctx.assignedTeamId) {
-    if (isAttack) {
+    // Copycat is the one off-turn card that still makes sense with no single
+    // assigned team — an open question (every team answers independently)
+    // just means the player picks who to ride instead of it being implicit.
+    if (effectType === "COPYCAT") {
+      if (!ctx.hasCopycatTarget) {
+        return { usable: false, reason: "No team left to copy — everyone else has already answered." };
+      }
+    } else if (isAttack) {
       return { usable: false, reason: "This card needs a question assigned to another team." };
     }
   } else if (isOnTurn) {
