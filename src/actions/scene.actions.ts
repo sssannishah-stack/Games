@@ -5,6 +5,8 @@ import { connectToDatabase } from "@/lib/database/mongodb";
 import { Competition, DrawingStroke, EventLog, Question, Room, Round, Scene, Team } from "@/models";
 import { requireUser } from "@/lib/auth/getCurrentUser";
 import { assertRoomOwnership } from "@/lib/authz";
+import { serialize } from "@/lib/serialize";
+import type { SceneRecord } from "@/data/queries/scene.queries";
 import {
   SCENE_TYPES,
   type IScene,
@@ -416,7 +418,30 @@ export async function generateScenes(roomId: string): Promise<{ count: number }>
 
 export const generateScenesForRoom = generateScenes;
 
-export async function publishScene(roomId: string, sceneId: string): Promise<IScene | null> {
+// Mirrors getScenesByRoom's mapping (scene.queries.ts) — publishScene used to
+// return the raw .lean<IScene>() document, which still carries ObjectId/Date
+// instances and Mongoose's __v/timestamps. That's fine for internal use, but
+// this function's result crosses the Server Action boundary back to
+// HostConsole, and React logged "Only plain objects can be passed to Client
+// Components" for it. Returning the same serialized shape the rest of the
+// app already uses for scenes closes that gap.
+function toSceneRecord(s: IScene): SceneRecord {
+  return serialize<SceneRecord>({
+    id: s._id.toString(),
+    roomId: s.roomId.toString(),
+    roundId: s.roundId ? s.roundId.toString() : null,
+    type: s.type,
+    order: s.order,
+    title: s.title ?? s.type.replace(/_/g, " "),
+    isActive: s.isActive,
+    status: s.status ?? (s.isActive ? "LIVE" : "UPCOMING"),
+    content: s.content,
+    settings: s.settings ?? {},
+    questionId: s.questionId ? s.questionId.toString() : null,
+  });
+}
+
+export async function publishScene(roomId: string, sceneId: string): Promise<SceneRecord | null> {
   const user = await requireUser();
   await assertRoomOwnership(roomId, user.id);
   await connectToDatabase();
@@ -427,7 +452,8 @@ export async function publishScene(roomId: string, sceneId: string): Promise<ISc
   // again with a fresh countdown. No-op instead; nothing actually changed.
   const room = await Room.findById(roomId).select("currentSceneId").lean();
   if (room?.currentSceneId?.toString() === sceneId) {
-    return Scene.findById(sceneId).lean<IScene>();
+    const existing = await Scene.findById(sceneId).lean<IScene>();
+    return existing ? toSceneRecord(existing) : null;
   }
 
   await Scene.updateMany({ roomId, status: "LIVE" }, { $set: { status: "COMPLETED", isActive: false } });
@@ -472,7 +498,7 @@ export async function publishScene(roomId: string, sceneId: string): Promise<ISc
   });
   await log(roomId, "SCENE_CHANGED", { sceneId, sceneType: scene.type, title: scene.title });
   refreshRoom(roomId);
-  return scene;
+  return toSceneRecord(scene);
 }
 
 export const setActiveScene = publishScene;

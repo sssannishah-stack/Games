@@ -81,10 +81,16 @@ export async function GET(
     EventLog.find({ roomId: room._id }).sort({ createdAt: -1 }).limit(20).lean<IEventLog[]>(),
   ]);
 
+  // Below DRAFT/READY (i.e. before the host has started the event), a room
+  // has no meaningful "current" scene yet — falling through to scenes[0]
+  // here would leak a preview of the first scene (with full game chrome:
+  // rank, leaderboard, powers) to participants sitting in the pre-show
+  // lobby. That preview fallback is only valid once the event is actually
+  // running, so it stays scoped to non-pre-start statuses.
+  const roomHasStarted = room.status !== "DRAFT" && room.status !== "READY";
   const currentScene =
     (room.currentSceneId && scenes.find((scene) => id(scene._id) === id(room.currentSceneId))) ||
-    scenes.find((scene) => scene.isActive) ||
-    scenes[0] ||
+    (roomHasStarted && (scenes.find((scene) => scene.isActive) || scenes[0])) ||
     null;
 
   const [question, round] = await Promise.all([

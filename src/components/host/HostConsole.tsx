@@ -449,13 +449,20 @@ export function HostConsole({
   ];
   const canGenerateScenes = rounds.length > 0 && questions.length > 0;
 
-  type FlowGroup = { key: string; label: string; scenes: SceneRecord[] };
+  // `key` must be unique per group for React + the collapsedRounds Set;
+  // `groupingKey` is only for deciding whether a scene continues the
+  // previous group. Roundless scenes (WELCOME/MAP at the start, WINNER at
+  // the end) all share groupingKey "_" so consecutive ones still merge into
+  // one "Intro"/"Finale" section — but they're not adjacent to each other,
+  // so using that shared sentinel as the React key too gave two separate
+  // groups the same key and React logged a duplicate-key warning.
+  type FlowGroup = { key: string; groupingKey: string; label: string; scenes: SceneRecord[] };
   const flowGroups = useMemo(() => {
     const groups: FlowGroup[] = [];
     for (const scene of scenes) {
-      const key = scene.roundId ?? "_";
+      const groupingKey = scene.roundId ?? "_";
       const last = groups[groups.length - 1];
-      if (last && last.key === key) {
+      if (last && last.groupingKey === groupingKey) {
         last.scenes.push(scene);
       } else {
         const label = scene.roundId
@@ -465,7 +472,7 @@ export function HostConsole({
             : scene.type === "WINNER"
               ? "Finale"
               : "General";
-        groups.push({ key, label, scenes: [scene] });
+        groups.push({ key: scene.roundId ?? `scene-${scene.id}`, groupingKey, label, scenes: [scene] });
       }
     }
     return groups;
